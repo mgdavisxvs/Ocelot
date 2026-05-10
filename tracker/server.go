@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"runtime"
 	"strings"
 	"sync"
@@ -66,7 +65,7 @@ func NewServer(config *Config, worker *Worker) *Server {
 		activeConns:    make(map[net.Conn]struct{}),
 		shutdownCtx:    ctx,
 		shutdownCancel: cancel,
-		stats:          worker.stats,
+		stats:          worker.Stats,
 	}
 }
 
@@ -267,7 +266,7 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 // handleAnnounce processes a BitTorrent announce request
 func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.IP, httpClose bool) []byte {
 	// Look up user by passkey
-	user, ok := s.worker.users.Get(passkey)
+	user, ok := s.worker.Users.Get(passkey)
 	if !ok {
 		return s.errorResponse("Passkey not found", httpClose)
 	}
@@ -296,7 +295,7 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 		return s.errorResponse("Missing info_hash", httpClose)
 	}
 
-	torrent, ok := s.worker.torrents.Get(infoHash)
+	_, ok = s.worker.Torrents.Get(infoHash)
 	if !ok {
 		return s.errorResponse("Unregistered torrent", httpClose)
 	}
@@ -314,7 +313,7 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 
 // handleScrape processes a BitTorrent scrape request
 func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool) []byte {
-	user, ok := s.worker.users.Get(passkey)
+	user, ok := s.worker.Users.Get(passkey)
 	if !ok {
 		return s.errorResponse("Passkey not found", httpClose)
 	}
@@ -328,7 +327,7 @@ func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool)
 	response := "d5:filesd"
 
 	for _, infoHash := range infoHashes {
-		torrent, ok := s.worker.torrents.Get(infoHash)
+		torrent, ok := s.worker.Torrents.Get(infoHash)
 		if !ok {
 			continue
 		}
@@ -482,24 +481,25 @@ func (s *Server) Shutdown() error {
 
 // Worker encapsulates tracker business logic
 type Worker struct {
-	config   *Config
-	db       DatabaseInterface
-	siteComm SiteCommInterface
-	torrents *TorrentList
-	users    *UserList
-	whitelist *Whitelist
-	stats    *Stats
+	Config    *Config
+	DB        DatabaseInterface
+	SiteComm  SiteCommInterface
+	Torrents  *TorrentList
+	Users     *UserList
+	Whitelist *Whitelist
+	Stats     *Stats
 }
 
 // DatabaseInterface abstracts database operations
 // Replaces C++ mysql class (db.cpp)
 type DatabaseInterface interface {
-	RecordPeer(userID UserID, torrentID TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string)
-	RecordPeerLight(userID UserID, torrentID TorrentID, announceTime, announces uint32, peerID string)
-	RecordUserStats(userID UserID, uploaded, downloaded int64)
-	RecordTorrent(torrentID TorrentID, seeders, leechers uint32, snatched int, balance int64)
-	RecordSnatch(userID UserID, torrentID TorrentID, time time.Time, ip string)
-	RecordToken(userID UserID, torrentID TorrentID, downloaded int64)
+	RecordPeer(userID UserID, torrentID TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string) error
+	RecordPeerLight(userID UserID, torrentID TorrentID, announceTime, announces uint32, peerID string) error
+	RecordUserStats(userID UserID, uploaded, downloaded int64) error
+	RecordTorrent(torrentID TorrentID, seeders, leechers uint32, snatched int, balance int64) error
+	RecordSnatch(userID UserID, torrentID TorrentID, time time.Time, ip string) error
+	RecordToken(userID UserID, torrentID TorrentID, downloaded int64) error
+	Close() error
 }
 
 // SiteCommInterface abstracts site communication

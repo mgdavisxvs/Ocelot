@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"./tracker"
+	"github.com/mgdavisxvs/Ocelot/tracker"
 )
 
 func main() {
@@ -58,9 +58,15 @@ func main() {
 	// Load initial data (in production, load from database)
 	loadSampleData(torrents, users, whitelist)
 
-	// Create worker
+	// Create worker with all dependencies
 	worker := &tracker.Worker{
-		// Note: These would be properly initialized in production
+		Config:    config,
+		DB:        db,
+		SiteComm:  siteComm,
+		Torrents:  torrents,
+		Users:     users,
+		Whitelist: whitelist,
+		Stats:     stats,
 	}
 
 	// Create server
@@ -94,9 +100,7 @@ func main() {
 func loadSampleData(torrents *tracker.TorrentList, users *tracker.UserList, whitelist *tracker.Whitelist) {
 	// Add sample user
 	user := tracker.NewUser(1, true, false)
-	users.mu.Lock()
-	users.users["0123456789abcdef0123456789abcdef"] = user
-	users.mu.Unlock()
+	users.Set("0123456789abcdef0123456789abcdef", user)
 
 	// Add sample torrent
 	torrent := tracker.NewTorrent(1)

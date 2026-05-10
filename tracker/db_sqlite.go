@@ -382,7 +382,7 @@ func (sm *SQLiteShardManager) getDBSize(path string) (int64, error) {
 // Write Operations (all go to current DB only)
 
 // RecordPeer records or updates a peer's statistics
-func (sm *SQLiteShardManager) RecordPeer(userID, torrentID uint32, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string) error {
+func (sm *SQLiteShardManager) RecordPeer(userID UserID, torrentID TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string) error {
 	sm.mu.RLock()
 	stmt := sm.stmtPeer
 	sm.mu.RUnlock()
@@ -392,7 +392,7 @@ func (sm *SQLiteShardManager) RecordPeer(userID, torrentID uint32, active int, u
 }
 
 // RecordPeerLight records a lightweight peer update (no full stats)
-func (sm *SQLiteShardManager) RecordPeerLight(userID, torrentID, announceTime, announces uint32, peerID string) error {
+func (sm *SQLiteShardManager) RecordPeerLight(userID UserID, torrentID TorrentID, announceTime, announces uint32, peerID string) error {
 	sm.mu.RLock()
 	db := sm.currentDB
 	sm.mu.RUnlock()
@@ -403,7 +403,7 @@ func (sm *SQLiteShardManager) RecordPeerLight(userID, torrentID, announceTime, a
 }
 
 // RecordUserStats updates a user's upload/download statistics
-func (sm *SQLiteShardManager) RecordUserStats(userID uint32, uploaded, downloaded int64) error {
+func (sm *SQLiteShardManager) RecordUserStats(userID UserID, uploaded, downloaded int64) error {
 	sm.mu.RLock()
 	stmt := sm.stmtUser
 	sm.mu.RUnlock()
@@ -413,7 +413,7 @@ func (sm *SQLiteShardManager) RecordUserStats(userID uint32, uploaded, downloade
 }
 
 // RecordTorrent updates a torrent's statistics
-func (sm *SQLiteShardManager) RecordTorrent(torrentID uint32, seeders, leechers uint32, snatched int, balance int64) error {
+func (sm *SQLiteShardManager) RecordTorrent(torrentID TorrentID, seeders, leechers uint32, snatched int, balance int64) error {
 	sm.mu.RLock()
 	stmt := sm.stmtTorrent
 	sm.mu.RUnlock()
@@ -423,7 +423,7 @@ func (sm *SQLiteShardManager) RecordTorrent(torrentID uint32, seeders, leechers 
 }
 
 // RecordSnatch records a torrent completion (snatch)
-func (sm *SQLiteShardManager) RecordSnatch(userID, torrentID uint32, snatchTime time.Time, ip string) error {
+func (sm *SQLiteShardManager) RecordSnatch(userID UserID, torrentID TorrentID, snatchTime time.Time, ip string) error {
 	sm.mu.RLock()
 	stmt := sm.stmtSnatch
 	sm.mu.RUnlock()
@@ -433,7 +433,7 @@ func (sm *SQLiteShardManager) RecordSnatch(userID, torrentID uint32, snatchTime 
 }
 
 // RecordToken records freeleech token usage
-func (sm *SQLiteShardManager) RecordToken(userID, torrentID uint32, downloaded int64) error {
+func (sm *SQLiteShardManager) RecordToken(userID UserID, torrentID TorrentID, downloaded int64) error {
 	sm.mu.RLock()
 	stmt := sm.stmtToken
 	sm.mu.RUnlock()

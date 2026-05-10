@@ -1,1 +1,14 @@
 *.tar.*
+
+# Go build artifacts
+ocelot-tracker
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# SQLite database files
+data/

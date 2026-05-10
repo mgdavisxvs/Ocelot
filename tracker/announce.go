@@ -1,12 +1,10 @@
 package tracker
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net"
 	"net/url"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -58,12 +56,12 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	}
 
 	// Check whitelist (if enabled)
-	if !w.whitelist.IsAllowed(req.PeerID) {
+	if !w.Whitelist.IsAllowed(req.PeerID) {
 		return nil, fmt.Errorf("your client is not on the whitelist")
 	}
 
 	// Get torrent (already validated by caller)
-	torrent, ok := w.torrents.Get(req.InfoHash)
+	torrent, ok := w.Torrents.Get(req.InfoHash)
 	if !ok {
 		return nil, fmt.Errorf("unregistered torrent")
 	}
@@ -100,13 +98,11 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 
 	// Find or insert peer in appropriate list
 	var peer *Peer
-	var peerList *PeerList
 
 	torrent.mu.Lock() // Lock torrent for peer list modifications
 
 	if req.Left > 0 {
 		// Peer is a leecher
-		peerList = torrent.Leechers
 		peer, inserted = w.findOrCreatePeer(torrent.Leechers, peerKey, user)
 		if inserted {
 			incLeechers = true
@@ -129,7 +125,6 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 				decSeeders = true
 			}
 		}
-		peerList = torrent.Seeders
 	} else {
 		// Peer is a seeder
 		peer, _ = torrent.Seeders.Get(peerKey)
@@ -147,7 +142,6 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 			}
 			incSeeders = true
 		}
-		peerList = torrent.Seeders
 	}
 
 	// Calculate upload/download speeds and deltas
@@ -219,14 +213,14 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 				// Check for user-specific token
 				if hasToken {
 					expireToken = true
-					w.db.RecordToken(user.ID, torrent.ID, downloadedChange)
+					w.DB.RecordToken(user.ID, torrent.ID, downloadedChange)
 					downloadedChange = 0
 				}
 			}
 
 			// Queue user stats update
 			if uploadedChange > 0 || downloadedChange > 0 {
-				w.db.RecordUserStats(user.ID, uploadedChange, downloadedChange)
+				w.DB.RecordUserStats(user.ID, uploadedChange, downloadedChange)
 			}
 		}
 	}
@@ -265,20 +259,20 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		if !user.ProtectIP.Load() {
 			ipStr = ip.String()
 		}
-		w.db.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
+		w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
 			upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
 			ipStr, string(req.PeerID), userAgent)
 	} else {
 		announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
-		w.db.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, string(req.PeerID))
+		w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, string(req.PeerID))
 	}
 
 	// Determine numwant (how many peers to return)
 	numwant := req.NumWant
 	if numwant <= 0 {
-		numwant = int32(w.config.NumWantLimit)
-	} else if numwant > int32(w.config.NumWantLimit) {
-		numwant = int32(w.config.NumWantLimit)
+		numwant = int32(w.Config.NumWantLimit)
+	} else if numwant > int32(w.Config.NumWantLimit) {
+		numwant = int32(w.Config.NumWantLimit)
 	}
 
 	// Handle stopped event
@@ -301,7 +295,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		if !user.ProtectIP.Load() {
 			ipStr = ip.String()
 		}
-		w.db.RecordSnatch(user.ID, torrent.ID, now, ipStr)
+		w.DB.RecordSnatch(user.ID, torrent.ID, now, ipStr)
 
 		// Move to seeders if not already inserted there
 		if !inserted {
@@ -318,7 +312,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 
 		// Expire freeleech token if applicable
 		if expireToken {
-			w.siteComm.ExpireToken(torrent.ID, user.ID)
+			w.SiteComm.ExpireToken(torrent.ID, user.ID)
 			torrent.mu.Lock()
 			delete(torrent.TokenedUsers, user.ID)
 			torrent.mu.Unlock()
@@ -332,22 +326,22 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	peers := w.selectPeers(torrent, peer, user.ID, numwant, req.Left > 0)
 
 	// Update global statistics (using atomics - no mutex needed!)
-	w.stats.SuccAnnouncements.Add(1)
+	w.Stats.SuccAnnouncements.Add(1)
 	if incLeechers {
 		user.Leeching.Add(1)
-		w.stats.Leechers.Add(1)
+		w.Stats.Leechers.Add(1)
 	}
 	if incSeeders {
 		user.Seeding.Add(1)
-		w.stats.Seeders.Add(1)
+		w.Stats.Seeders.Add(1)
 	}
 	if decLeechers {
 		user.Leeching.Add(^uint32(0)) // Atomic decrement
-		w.stats.Leechers.Add(^uint32(0))
+		w.Stats.Leechers.Add(^uint32(0))
 	}
 	if decSeeders {
 		user.Seeding.Add(^uint32(0))
-		w.stats.Seeders.Add(^uint32(0))
+		w.Stats.Seeders.Add(^uint32(0))
 	}
 
 	// Delete peer if stopped
@@ -365,12 +359,12 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	torrent.mu.Lock()
 	if updateTorrent || now.Sub(torrent.LastFlushed) > time.Hour {
 		torrent.LastFlushed = now
-		w.db.RecordTorrent(torrent.ID, uint32(torrent.Seeders.Size()),
+		w.DB.RecordTorrent(torrent.ID, uint32(torrent.Seeders.Size()),
 			uint32(torrent.Leechers.Size()), snatched, torrent.Balance)
 	}
 	seederCount := torrent.Seeders.Size()
 	leecherCount := torrent.Leechers.Size()
-	completed := torrent.Completed
+	_ = torrent.Completed // Captured for potential future use
 	torrent.mu.Unlock()
 
 	// Deny leeching if user doesn't have permission
@@ -380,8 +374,8 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 
 	// Build response (bencoded format will be handled by caller)
 	response := &AnnounceResponse{
-		Interval:    int32(w.config.AnnounceInterval + min(600, seederCount)),
-		MinInterval: int32(w.config.AnnounceInterval),
+		Interval:    int32(w.Config.AnnounceInterval + min(600, seederCount)),
+		MinInterval: int32(w.Config.AnnounceInterval),
 		Complete:    int32(seederCount),
 		Incomplete:  int32(leecherCount),
 		Peers:       peers,

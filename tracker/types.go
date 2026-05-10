@@ -207,6 +207,12 @@ func (ul *UserList) Get(passkey string) (*User, bool) {
 	return u, ok
 }
 
+func (ul *UserList) Set(passkey string, user *User) {
+	ul.mu.Lock()
+	defer ul.mu.Unlock()
+	ul.users[passkey] = user
+}
+
 // Stats tracks global tracker statistics
 type Stats struct {
 	OpenConnections   atomic.Uint32
