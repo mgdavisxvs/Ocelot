@@ -1,7 +1,10 @@
 *.tar.*
+*.tar.gz
+*.zip
 
 # Go build artifacts
 ocelot-tracker
+ocelot-tracker-*
 *.exe
 *.exe~
 *.dll
@@ -12,3 +15,7 @@ ocelot-tracker
 
 # SQLite database files
 data/
+
+# Platform-specific binaries directory
+binaries/*.exe
+binaries/ocelot-tracker-*
