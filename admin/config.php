@@ -2,7 +2,13 @@
 // Ocelot Tracker Admin - Configuration
 
 // Database Configuration
-define('DB_PATH', '../data/db'); // Path to SQLite shards
+// Use absolute path or __DIR__ relative path for reliability
+$dbPath = __DIR__ . '/../data/db';
+if (!is_dir($dbPath)) {
+    // Try creating the directory if it doesn't exist
+    @mkdir($dbPath, 0755, true);
+}
+define('DB_PATH', $dbPath);
 define('TRACKER_URL', 'http://localhost:34000'); // Tracker API endpoint
 define('SITE_PASSWORD', 'changeme'); // Must match tracker config
 

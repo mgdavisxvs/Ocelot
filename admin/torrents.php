@@ -174,7 +174,8 @@ include 'includes/header.php';
     <!-- Add Torrent Modal -->
     <div x-show="showAddModal" x-cloak
          class="fixed inset-0 bg-gray-900 bg-opacity-75 overflow-y-auto h-full w-full z-50"
-         @click.self="showAddModal = false">
+         @click.self="showAddModal = false"
+         x-data="torrentUploader()">
         <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-gray-800 border-gray-700">
             <div class="flex justify-between items-center mb-4">
                 <h3 class="text-lg font-medium text-white">Add New Torrent</h3>
@@ -183,26 +184,89 @@ include 'includes/header.php';
                 </button>
             </div>
 
+            <!-- Drag & Drop Zone -->
+            <div
+                @drop.prevent="handleDrop($event)"
+                @dragover.prevent="dragover = true"
+                @dragleave.prevent="dragover = false"
+                :class="dragover ? 'border-blue-500 bg-blue-900 bg-opacity-20' : 'border-gray-600'"
+                class="mb-4 border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors"
+                @click="$refs.fileInput.click()">
+
+                <input type="file"
+                       x-ref="fileInput"
+                       @change="handleFileSelect($event)"
+                       accept=".torrent"
+                       class="hidden">
+
+                <div x-show="!uploading && !torrentInfo">
+                    <i data-lucide="upload" class="w-12 h-12 mx-auto mb-2 text-gray-400"></i>
+                    <p class="text-sm text-gray-300">Drop .torrent file here</p>
+                    <p class="text-xs text-gray-500 mt-1">or click to browse</p>
+                </div>
+
+                <div x-show="uploading" class="text-blue-400">
+                    <svg class="animate-spin h-8 w-8 mx-auto mb-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <p class="text-sm">Parsing torrent...</p>
+                </div>
+
+                <div x-show="torrentInfo" class="text-left">
+                    <div class="flex items-start justify-between mb-2">
+                        <div class="flex-1">
+                            <p class="text-sm font-medium text-white truncate" x-text="torrentInfo?.name"></p>
+                            <p class="text-xs text-gray-400" x-text="torrentInfo?.size_formatted"></p>
+                        </div>
+                        <button @click.stop="clearTorrent()" class="text-gray-400 hover:text-white ml-2">
+                            <i data-lucide="x" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                    <div class="text-xs text-gray-500">
+                        <span x-text="torrentInfo?.files + ' file(s)'"></span> •
+                        <span x-text="torrentInfo?.pieces + ' pieces'"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Error Message -->
+            <div x-show="errorMsg" class="mb-4 p-3 bg-red-900 border border-red-700 rounded-md">
+                <p class="text-sm text-red-200" x-text="errorMsg"></p>
+            </div>
+
             <form method="POST" class="space-y-4">
                 <input type="hidden" name="action" value="add">
 
                 <div>
                     <label class="block text-sm font-medium text-gray-300 mb-1">Torrent ID</label>
-                    <input type="number" name="torrent_id" required
+                    <input type="number"
+                           name="torrent_id"
+                           x-model="torrentId"
+                           required
                            class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
                 </div>
 
                 <div>
                     <label class="block text-sm font-medium text-gray-300 mb-1">Info Hash</label>
-                    <input type="text" name="info_hash" required
+                    <input type="text"
+                           name="info_hash"
+                           x-model="infoHash"
+                           required
+                           :readonly="torrentInfo !== null"
                            placeholder="20 or 40 character hash"
-                           class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <p class="text-xs text-gray-400 mt-1">Hex-encoded SHA-1 hash</p>
+                           class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                           :class="torrentInfo ? 'bg-gray-900' : 'bg-gray-700'">
+                    <p class="text-xs text-gray-400 mt-1">
+                        <span x-show="!torrentInfo">Hex-encoded SHA-1 hash or upload .torrent file</span>
+                        <span x-show="torrentInfo" class="text-green-400">✓ Auto-filled from .torrent file</span>
+                    </p>
                 </div>
 
                 <div class="flex gap-2 pt-4">
                     <button type="submit"
-                            class="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+                            :disabled="!infoHash"
+                            class="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
                         Add Torrent
                     </button>
                     <button type="button" @click="showAddModal = false"
@@ -213,6 +277,79 @@ include 'includes/header.php';
             </form>
         </div>
     </div>
+
+<script>
+function torrentUploader() {
+    return {
+        dragover: false,
+        uploading: false,
+        torrentInfo: null,
+        errorMsg: null,
+        torrentId: '',
+        infoHash: '',
+
+        handleDrop(e) {
+            this.dragover = false;
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                this.uploadTorrent(files[0]);
+            }
+        },
+
+        handleFileSelect(e) {
+            const files = e.target.files;
+            if (files.length > 0) {
+                this.uploadTorrent(files[0]);
+            }
+        },
+
+        async uploadTorrent(file) {
+            if (!file.name.endsWith('.torrent')) {
+                this.errorMsg = 'Please upload a .torrent file';
+                return;
+            }
+
+            this.uploading = true;
+            this.errorMsg = null;
+
+            const formData = new FormData();
+            formData.append('torrent', file);
+
+            try {
+                const response = await fetch('api/parse-torrent.php', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (!response.ok || data.error) {
+                    throw new Error(data.error || 'Failed to parse torrent');
+                }
+
+                this.torrentInfo = data;
+                this.infoHash = data.info_hash;
+
+                // Reinitialize Lucide icons for the new content
+                setTimeout(() => lucide.createIcons(), 100);
+
+            } catch (error) {
+                this.errorMsg = error.message;
+                console.error('Upload error:', error);
+            } finally {
+                this.uploading = false;
+            }
+        },
+
+        clearTorrent() {
+            this.torrentInfo = null;
+            this.infoHash = '';
+            this.errorMsg = null;
+            this.$refs.fileInput.value = '';
+        }
+    };
+}
+</script>
 </div>
 
 <?php include 'includes/footer.php'; ?>
