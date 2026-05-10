@@ -42,8 +42,15 @@ func main() {
 		StartTime: time.Now(),
 	}
 
-	// Create mock database (replace with real MySQL implementation)
-	db := &MockDatabase{}
+	// Create SQLite database with 84GB sharding
+	dbDir := "./data/db"
+	db, err := tracker.NewSQLiteShardManager(dbDir)
+	if err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	defer db.Close()
+
+	log.Printf("SQLite database initialized in %s", dbDir)
 
 	// Create mock site communication (replace with real Gazelle integration)
 	siteComm := &MockSiteComm{}
@@ -124,32 +131,7 @@ func printStats(stats *tracker.Stats) {
 	}
 }
 
-// MockDatabase implements a simple in-memory database for testing
-type MockDatabase struct{}
-
-func (db *MockDatabase) RecordPeer(userID tracker.UserID, torrentID tracker.TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string) {
-	// In production: Queue for batch insert to MySQL
-}
-
-func (db *MockDatabase) RecordPeerLight(userID tracker.UserID, torrentID tracker.TorrentID, announceTime, announces uint32, peerID string) {
-	// In production: Queue for batch insert to MySQL
-}
-
-func (db *MockDatabase) RecordUserStats(userID tracker.UserID, uploaded, downloaded int64) {
-	// In production: Queue for batch update to MySQL
-}
-
-func (db *MockDatabase) RecordTorrent(torrentID tracker.TorrentID, seeders, leechers uint32, snatched int, balance int64) {
-	// In production: Queue for batch update to MySQL
-}
-
-func (db *MockDatabase) RecordSnatch(userID tracker.UserID, torrentID tracker.TorrentID, time time.Time, ip string) {
-	// In production: Queue for batch insert to MySQL
-}
-
-func (db *MockDatabase) RecordToken(userID tracker.UserID, torrentID tracker.TorrentID, downloaded int64) {
-	// In production: Queue for batch update to MySQL
-}
+// Note: MockDatabase removed - now using real SQLite implementation
 
 // MockSiteComm implements a simple mock for site communication
 type MockSiteComm struct{}
