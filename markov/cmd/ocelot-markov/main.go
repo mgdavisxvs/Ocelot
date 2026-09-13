@@ -1,0 +1,94 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/mgdavisxvs/ocelot/markov/internal/api"
+	"github.com/mgdavisxvs/ocelot/markov/internal/config"
+	"github.com/mgdavisxvs/ocelot/markov/internal/db"
+	"github.com/mgdavisxvs/ocelot/markov/internal/engine"
+)
+
+func main() {
+	cfgPath := flag.String("config", "ocelot-markov.conf", "path to JSON config file")
+	logLevel := flag.String("log-level", "info", "log level: debug|info|warn|error")
+	flag.Parse()
+
+	setupLogger(*logLevel)
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		slog.Error("load config", "path", *cfgPath, "err", err)
+		os.Exit(1)
+	}
+	slog.Info("config loaded",
+		"poll_interval_sec", cfg.PollIntervalSec,
+		"persist_interval_sec", cfg.PersistIntervalSec,
+		"listen_addr", cfg.ListenAddr)
+
+	database, err := db.Open(cfg)
+	if err != nil {
+		slog.Error("open database", "err", err)
+		os.Exit(1)
+	}
+	defer database.Close()
+
+	eng, err := engine.New(cfg, database)
+	if err != nil {
+		slog.Error("init engine", "err", err)
+		os.Exit(1)
+	}
+
+	apiServer := api.New(cfg.ListenAddr, eng)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Engine loop in background.
+	go eng.Run(ctx)
+
+	// API server in background.
+	apiErrCh := make(chan error, 1)
+	go func() {
+		apiErrCh <- apiServer.ListenAndServe()
+	}()
+
+	// Block on OS signal or API error.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+
+	select {
+	case sig := <-sigCh:
+		slog.Info("signal received, shutting down", "signal", sig)
+	case err := <-apiErrCh:
+		slog.Error("api server terminated", "err", err)
+	}
+
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+	if err := apiServer.Shutdown(shutdownCtx); err != nil {
+		slog.Error("api shutdown", "err", err)
+	}
+}
+
+func setupLogger(level string) {
+	var l slog.Level
+	switch level {
+	case "debug":
+		l = slog.LevelDebug
+	case "warn":
+		l = slog.LevelWarn
+	case "error":
+		l = slog.LevelError
+	default:
+		l = slog.LevelInfo
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: l})))
+}

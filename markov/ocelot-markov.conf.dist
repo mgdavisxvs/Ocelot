@@ -1,0 +1,29 @@
+{
+  "_comment": "ocelot-markov configuration — copy to ocelot-markov.conf and fill in credentials",
+
+  "db_host": "127.0.0.1",
+  "db_port": 3306,
+  "db_name": "gazelle",
+  "db_user": "",
+  "db_pass": "",
+
+  "decay_factor": 0.995,
+  "decay_every_n_polls": 60,
+
+  "poll_interval_sec": 60,
+  "persist_interval_sec": 300,
+  "path_history_len": 10,
+
+  "announce_interval_sec": 1800,
+  "peers_timeout_sec": 7200,
+
+  "forecast_steps_24h": 1440,
+  "forecast_steps_72h": 4320,
+
+  "fraud_threshold_sigma": 3.0,
+  "fraud_path_min_len": 4,
+
+  "freeleech_top_n": 20,
+
+  "listen_addr": ":9090"
+}
