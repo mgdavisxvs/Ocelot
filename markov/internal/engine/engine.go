@@ -328,6 +328,19 @@ func (e *Engine) persist(ctx context.Context) {
 		slog.Error("beta persist", "err", err)
 	}
 
+	// Seeder recruitment: generate precision assignments for at-risk torrents,
+	// then mark any now-seeding assigned users as fulfilled.
+	if err := e.buildSeederAssignments(ctx, predictions, now); err != nil {
+		slog.Error("buildSeederAssignments", "err", err)
+	}
+	if err := e.checkAssignmentFulfillment(ctx, now); err != nil {
+		slog.Error("checkAssignmentFulfillment", "err", err)
+	}
+	// Expire fulfilled/old assignment rows (keep 2× TTL window for audit reads).
+	if err := e.db.ExpireSeederAssignments(ctx, now-int64(e.cfg.SeederAssignmentTTLSec)*2); err != nil {
+		slog.Error("ExpireSeederAssignments", "err", err)
+	}
+
 	// FR-008: expire dead peer state rows older than 7 days
 	if err := e.db.ExpireDeadPeerStates(ctx, now-7*86400); err != nil {
 		slog.Error("ExpireDeadPeerStates", "err", err)

@@ -231,6 +231,18 @@ func (ue *UserEngine) snapshotStates(nowUnix int64) []db.UserStateRecord {
 	return out
 }
 
+// userStates returns a snapshot copy of uid → ratio state for all tracked users.
+// Used by buildSeederAssignments for eligibility scoring without holding the lock.
+func (ue *UserEngine) userStates() map[int64]int {
+	ue.mu.RLock()
+	defer ue.mu.RUnlock()
+	out := make(map[int64]int, len(ue.lastState))
+	for uid, s := range ue.lastState {
+		out[uid] = s
+	}
+	return out
+}
+
 // userCount returns the number of tracked users.
 func (ue *UserEngine) userCount() int {
 	ue.mu.RLock()

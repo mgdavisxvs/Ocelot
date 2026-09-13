@@ -160,8 +160,10 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		s.handleUserAnomaly(w, uid)
 	case "cheat":
 		s.handleUserCheat(w, uid)
+	case "recommendations":
+		s.handleUserRecommendations(w, r, uid)
 	default:
-		http.Error(w, "use /user/{id}/anomaly or /user/{id}/cheat", http.StatusBadRequest)
+		http.Error(w, "use /user/{id}/anomaly, /user/{id}/cheat, or /user/{id}/recommendations", http.StatusBadRequest)
 	}
 }
 
@@ -203,6 +205,33 @@ func (s *Server) handleUserCheat(w http.ResponseWriter, uid int64) {
 		"obs_count":        obsCount,
 		"flagged":          cheatConf > 0.6,
 		"advisory_only":    true, // model never directly bans; operator policy governs sanctions
+	})
+}
+
+// GET /user/{id}/recommendations — active seeder recruitment assignments for a user.
+// Returns the user's personal seeding queue ordered by urgency. Advisory only:
+// the model never enforces seeding; tracker policy governs any incentive layer.
+func (s *Server) handleUserRecommendations(w http.ResponseWriter, r *http.Request, uid int64) {
+	recs, err := s.eng.SeederRecommendationsForUser(r.Context(), uid)
+	if err != nil {
+		slog.Error("SeederRecommendationsForUser", "uid", uid, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	rows := make([]map[string]any, len(recs))
+	for i, a := range recs {
+		rows[i] = map[string]any{
+			"torrent_id":    a.TorrentID,
+			"urgency_score": a.UrgencyScore,
+			"assigned_at":   a.AssignedAt,
+			"expires_at":    a.ExpiresAt,
+		}
+	}
+	jsonOK(w, map[string]any{
+		"uid":             uid,
+		"recommendations": rows,
+		"count":           len(rows),
+		"advisory_only":   true,
 	})
 }
 

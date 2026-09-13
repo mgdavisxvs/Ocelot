@@ -85,6 +85,29 @@ func (b *BetaEngine) UserGlobalReliability(uid int64) (globalP float64, obsCount
 	return sumAlpha / sumTotal, obsCount
 }
 
+// AllUserGlobalReliability computes E[p] for every user in one O(|beta|) pass.
+// Used by buildSeederAssignments to avoid per-user scans of the full Beta map.
+func (b *BetaEngine) AllUserGlobalReliability() map[int64]float64 {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	sumAlpha := make(map[int64]float64, len(b.alpha)/4)
+	sumTotal := make(map[int64]float64, len(b.alpha)/4)
+	for k, a := range b.alpha {
+		bv := b.betaVal[k]
+		sumAlpha[k.UID] += a
+		sumTotal[k.UID] += a + bv
+	}
+	out := make(map[int64]float64, len(sumTotal))
+	for uid, total := range sumTotal {
+		if total == 0 {
+			out[uid] = 0.5
+		} else {
+			out[uid] = sumAlpha[uid] / total
+		}
+	}
+	return out
+}
+
 // PeerQuality returns (α, β, obsCount, ok) for a specific (uid, torrentID) pair.
 func (b *BetaEngine) PeerQuality(uid, torrentID int64) (alpha, betaV float64, obsCount int, ok bool) {
 	b.mu.RLock()

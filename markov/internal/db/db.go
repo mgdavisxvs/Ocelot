@@ -162,6 +162,21 @@ func (d *DB) createSchema() error {
 			created_at     INTEGER NOT NULL,
 			evaluated_at   INTEGER NOT NULL DEFAULT 0
 		)`,
+
+		// Seeder recruitment: precision freeleech targeting
+		`CREATE TABLE IF NOT EXISTS markov_seeder_assignments (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id       INTEGER NOT NULL,
+			torrent_id    INTEGER NOT NULL,
+			urgency_score REAL    NOT NULL,
+			assigned_at   INTEGER NOT NULL,
+			fulfilled_at  INTEGER NOT NULL DEFAULT 0,
+			expires_at    INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_seeder_asgn_user
+			ON markov_seeder_assignments(user_id, fulfilled_at, expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_seeder_asgn_torrent
+			ON markov_seeder_assignments(torrent_id, fulfilled_at)`,
 	}
 	for _, s := range stmts {
 		if _, err := d.pool.Exec(s); err != nil {

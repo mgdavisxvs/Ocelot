@@ -72,6 +72,15 @@ type Config struct {
 	// Higher values reduce table growth; 0 disables snapshot storage entirely.
 	ForecastSampleEveryN int `json:"forecast_sample_every_n"`
 
+	// Seeder recruitment — precision freeleech targeting (see engine/assignments.go).
+	// For each at-risk torrent (bounded to FreeleechTopN by urgency), eligible users
+	// are scored on ratio capacity and Beta upload propensity, then assigned up to
+	// MaxSeedersPerAssignment seeding recommendations per torrent.
+	MaxSeedersPerAssignment int     `json:"max_seeders_per_assignment"` // users assigned per at-risk torrent (default 5)
+	MaxAssignmentsPerUser   int     `json:"max_assignments_per_user"`   // simultaneous assignments per user (default 3)
+	SeederAssignmentTTLSec  int     `json:"seeder_assignment_ttl_sec"`  // assignment lifetime before expiry (default 86400)
+	SeederMinUrgencyScore   float64 `json:"seeder_min_urgency_score"`   // minimum UnavailableProb72h×(1+H) to trigger (default 0.05)
+
 	// Shadow mode (Req 8) — when true, forecasts and recommendations are
 	// recorded in the audit log but do NOT affect tracker behavior.
 	ShadowMode bool `json:"shadow_mode"`
@@ -176,6 +185,18 @@ func (c *Config) applyDefaults() {
 	}
 	if c.FreeleechTopN == 0 {
 		c.FreeleechTopN = 20
+	}
+	if c.MaxSeedersPerAssignment == 0 {
+		c.MaxSeedersPerAssignment = 5
+	}
+	if c.MaxAssignmentsPerUser == 0 {
+		c.MaxAssignmentsPerUser = 3
+	}
+	if c.SeederAssignmentTTLSec == 0 {
+		c.SeederAssignmentTTLSec = 86400
+	}
+	if c.SeederMinUrgencyScore == 0 {
+		c.SeederMinUrgencyScore = 0.05
 	}
 	if c.ForecastSampleEveryN == 0 {
 		c.ForecastSampleEveryN = 12 // ~hourly at 5-min persist interval
