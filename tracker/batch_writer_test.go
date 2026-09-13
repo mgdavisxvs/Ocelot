@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 
@@ -350,9 +351,84 @@ func TestBatchWriterStop(t *testing.T) {
 	}
 }
 
-// Temporarily skipped due to Stop() channel close panic
-func TestBatchWriterBufferFull(t *testing.T) {
-	t.Skip("Skip due to BatchWriter Stop() channel panic - needs investigation")
+func TestBatchWriterStopIsIdempotent(t *testing.T) {
+	db := createTestDB(t)
+	defer db.Close()
+
+	createBatchWriterTables(t, db)
+
+	bw := NewBatchWriter(db, 100, 10*time.Second)
+
+	// A second Stop must not panic on an already-closed channel, which is
+	// what happens when a deferred Stop follows an explicit one.
+	bw.Stop()
+	bw.Stop()
+	bw.Stop()
+}
+
+func TestBatchWriterStopFlushesPendingWrites(t *testing.T) {
+	db := createTestDB(t)
+	defer db.Close()
+
+	createBatchWriterTables(t, db)
+
+	// A batch size far above the queued count and a long interval mean the
+	// only thing that can flush these writes is Stop itself.
+	bw := NewBatchWriter(db, 1000, 10*time.Second)
+
+	const queued = 25
+	for i := 0; i < queued; i++ {
+		bw.QueuePeerAnnounce(&PeerAnnounceData{
+			InfoHash:  "pending_flush",
+			PeerID:    string(rune('a' + i)),
+			IP:        "127.0.0.1",
+			Port:      uint16(6881 + i),
+			Timestamp: time.Now().Unix(),
+		})
+	}
+
+	bw.Stop()
+
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM peers WHERE info_hash = ?", "pending_flush").Scan(&count); err != nil {
+		t.Fatalf("failed to count peers: %v", err)
+	}
+
+	if count != queued {
+		t.Errorf("got %d persisted peers, want %d — Stop dropped queued writes", count, queued)
+	}
+}
+
+func TestBatchWriterDropsWritesWhenBufferFull(t *testing.T) {
+	db := createTestDB(t)
+	defer db.Close()
+
+	createBatchWriterTables(t, db)
+
+	// The buffer holds batchSize*10 operations; overflowing it must drop the
+	// excess rather than block the caller.
+	bw := NewBatchWriter(db, 1, 10*time.Second)
+	defer bw.Stop()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 500; i++ {
+			bw.QueuePeerAnnounce(&PeerAnnounceData{
+				InfoHash:  "overflow",
+				PeerID:    string(rune('a' + i%26)),
+				IP:        "127.0.0.1",
+				Port:      6881,
+				Timestamp: time.Now().Unix(),
+			})
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("QueuePeerAnnounce blocked when the buffer was full")
+	}
 }
 
 func TestBatchWriterSize(t *testing.T) {
@@ -488,6 +564,37 @@ func TestBatchWriterConcurrentWrites(t *testing.T) {
 
 	if count != 20 {
 		t.Errorf("Expected 20 peers from concurrent writes, got %d", count)
+	}
+}
+
+// createBatchWriterTables creates both tables the batch writer prepares
+// statements against. It prepares them unconditionally, so a missing table
+// fails the whole flush regardless of which operations are queued.
+func createBatchWriterTables(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS peers (
+		info_hash TEXT,
+		peer_id TEXT,
+		ip TEXT,
+		port INTEGER,
+		uploaded INTEGER,
+		downloaded INTEGER,
+		remaining INTEGER,
+		last_announce INTEGER,
+		active BOOLEAN,
+		PRIMARY KEY (info_hash, peer_id)
+	)`); err != nil {
+		t.Fatalf("Failed to create peers table: %v", err)
+	}
+
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS torrents (
+		info_hash TEXT PRIMARY KEY,
+		seeders INTEGER DEFAULT 0,
+		leechers INTEGER DEFAULT 0,
+		last_action INTEGER
+	)`); err != nil {
+		t.Fatalf("Failed to create torrents table: %v", err)
 	}
 }
 

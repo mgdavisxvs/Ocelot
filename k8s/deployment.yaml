@@ -76,10 +76,19 @@ spec:
             limits:
               memory: "2Gi"
               cpu: "2000m"
+          # Probes are served by the admin listener, not the tracker port,
+          # which only routes /{passkey}/{action} requests.
+          startupProbe:
+            httpGet:
+              path: /startup
+              port: 9090
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /health
-              port: 34000
+              port: 9090
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 3
@@ -87,7 +96,7 @@ spec:
           readinessProbe:
             httpGet:
               path: /ready
-              port: 34000
+              port: 9090
             initialDelaySeconds: 5
             periodSeconds: 5
             timeoutSeconds: 3

@@ -184,13 +184,19 @@ func (m *MetricsRecorder) UpdateWorkerPool(active, capacity int) {
 	workerPoolCapacity.Set(float64(capacity))
 }
 
-// StartMetricsServer starts the Prometheus metrics HTTP server
-func StartMetricsServer(addr string) error {
+// StartMetricsServer starts the admin HTTP server exposing Prometheus metrics
+// and, when health is non-nil, the liveness/readiness/startup probes.
+func StartMetricsServer(addr string, health *HealthChecker) error {
 	logger := GetDefaultLogger()
 	logger.Info("starting metrics server", "addr", addr)
 
-	http.Handle("/metrics", promhttp.Handler())
-	return http.ListenAndServe(addr, nil)
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	if health != nil {
+		health.RegisterHandlers(mux)
+	}
+
+	return http.ListenAndServe(addr, mux)
 }
 
 // Global metrics recorder

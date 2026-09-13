@@ -15,6 +15,7 @@ type BatchWriter struct {
 	flushInterval time.Duration
 	wg            sync.WaitGroup
 	stopChan      chan struct{}
+	stopOnce      sync.Once
 	logger        *Logger
 	metrics       *MetricsRecorder
 }
@@ -116,7 +117,19 @@ func (bw *BatchWriter) processLoop() {
 			}
 
 		case <-bw.stopChan:
-			// Flush remaining and exit
+			// Drain whatever is still queued before exiting. Without this,
+			// select picks randomly between a ready buffer and a closed
+			// stopChan, silently dropping pending writes on shutdown.
+		drain:
+			for {
+				select {
+				case op := <-bw.buffer:
+					batch = append(batch, op)
+				default:
+					break drain
+				}
+			}
+
 			if len(batch) > 0 {
 				bw.flush(batch)
 			}
@@ -205,12 +218,15 @@ func (bw *BatchWriter) flush(batch []DBOperation) {
 	bw.metrics.RecordDBQuery("batch_flush", duration, nil)
 }
 
-// Stop gracefully stops the batch writer
+// Stop gracefully stops the batch writer, flushing anything still queued.
+// It is safe to call more than once.
 func (bw *BatchWriter) Stop() {
-	close(bw.stopChan)
-	bw.ticker.Stop()
-	bw.wg.Wait()
-	bw.logger.Info("batch writer stopped")
+	bw.stopOnce.Do(func() {
+		close(bw.stopChan)
+		bw.ticker.Stop()
+		bw.wg.Wait()
+		bw.logger.Info("batch writer stopped")
+	})
 }
 
 // Size returns the current buffer size
