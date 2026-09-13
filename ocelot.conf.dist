@@ -30,6 +30,13 @@ site_password       = 00000000000000000000000000000000
 peers_timeout       = 7200
 reap_peers_interval = 1800
 
+# TLS. Passkeys travel in the request path, so without TLS every announce
+# sends a credential in cleartext. Set both files to enable the TLS listener,
+# or terminate TLS at a reverse proxy in front of the tracker.
+tls_cert_file       =
+tls_key_file        =
+tls_addr            = :34443
+
 # Admin listener serving /metrics, /health, /ready and /startup. This must not
 # be the tracker port, which only routes /{passkey}/{action}.
 # Leave empty to disable.

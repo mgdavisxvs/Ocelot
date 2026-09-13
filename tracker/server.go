@@ -3,6 +3,8 @@ package tracker
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -27,9 +29,10 @@ import (
 // The key difference: Go abstracts this into goroutines, making code simpler
 // while maintaining (or exceeding) C++ performance.
 type Server struct {
-	listener net.Listener
-	worker   *Worker
-	config   *Config
+	// One entry per accept loop: plaintext, and TLS when configured.
+	listeners []net.Listener
+	worker    *Worker
+	config    *Config
 
 	// Connection management
 	mu             sync.Mutex
@@ -37,6 +40,10 @@ type Server struct {
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
 	wg             sync.WaitGroup
+
+	// shuttingDown is set under mu once Shutdown begins, so the accept loops
+	// stop registering work before wg.Wait starts.
+	shuttingDown bool
 
 	// Per-IP admission control. Nil when rate limiting is disabled.
 	limiter *RateLimiter
@@ -76,6 +83,18 @@ type Config struct {
 	// AuditRetentionDays bounds how long audit rows are kept. Zero keeps
 	// them forever, which will eventually make it the largest table.
 	AuditRetentionDays int
+
+	// TLS. Passkeys travel in the request path, so without TLS every announce
+	// hands a credential to anyone on the wire. Both files must be set to
+	// enable the TLS listener; TLSAddr defaults to :34443.
+	TLSCertFile string
+	TLSKeyFile  string
+	TLSAddr     string
+}
+
+// TLSEnabled reports whether a TLS listener should be started.
+func (c *Config) TLSEnabled() bool {
+	return c.TLSCertFile != "" && c.TLSKeyFile != ""
 }
 
 // Sentinel reasons recorded in the audit trail.
@@ -104,6 +123,29 @@ func NewServer(config *Config, worker *Worker) *Server {
 	}
 
 	return s
+}
+
+// sitePasswordMatches compares in constant time so response latency does not
+// leak how much of the admin password an attacker has guessed.
+func (s *Server) sitePasswordMatches(candidate string) bool {
+	expected := s.config.SitePassword
+	if expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(candidate), []byte(expected)) == 1
+}
+
+// Addrs returns the addresses currently being served, which is how a caller
+// learns the real port when the configured address uses port 0.
+func (s *Server) Addrs() []net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	addrs := make([]net.Addr, 0, len(s.listeners))
+	for _, listener := range s.listeners {
+		addrs = append(addrs, listener.Addr())
+	}
+	return addrs
 }
 
 // SetAuditLogger attaches an audit trail for security-relevant events.
@@ -139,27 +181,77 @@ func (s *Server) auditFailure(clientIP net.IP, action, resourceType, resourceID 
 //
 // This matches C++ libev's behavior but with zero manual setup!
 func (s *Server) ListenAndServe() error {
-	// Create listener - this sets up the epoll/kqueue fd
-	// Listen on [::] for dual-stack IPv4/IPv6 support
-	listenAddr := s.config.ListenAddr
-	if !strings.Contains(listenAddr, ":") || listenAddr[0] != '[' {
-		// Default to dual-stack if not explicitly IPv6
-		if strings.HasPrefix(listenAddr, ":") {
-			listenAddr = "[::]" + listenAddr
-		}
-	}
-
-	listener, err := net.Listen("tcp", listenAddr)
+	listener, err := s.listen(s.config.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("failed to listen: %w", err)
+		return err
 	}
-	s.listener = listener
 
 	fmt.Printf("Ocelot tracker listening on %s (dual-stack IPv4/IPv6, using %s netpoller)\n",
-		listenAddr, s.getNetpollerType())
+		listener.Addr(), s.getNetpollerType())
 	fmt.Printf("Worker goroutines: %d (GOMAXPROCS=%d)\n",
 		runtime.NumGoroutine(), runtime.GOMAXPROCS(0))
 
+	return s.serve(listener)
+}
+
+// ListenAndServeTLS serves the tracker over TLS on the configured address.
+//
+// TLS terminates at the listener, so every connection continues through the
+// same pipeline as plaintext: routing, rate limiting, and audit logging all
+// apply unchanged. Run it alongside ListenAndServe to offer both.
+func (s *Server) ListenAndServeTLS() error {
+	if s.config.TLSCertFile == "" || s.config.TLSKeyFile == "" {
+		return fmt.Errorf("TLS requires both tls_cert_file and tls_key_file")
+	}
+
+	cert, err := tls.LoadX509KeyPair(s.config.TLSCertFile, s.config.TLSKeyFile)
+	if err != nil {
+		return fmt.Errorf("failed to load TLS keypair: %w", err)
+	}
+
+	listener, err := s.listen(s.config.TLSAddr)
+	if err != nil {
+		return err
+	}
+
+	// TLS 1.2 is the floor: 1.3-only would lock out older BitTorrent clients.
+	tlsListener := tls.NewListener(listener, &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	})
+
+	s.mu.Lock()
+	s.listeners = append(s.listeners, tlsListener)
+	s.mu.Unlock()
+
+	fmt.Printf("Ocelot tracker listening for TLS on %s\n", listener.Addr())
+
+	return s.serve(tlsListener)
+}
+
+// listen opens a dual-stack TCP listener and registers it for shutdown.
+func (s *Server) listen(addr string) (net.Listener, error) {
+	// Listen on [::] for dual-stack IPv4/IPv6 support
+	if !strings.Contains(addr, ":") || addr[0] != '[' {
+		if strings.HasPrefix(addr, ":") {
+			addr = "[::]" + addr
+		}
+	}
+
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
+	}
+
+	s.mu.Lock()
+	s.listeners = append(s.listeners, listener)
+	s.mu.Unlock()
+
+	return listener, nil
+}
+
+// serve runs the accept loop for a listener.
+func (s *Server) serve(listener net.Listener) error {
 	// Accept loop (replaces C++ connection_mother::handle_connect)
 	for {
 		conn, err := listener.Accept()
@@ -173,14 +265,21 @@ func (s *Server) ListenAndServe() error {
 			}
 		}
 
-		// Track connection
+		// Track connection. wg.Add happens under the same lock that Shutdown
+		// uses to set shuttingDown, so no Add can race an in-flight Wait.
 		s.mu.Lock()
+		if s.shuttingDown {
+			s.mu.Unlock()
+			conn.Close()
+			return nil
+		}
 		if len(s.activeConns) >= s.config.MaxMiddlemen {
 			s.mu.Unlock()
 			conn.Close()
 			continue
 		}
 		s.activeConns[conn] = struct{}{}
+		s.wg.Add(1)
 		s.mu.Unlock()
 
 		s.stats.OpenConnections.Add(1)
@@ -199,7 +298,6 @@ func (s *Server) ListenAndServe() error {
 		// 4. When epoll signals readable, resumes the goroutine
 		//
 		// Result: Thousands of concurrent connections with minimal OS threads!
-		s.wg.Add(1)
 		go s.handleConnection(conn)
 	}
 }
@@ -220,8 +318,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 		s.stats.OpenConnections.Add(^uint32(0)) // Atomic decrement
 	}()
 
-	// Set TCP options (matches C++ events.cpp:200-208)
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
+	// Set TCP options (matches C++ events.cpp:200-208). Unwrap first: a TLS
+	// connection is not a *net.TCPConn, so tuning would silently be skipped.
+	tuneTarget := conn
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		tuneTarget = tlsConn.NetConn()
+	}
+	if tcpConn, ok := tuneTarget.(*net.TCPConn); ok {
 		tcpConn.SetNoDelay(true)   // Disable Nagle's algorithm
 		tcpConn.SetKeepAlive(true) // Enable TCP keepalive
 		tcpConn.SetKeepAlivePeriod(2 * time.Minute)
@@ -335,35 +438,35 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 		return s.handleScrape(req, passkey, clientIP, httpClose), httpClose
 
 	case "update":
-		if passkey == s.config.SitePassword {
+		if s.sitePasswordMatches(passkey) {
 			return s.handleUpdate(req, httpClose), httpClose
 		}
 		s.auditFailure(clientIP, "admin_auth_failure", "endpoint", action, errAdminAuthFailure)
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
 	case "stats":
-		if passkey == s.config.SitePassword {
+		if s.sitePasswordMatches(passkey) {
 			return s.handleStatsAPI(httpClose), httpClose
 		}
 		s.auditFailure(clientIP, "admin_auth_failure", "endpoint", action, errAdminAuthFailure)
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
 	case "torrents":
-		if passkey == s.config.SitePassword {
+		if s.sitePasswordMatches(passkey) {
 			return s.handleTorrentsAPI(req, httpClose), httpClose
 		}
 		s.auditFailure(clientIP, "admin_auth_failure", "endpoint", action, errAdminAuthFailure)
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
 	case "peers":
-		if passkey == s.config.SitePassword {
+		if s.sitePasswordMatches(passkey) {
 			return s.handlePeersAPI(req, httpClose), httpClose
 		}
 		s.auditFailure(clientIP, "admin_auth_failure", "endpoint", action, errAdminAuthFailure)
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
 	case "whitelist":
-		if passkey == s.config.SitePassword {
+		if s.sitePasswordMatches(passkey) {
 			return s.handleWhitelistAPI(httpClose), httpClose
 		}
 		s.auditFailure(clientIP, "admin_auth_failure", "endpoint", action, errAdminAuthFailure)
@@ -644,10 +747,21 @@ func (s *Server) getNetpollerType() string {
 func (s *Server) Shutdown() error {
 	s.shutdownCancel()
 
-	if s.listener != nil {
-		s.listener.Close()
+	s.mu.Lock()
+	s.shuttingDown = true
+	for _, listener := range s.listeners {
+		listener.Close()
 	}
+	// Close connections too. Closing only the listeners leaves keep-alive
+	// handlers parked in ReadRequest, so every shutdown would burn the full
+	// timeout below before exiting.
+	for conn := range s.activeConns {
+		conn.Close()
+	}
+	s.mu.Unlock()
 
+	// Safe to wait now: every wg.Add happens under mu, and no further Add can
+	// occur because the accept loops see shuttingDown.
 	// Wait for all connections to finish (with timeout)
 	done := make(chan struct{})
 	go func() {

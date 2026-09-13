@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -284,24 +285,88 @@ func TestValidateAPIKeyExpired(t *testing.T) {
 	}
 }
 
-func TestGenerateRandomKey(t *testing.T) {
-	key1 := generateRandomKey(32)
-	key2 := generateRandomKey(32)
+const keyCharset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
-	// Keys should have the requested length
-	if len(key1) != 32 {
-		t.Errorf("Expected key length 32, got %d", len(key1))
+func TestGenerateRandomKeyLength(t *testing.T) {
+	for _, length := range []int{1, 16, 32, 64, 128} {
+		key, err := generateRandomKey(length)
+		if err != nil {
+			t.Fatalf("generateRandomKey(%d) failed: %v", length, err)
+		}
+		if len(key) != length {
+			t.Errorf("generateRandomKey(%d) returned %d characters", length, len(key))
+		}
+	}
+}
+
+func TestGenerateRandomKeyUsesOnlyCharset(t *testing.T) {
+	key, err := generateRandomKey(512)
+	if err != nil {
+		t.Fatalf("generateRandomKey failed: %v", err)
 	}
 
-	// Keys should be different (very high probability)
-	if key1 == key2 {
-		t.Error("Generated keys are identical (should be random)")
+	for i, c := range key {
+		if !strings.ContainsRune(keyCharset, c) {
+			t.Fatalf("character %q at index %d is outside the charset", c, i)
+		}
+	}
+}
+
+func TestGenerateRandomKeysAreDistinct(t *testing.T) {
+	const iterations = 2000
+
+	seen := make(map[string]struct{}, iterations)
+	for i := 0; i < iterations; i++ {
+		key, err := generateRandomKey(32)
+		if err != nil {
+			t.Fatalf("generateRandomKey failed: %v", err)
+		}
+		if _, duplicate := seen[key]; duplicate {
+			t.Fatalf("generated a duplicate key after %d iterations: %q", i, key)
+		}
+		seen[key] = struct{}{}
+	}
+}
+
+// The previous generator derived every byte from time.Now().UnixNano() mod 62
+// inside a tight loop, which clusters output rather than spreading it evenly.
+// Rejection sampling over crypto/rand should be close to uniform.
+func TestGenerateRandomKeyIsUniformlyDistributed(t *testing.T) {
+	const sampleSize = 12400 // 200 expected occurrences per character
+
+	key, err := generateRandomKey(sampleSize)
+	if err != nil {
+		t.Fatalf("generateRandomKey failed: %v", err)
 	}
 
-	// Test different lengths
-	shortKey := generateRandomKey(16)
-	if len(shortKey) != 16 {
-		t.Errorf("Expected key length 16, got %d", len(shortKey))
+	counts := make(map[rune]int, len(keyCharset))
+	for _, c := range key {
+		counts[c]++
+	}
+
+	if len(counts) != len(keyCharset) {
+		t.Errorf("only %d of %d characters appeared in %d draws",
+			len(counts), len(keyCharset), sampleSize)
+	}
+
+	// Expected 200 per character, standard deviation about 14. These bounds
+	// are several standard deviations out, so uniform output passes reliably
+	// while a clustered generator fails.
+	for _, c := range keyCharset {
+		count := counts[c]
+		if count < 100 || count > 350 {
+			t.Errorf("character %q appeared %d times, want roughly 200", c, count)
+		}
+	}
+}
+
+func TestGenerateRandomKeyZeroLength(t *testing.T) {
+	key, err := generateRandomKey(0)
+	if err != nil {
+		t.Fatalf("generateRandomKey(0) failed: %v", err)
+	}
+	if key != "" {
+		t.Errorf("generateRandomKey(0) = %q, want an empty string", key)
 	}
 }
 

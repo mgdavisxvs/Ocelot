@@ -36,14 +36,11 @@ NewUserCache
 NewWhitelistTrie
 NewWorkerPool
 PeerKeyPrime
-RedirectHTTPToHTTPS
 ReservoirSample
 Retry
 RetryWithCustomBackoff
 SelectPeersOptimized
-Server.StartTLS
-Server.startAutoTLS
-Server.startManualTLS
+Server.Addrs
 SetDefaultLogger
 TorrentCache.Delete
 TorrentCache.Get

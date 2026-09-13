@@ -1,489 +1,445 @@
 package tracker
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
-	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestTLSConfigCreation(t *testing.T) {
-	tests := []struct {
-		name     string
-		config   TLSConfig
-		validate func(t *testing.T, config TLSConfig)
-	}{
-		{
-			name: "Manual TLS with cert files",
-			config: TLSConfig{
-				CertFile: "/path/to/cert.pem",
-				KeyFile:  "/path/to/key.pem",
-				AutoTLS:  false,
-			},
-			validate: func(t *testing.T, config TLSConfig) {
-				if config.CertFile == "" {
-					t.Error("CertFile should not be empty")
-				}
-				if config.KeyFile == "" {
-					t.Error("KeyFile should not be empty")
-				}
-				if config.AutoTLS {
-					t.Error("AutoTLS should be false")
-				}
-			},
-		},
-		{
-			name: "AutoTLS with Let's Encrypt",
-			config: TLSConfig{
-				AutoTLS: true,
-				Domain:  "tracker.example.com",
-			},
-			validate: func(t *testing.T, config TLSConfig) {
-				if !config.AutoTLS {
-					t.Error("AutoTLS should be true")
-				}
-				if config.Domain == "" {
-					t.Error("Domain should not be empty for AutoTLS")
-				}
-			},
-		},
-	}
+// writeSelfSignedCert writes a certificate and key valid for localhost and
+// returns their paths.
+func writeSelfSignedCert(t *testing.T) (certPath, keyPath string) {
+	t.Helper()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tt.validate(t, tt.config)
-		})
-	}
-}
-
-func TestRedirectHTTPToHTTPS(t *testing.T) {
-	handler := RedirectHTTPToHTTPS()
-
-	tests := []struct {
-		name           string
-		url            string
-		expectedTarget string
-	}{
-		{
-			name:           "Simple redirect",
-			url:            "http://example.com/announce",
-			expectedTarget: "https://example.com/announce",
-		},
-		{
-			name:           "Redirect with query string",
-			url:            "http://example.com/announce?info_hash=test&peer_id=123",
-			expectedTarget: "https://example.com/announce?info_hash=test&peer_id=123",
-		},
-		{
-			name:           "Redirect with port",
-			url:            "http://example.com:8080/announce",
-			expectedTarget: "https://example.com:8080/announce",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", tt.url, nil)
-			w := httptest.NewRecorder()
-
-			handler(w, req)
-
-			resp := w.Result()
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusMovedPermanently {
-				t.Errorf("Expected status %d, got %d", http.StatusMovedPermanently, resp.StatusCode)
-			}
-
-			location := resp.Header.Get("Location")
-			if location != tt.expectedTarget {
-				t.Errorf("Expected redirect to %s, got %s", tt.expectedTarget, location)
-			}
-		})
-	}
-}
-
-func TestTLSMinVersion(t *testing.T) {
-	// Test that we enforce TLS 1.3 minimum
-	minVersion := tls.VersionTLS13
-
-	if minVersion != tls.VersionTLS13 {
-		t.Errorf("Expected TLS 1.3 (0x%X) as minimum, got 0x%X", tls.VersionTLS13, minVersion)
-	}
-}
-
-func TestTLSCipherSuites(t *testing.T) {
-	// Test that we only allow secure cipher suites
-	allowedSuites := []uint16{
-		tls.TLS_AES_128_GCM_SHA256,
-		tls.TLS_AES_256_GCM_SHA384,
-		tls.TLS_CHACHA20_POLY1305_SHA256,
-	}
-
-	// Verify all suites are TLS 1.3 compatible
-	for _, suite := range allowedSuites {
-		// TLS 1.3 cipher suites don't have string names in crypto/tls,
-		// but we can verify they're in the valid range
-		if suite < 0x1301 || suite > 0x1305 {
-			// TLS 1.3 suites are in the range 0x1301-0x1305
-			t.Errorf("Cipher suite 0x%X may not be TLS 1.3 compatible", suite)
-		}
-	}
-
-	if len(allowedSuites) != 3 {
-		t.Errorf("Expected 3 cipher suites, got %d", len(allowedSuites))
-	}
-}
-
-func TestGenerateSelfSignedCert(t *testing.T) {
-	// Test helper function to generate a self-signed certificate
-	certPEM, keyPEM, err := generateSelfSignedCert()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("Failed to generate self-signed cert: %v", err)
+		t.Fatalf("failed to generate key: %v", err)
 	}
 
-	if len(certPEM) == 0 {
-		t.Error("Certificate PEM is empty")
-	}
-
-	if len(keyPEM) == 0 {
-		t.Error("Key PEM is empty")
-	}
-
-	// Verify the certificate can be parsed
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		t.Fatal("Failed to decode certificate PEM")
-	}
-
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		t.Fatalf("Failed to parse certificate: %v", err)
-	}
-
-	// Verify certificate properties
-	if cert.Subject.CommonName != "ocelot-tracker-test" {
-		t.Errorf("Expected CN 'ocelot-tracker-test', got '%s'", cert.Subject.CommonName)
-	}
-
-	// Verify key can be parsed
-	keyBlock, _ := pem.Decode(keyPEM)
-	if keyBlock == nil {
-		t.Fatal("Failed to decode key PEM")
-	}
-
-	_, err = x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
-	if err != nil {
-		t.Fatalf("Failed to parse private key: %v", err)
-	}
-}
-
-func TestTLSCertificateLoading(t *testing.T) {
-	// Create temporary directory for test certificates
-	tmpDir, err := os.MkdirTemp("", "ocelot-tls-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// Generate self-signed certificate
-	certPEM, keyPEM, err := generateSelfSignedCert()
-	if err != nil {
-		t.Fatalf("Failed to generate certificate: %v", err)
-	}
-
-	// Write certificate and key to files
-	certFile := filepath.Join(tmpDir, "cert.pem")
-	keyFile := filepath.Join(tmpDir, "key.pem")
-
-	err = os.WriteFile(certFile, certPEM, 0600)
-	if err != nil {
-		t.Fatalf("Failed to write certificate: %v", err)
-	}
-
-	err = os.WriteFile(keyFile, keyPEM, 0600)
-	if err != nil {
-		t.Fatalf("Failed to write key: %v", err)
-	}
-
-	// Test loading the certificate
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		t.Fatalf("Failed to load certificate pair: %v", err)
-	}
-
-	if len(cert.Certificate) == 0 {
-		t.Error("Loaded certificate is empty")
-	}
-}
-
-func TestTLSConfigValidation(t *testing.T) {
-	tests := []struct {
-		name    string
-		config  TLSConfig
-		wantErr bool
-	}{
-		{
-			name: "Valid manual TLS config",
-			config: TLSConfig{
-				CertFile: "/path/to/cert.pem",
-				KeyFile:  "/path/to/key.pem",
-				AutoTLS:  false,
-			},
-			wantErr: false,
-		},
-		{
-			name: "Valid AutoTLS config",
-			config: TLSConfig{
-				AutoTLS: true,
-				Domain:  "tracker.example.com",
-			},
-			wantErr: false,
-		},
-		{
-			name: "Invalid - AutoTLS without domain",
-			config: TLSConfig{
-				AutoTLS: true,
-				Domain:  "",
-			},
-			wantErr: true,
-		},
-		{
-			name: "Invalid - Manual TLS without cert",
-			config: TLSConfig{
-				AutoTLS:  false,
-				CertFile: "",
-				KeyFile:  "/path/to/key.pem",
-			},
-			wantErr: true,
-		},
-		{
-			name: "Invalid - Manual TLS without key",
-			config: TLSConfig{
-				AutoTLS:  false,
-				CertFile: "/path/to/cert.pem",
-				KeyFile:  "",
-			},
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateTLSConfig(tt.config)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateTLSConfig() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
-// Helper function to generate self-signed certificate for testing
-func generateSelfSignedCert() (certPEM []byte, keyPEM []byte, err error) {
-	// Generate private key
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Create certificate template
 	template := x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{
-			CommonName:   "ocelot-tracker-test",
-			Organization: []string{"Ocelot Test"},
-		},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		DNSNames:              []string{"localhost", "127.0.0.1"},
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
 	}
 
-	// Create self-signed certificate
-	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
 	if err != nil {
-		return nil, nil, err
+		t.Fatalf("failed to create certificate: %v", err)
 	}
 
-	// Encode certificate to PEM
-	certPEM = pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: certDER,
-	})
+	dir := t.TempDir()
+	certPath = filepath.Join(dir, "cert.pem")
+	keyPath = filepath.Join(dir, "key.pem")
 
-	// Encode private key to PEM
-	keyPEM = pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
-	})
+	certOut, err := os.Create(certPath)
+	if err != nil {
+		t.Fatalf("failed to create cert file: %v", err)
+	}
+	defer certOut.Close()
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+		t.Fatalf("failed to write cert: %v", err)
+	}
 
-	return certPEM, keyPEM, nil
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("failed to marshal key: %v", err)
+	}
+
+	keyOut, err := os.Create(keyPath)
+	if err != nil {
+		t.Fatalf("failed to create key file: %v", err)
+	}
+	defer keyOut.Close()
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}); err != nil {
+		t.Fatalf("failed to write key: %v", err)
+	}
+
+	return certPath, keyPath
 }
 
-// Helper function to validate TLS config
-func validateTLSConfig(config TLSConfig) error {
-	if config.AutoTLS {
-		if config.Domain == "" {
-			return &TrackerError{
-				Type:    "config",
-				Message: "Domain is required for AutoTLS",
+// boundPort waits for the server to bind and reports the port it chose.
+// Binding port 0 and reading the result back avoids the race in reserving a
+// port, closing it, and hoping nothing else takes it first.
+func boundPort(t *testing.T, server *Server, errs chan error) int {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-errs:
+			t.Fatalf("server exited before binding: %v", err)
+		default:
+		}
+
+		for _, addr := range server.Addrs() {
+			if tcp, ok := addr.(*net.TCPAddr); ok && tcp.Port != 0 {
+				return tcp.Port
 			}
 		}
-	} else {
-		if config.CertFile == "" {
-			return &TrackerError{
-				Type:    "config",
-				Message: "CertFile is required for manual TLS",
-			}
-		}
-		if config.KeyFile == "" {
-			return &TrackerError{
-				Type:    "config",
-				Message: "KeyFile is required for manual TLS",
-			}
-		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	return nil
+
+	t.Fatal("server never bound a port")
+	return 0
 }
 
-func TestHTTPSRedirectPreservesPath(t *testing.T) {
-	handler := RedirectHTTPToHTTPS()
+// startTLSServer brings up a TLS tracker and returns its base URL.
+func startTLSServer(t *testing.T, h *testHarness) string {
+	t.Helper()
 
-	paths := []string{
-		"/announce",
-		"/scrape",
-		"/stats",
-		"/health",
-		"/metrics",
-	}
+	certPath, keyPath := writeSelfSignedCert(t)
 
-	for _, path := range paths {
-		t.Run("Path: "+path, func(t *testing.T) {
-			url := "http://example.com" + path
-			req := httptest.NewRequest("GET", url, nil)
-			w := httptest.NewRecorder()
+	h.worker.Config.TLSCertFile = certPath
+	h.worker.Config.TLSKeyFile = keyPath
+	h.worker.Config.TLSAddr = ":0"
 
-			handler(w, req)
+	server := NewServer(h.worker.Config, h.worker)
+	t.Cleanup(func() { server.Shutdown() })
 
-			location := w.Header().Get("Location")
-			expectedLocation := "https://example.com" + path
+	errs := make(chan error, 1)
+	go func() { errs <- server.ListenAndServeTLS() }()
 
-			if location != expectedLocation {
-				t.Errorf("Expected redirect to %s, got %s", expectedLocation, location)
-			}
-		})
-	}
+	base := fmt.Sprintf("https://127.0.0.1:%d", boundPort(t, server, errs))
+	waitForTLS(t, base, errs)
+
+	return base
 }
 
-func TestHTTPSRedirectPreservesQueryParams(t *testing.T) {
-	handler := RedirectHTTPToHTTPS()
+// waitForSecondPort returns the port of the listener that is not `exclude`.
+func waitForSecondPort(t *testing.T, server *Server, exclude int, errs chan error) int {
+	t.Helper()
 
-	queryTests := []struct {
-		path   string
-		query  string
-		expect string
-	}{
-		{
-			path:   "/announce",
-			query:  "info_hash=abc&peer_id=123&port=6881",
-			expect: "https://example.com/announce?info_hash=abc&peer_id=123&port=6881",
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-errs:
+			t.Fatalf("server exited before binding: %v", err)
+		default:
+		}
+
+		for _, addr := range server.Addrs() {
+			if tcp, ok := addr.(*net.TCPAddr); ok && tcp.Port != 0 && tcp.Port != exclude {
+				return tcp.Port
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("the second listener never bound")
+	return 0
+}
+
+func waitForTLS(t *testing.T, base string, errs chan error) {
+	t.Helper()
+
+	client := insecureClient()
+	deadline := time.Now().Add(5 * time.Second)
+
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-errs:
+			t.Fatalf("TLS server exited: %v", err)
+		default:
+		}
+
+		if resp, err := client.Get(base + "/probe"); err == nil {
+			resp.Body.Close()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Fatal("TLS server did not become reachable")
+}
+
+// insecureClient trusts the self-signed test certificate.
+func insecureClient() *http.Client {
+	return &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
-		{
-			path:   "/scrape",
-			query:  "info_hash=def",
-			expect: "https://example.com/scrape?info_hash=def",
-		},
-	}
-
-	for _, tt := range queryTests {
-		t.Run(tt.path+"?"+tt.query, func(t *testing.T) {
-			url := "http://example.com" + tt.path + "?" + tt.query
-			req := httptest.NewRequest("GET", url, nil)
-			w := httptest.NewRecorder()
-
-			handler(w, req)
-
-			location := w.Header().Get("Location")
-			if location != tt.expect {
-				t.Errorf("Expected %s, got %s", tt.expect, location)
-			}
-		})
 	}
 }
 
-func TestHTTPSRedirectMethod(t *testing.T) {
-	handler := RedirectHTTPToHTTPS()
+// The property the previous implementation lacked: a real announce over TLS
+// must reach the worker and come back bencoded, not an empty 200.
+func TestTLSAnnounceReachesTheWorker(t *testing.T) {
+	h := newTestHarness(t)
+	_, passkey := h.addUser(t, 1, true)
 
-	methods := []string{"GET", "POST", "HEAD"}
+	base := startTLSServer(t, h)
 
-	for _, method := range methods {
-		t.Run("Method: "+method, func(t *testing.T) {
-			req := httptest.NewRequest(method, "http://example.com/announce", nil)
-			w := httptest.NewRecorder()
+	params := url.Values{}
+	params.Set("info_hash", h.infoHash)
+	params.Set("peer_id", string(testPeerID("peer0001")))
+	params.Set("port", "6881")
+	params.Set("left", "1024")
+	params.Set("compact", "1")
+	params.Set("event", "started")
 
-			handler(w, req)
-
-			if w.Code != http.StatusMovedPermanently {
-				t.Errorf("Expected status %d, got %d", http.StatusMovedPermanently, w.Code)
-			}
-		})
+	resp, err := insecureClient().Get(base + "/" + passkey + "/announce?" + params.Encode())
+	if err != nil {
+		t.Fatalf("TLS announce failed: %v", err)
 	}
-}
-
-func TestTLSReadTimeout(t *testing.T) {
-	expectedTimeout := 10 * time.Second
-
-	if expectedTimeout != 10*time.Second {
-		t.Errorf("Expected 10s read timeout, got %v", expectedTimeout)
-	}
-}
-
-func TestTLSWriteTimeout(t *testing.T) {
-	expectedTimeout := 10 * time.Second
-
-	if expectedTimeout != 10*time.Second {
-		t.Errorf("Expected 10s write timeout, got %v", expectedTimeout)
-	}
-}
-
-func TestTLSIdleTimeout(t *testing.T) {
-	expectedTimeout := 120 * time.Second
-
-	if expectedTimeout != 120*time.Second {
-		t.Errorf("Expected 120s idle timeout, got %v", expectedTimeout)
-	}
-}
-
-func TestRedirectNoBody(t *testing.T) {
-	handler := RedirectHTTPToHTTPS()
-
-	req := httptest.NewRequest("GET", "http://example.com/announce", nil)
-	w := httptest.NewRecorder()
-
-	handler(w, req)
-
-	resp := w.Result()
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("Failed to read response body: %v", err)
+		t.Fatalf("failed to read response: %v", err)
 	}
 
-	// Redirect response should have minimal or empty body
-	if len(body) > 200 {
-		t.Errorf("Redirect response body is too large: %d bytes", len(body))
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (body: %s)", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "8:intervali") {
+		t.Errorf("response is not a bencoded announce: %q", body)
+	}
+	if !strings.Contains(string(body), "10:incompletei1e") {
+		t.Errorf("announce did not register the peer: %q", body)
+	}
+
+	// The worker, not a stub, must have seen it.
+	if h.torrent.Leechers.Size() != 1 {
+		t.Errorf("leechers = %d, want 1 — the announce never reached the worker",
+			h.torrent.Leechers.Size())
+	}
+	if h.db.peerCount() != 1 {
+		t.Errorf("RecordPeer calls = %d, want 1", h.db.peerCount())
+	}
+}
+
+func TestTLSScrapeReachesTheWorker(t *testing.T) {
+	h := newTestHarness(t)
+	user, passkey := h.addUser(t, 1, true)
+
+	req := announceParams(h.infoHash, testPeerID("peer0001"), 6881, 1<<30, "started")
+	if _, err := h.worker.Announce(req, user, net.ParseIP("10.0.0.1"), "qB"); err != nil {
+		t.Fatalf("seed announce failed: %v", err)
+	}
+
+	base := startTLSServer(t, h)
+
+	params := url.Values{}
+	params.Set("info_hash", h.infoHash)
+
+	resp, err := insecureClient().Get(base + "/" + passkey + "/scrape?" + params.Encode())
+	if err != nil {
+		t.Fatalf("TLS scrape failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "10:incompletei1e") {
+		t.Errorf("scrape over TLS did not report the peer: %q", body)
+	}
+}
+
+func TestTLSRejectsPlaintextClient(t *testing.T) {
+	h := newTestHarness(t)
+	base := startTLSServer(t, h)
+
+	plain := strings.Replace(base, "https://", "http://", 1)
+
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Get(plain + "/probe")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("a plaintext request to the TLS port should not succeed")
+	}
+}
+
+func TestTLSNegotiatesModernVersion(t *testing.T) {
+	h := newTestHarness(t)
+	base := startTLSServer(t, h)
+
+	host := strings.TrimPrefix(base, "https://")
+
+	conn, err := tls.Dial("tcp", host, &tls.Config{InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatalf("TLS handshake failed: %v", err)
+	}
+	defer conn.Close()
+
+	if v := conn.ConnectionState().Version; v < tls.VersionTLS12 {
+		t.Errorf("negotiated TLS version 0x%04x, want at least TLS 1.2", v)
+	}
+}
+
+func TestTLSRefusesObsoleteVersion(t *testing.T) {
+	h := newTestHarness(t)
+	base := startTLSServer(t, h)
+
+	host := strings.TrimPrefix(base, "https://")
+
+	conn, err := tls.Dial("tcp", host, &tls.Config{
+		InsecureSkipVerify: true,
+		MaxVersion:         tls.VersionTLS11,
+	})
+	if err == nil {
+		conn.Close()
+		t.Error("server accepted a TLS 1.1 client; the floor should be TLS 1.2")
+	}
+}
+
+func TestTLSServesAlongsidePlaintext(t *testing.T) {
+	h := newTestHarness(t)
+	_, passkey := h.addUser(t, 1, true)
+
+	certPath, keyPath := writeSelfSignedCert(t)
+
+	h.worker.Config.ListenAddr = ":0"
+	h.worker.Config.TLSCertFile = certPath
+	h.worker.Config.TLSKeyFile = keyPath
+	h.worker.Config.TLSAddr = ":0"
+
+	server := NewServer(h.worker.Config, h.worker)
+	t.Cleanup(func() { server.Shutdown() })
+
+	errs := make(chan error, 2)
+	go func() { errs <- server.ListenAndServe() }()
+	plainPort := boundPort(t, server, errs)
+
+	go func() { errs <- server.ListenAndServeTLS() }()
+	tlsPort := waitForSecondPort(t, server, plainPort, errs)
+
+	tlsBase := fmt.Sprintf("https://127.0.0.1:%d", tlsPort)
+	waitForTLS(t, tlsBase, errs)
+
+	params := url.Values{}
+	params.Set("info_hash", h.infoHash)
+
+	// Both listeners must serve the same tracker.
+	for _, base := range []string{
+		fmt.Sprintf("http://127.0.0.1:%d", plainPort),
+		tlsBase,
+	} {
+		resp, err := insecureClient().Get(base + "/" + passkey + "/scrape?" + params.Encode())
+		if err != nil {
+			t.Fatalf("%s: request failed: %v", base, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if !strings.Contains(string(body), "d5:filesd") {
+			t.Errorf("%s: not a scrape response: %q", base, body)
+		}
+	}
+}
+
+func TestTLSRateLimitAppliesToTLSConnections(t *testing.T) {
+	h := newTestHarness(t)
+	_, passkey := h.addUser(t, 1, true)
+
+	h.worker.Config.RateLimitRPS = 1
+	h.worker.Config.RateLimitBurst = 3
+
+	base := startTLSServer(t, h)
+	client := insecureClient()
+
+	var limited bool
+	for i := 0; i < 12; i++ {
+		resp, err := client.Get(base + "/" + passkey + "/scrape?info_hash=x")
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i, err)
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			limited = true
+			break
+		}
+	}
+
+	if !limited {
+		t.Error("rate limiting did not apply to TLS connections")
+	}
+}
+
+func TestListenAndServeTLSRequiresBothFiles(t *testing.T) {
+	tests := []struct {
+		name string
+		cert string
+		key  string
+	}{
+		{"neither", "", ""},
+		{"cert only", "/tmp/cert.pem", ""},
+		{"key only", "", "/tmp/key.pem"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newTestHarness(t)
+			h.worker.Config.TLSCertFile = tt.cert
+			h.worker.Config.TLSKeyFile = tt.key
+
+			server := NewServer(h.worker.Config, h.worker)
+
+			err := server.ListenAndServeTLS()
+			if err == nil {
+				t.Fatal("expected an error when a TLS file is missing")
+			}
+			if !strings.Contains(err.Error(), "tls_cert_file") {
+				t.Errorf("error = %q, want it to name the missing settings", err)
+			}
+		})
+	}
+}
+
+func TestListenAndServeTLSRejectsUnreadableCert(t *testing.T) {
+	h := newTestHarness(t)
+	h.worker.Config.TLSCertFile = filepath.Join(t.TempDir(), "absent.pem")
+	h.worker.Config.TLSKeyFile = filepath.Join(t.TempDir(), "absent.key")
+
+	server := NewServer(h.worker.Config, h.worker)
+
+	err := server.ListenAndServeTLS()
+	if err == nil {
+		t.Fatal("expected an error for a missing certificate file")
+	}
+	if !strings.Contains(err.Error(), "keypair") {
+		t.Errorf("error = %q, want it to mention the keypair", err)
+	}
+}
+
+func TestConfigTLSEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		cert string
+		key  string
+		want bool
+	}{
+		{"both set", "cert.pem", "key.pem", true},
+		{"neither", "", "", false},
+		{"cert only", "cert.pem", "", false},
+		{"key only", "", "key.pem", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{TLSCertFile: tt.cert, TLSKeyFile: tt.key}
+			if got := config.TLSEnabled(); got != tt.want {
+				t.Errorf("TLSEnabled() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

@@ -24,6 +24,7 @@ func DefaultConfig() *Config {
 		WriteTimeout:     30 * time.Second,
 
 		MetricsAddr:        ":9090",
+		TLSAddr:            ":34443",
 		RateLimitRPS:       5,
 		RateLimitBurst:     20,
 		AuditRetentionDays: 90,
@@ -114,6 +115,9 @@ var configKeys = []string{
 	"rate_limit_rps",
 	"rate_limit_burst",
 	"audit_retention_days",
+	"tls_cert_file",
+	"tls_key_file",
+	"tls_addr",
 }
 
 // applyEnvOverrides lets OCELOT_SITE_PASSWORD override site_password, and so
@@ -187,6 +191,9 @@ func applySettings(config *Config, settings map[string]string) error {
 		"site_password":   &config.SitePassword,
 		"report_password": &config.ReportPassword,
 		"metrics_addr":    &config.MetricsAddr,
+		"tls_cert_file":   &config.TLSCertFile,
+		"tls_key_file":    &config.TLSKeyFile,
+		"tls_addr":        &config.TLSAddr,
 	}
 	for key, target := range strs {
 		if value, ok := settings[key]; ok {
@@ -224,6 +231,15 @@ func (c *Config) Validate() error {
 			c.ReapInterval, c.PeersTimeout)
 	}
 
+	// A half-configured keypair is always a mistake: it silently serves
+	// plaintext only.
+	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
+		return fmt.Errorf("config: tls_cert_file and tls_key_file must be set together")
+	}
+	if c.TLSEnabled() && c.TLSAddr == "" {
+		return fmt.Errorf("config: tls_addr is required when TLS is enabled")
+	}
+
 	return nil
 }
 
@@ -239,6 +255,11 @@ func (c *Config) InsecureWarnings() []string {
 	}
 	if placeholderPasswords[c.ReportPassword] {
 		warnings = append(warnings, "report_password is unset or still the placeholder")
+	}
+	if !c.TLSEnabled() {
+		warnings = append(warnings,
+			"TLS is not configured: passkeys travel in the request path, so every "+
+				"announce sends a credential in cleartext unless TLS terminates upstream")
 	}
 
 	return warnings

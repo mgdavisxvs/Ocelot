@@ -132,6 +132,17 @@ func main() {
 		}
 	}()
 
+	// TLS listener, when a keypair is configured. Passkeys travel in the
+	// request path, so plaintext hands a credential to anyone on the wire.
+	if config.TLSEnabled() {
+		go func() {
+			log.Printf("Starting TLS tracker on %s", config.TLSAddr)
+			if err := server.ListenAndServeTLS(); err != nil {
+				log.Fatalf("TLS server error: %v", err)
+			}
+		}()
+	}
+
 	health.MarkReady()
 
 	// Reap peers that stopped announcing. Without this, peers that vanish

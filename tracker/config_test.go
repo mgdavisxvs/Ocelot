@@ -260,15 +260,20 @@ func TestInsecureWarningsFlagPlaceholderPasswords(t *testing.T) {
 			config := DefaultConfig()
 			config.SitePassword = tt.password
 			config.ReportPassword = "b7f3a1c9e5d24680b7f3a1c9e5d24680"
+			// TLS warns separately; configure it so only the password is in play.
+			config.TLSCertFile = "cert.pem"
+			config.TLSKeyFile = "key.pem"
 
-			warnings := config.InsecureWarnings()
-			got := len(warnings) > 0
+			got := false
+			for _, warning := range config.InsecureWarnings() {
+				if strings.Contains(warning, "site_password") {
+					got = true
+				}
+			}
 
 			if got != tt.wantWarn {
-				t.Errorf("InsecureWarnings() = %v, want a warning: %v", warnings, tt.wantWarn)
-			}
-			if tt.wantWarn && !strings.Contains(warnings[0], "site_password") {
-				t.Errorf("warning should name site_password, got %q", warnings[0])
+				t.Errorf("site_password warning = %v, want %v (all: %v)",
+					got, tt.wantWarn, config.InsecureWarnings())
 			}
 		})
 	}
@@ -278,9 +283,68 @@ func TestInsecureWarningsSilentOnGoodConfig(t *testing.T) {
 	config := DefaultConfig()
 	config.SitePassword = "b7f3a1c9e5d24680b7f3a1c9e5d24680"
 	config.ReportPassword = "0f1e2d3c4b5a69780f1e2d3c4b5a6978"
+	config.TLSCertFile = "cert.pem"
+	config.TLSKeyFile = "key.pem"
 
 	if warnings := config.InsecureWarnings(); len(warnings) != 0 {
 		t.Errorf("expected no warnings, got %v", warnings)
+	}
+}
+
+func TestInsecureWarningsFlagMissingTLS(t *testing.T) {
+	config := DefaultConfig()
+	config.SitePassword = "b7f3a1c9e5d24680b7f3a1c9e5d24680"
+	config.ReportPassword = "0f1e2d3c4b5a69780f1e2d3c4b5a6978"
+
+	warnings := config.InsecureWarnings()
+	if len(warnings) != 1 {
+		t.Fatalf("expected exactly the TLS warning, got %v", warnings)
+	}
+	if !strings.Contains(warnings[0], "cleartext") {
+		t.Errorf("warning = %q, want it to explain the cleartext passkey risk", warnings[0])
+	}
+}
+
+func TestConfigValidateRejectsPartialTLS(t *testing.T) {
+	for _, tt := range []struct{ name, cert, key string }{
+		{"cert only", "cert.pem", ""},
+		{"key only", "", "key.pem"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			config := DefaultConfig()
+			config.TLSCertFile = tt.cert
+			config.TLSKeyFile = tt.key
+
+			err := config.Validate()
+			if err == nil {
+				t.Fatal("expected a half-configured keypair to be rejected")
+			}
+			if !strings.Contains(err.Error(), "together") {
+				t.Errorf("error = %q", err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigReadsTLSSettings(t *testing.T) {
+	path := writeConfig(t, `tls_cert_file = /etc/ocelot/cert.pem
+tls_key_file  = /etc/ocelot/key.pem
+tls_addr      = :8443
+`)
+
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	if !config.TLSEnabled() {
+		t.Error("TLSEnabled() = false with both files set")
+	}
+	if config.TLSCertFile != "/etc/ocelot/cert.pem" {
+		t.Errorf("TLSCertFile = %q", config.TLSCertFile)
+	}
+	if config.TLSAddr != ":8443" {
+		t.Errorf("TLSAddr = %q, want :8443", config.TLSAddr)
 	}
 }
 

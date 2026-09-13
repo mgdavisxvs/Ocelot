@@ -2,9 +2,11 @@ package tracker
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -73,7 +75,10 @@ type APIKey struct {
 // CreateAPIKey creates a new API key
 func CreateAPIKey(db *sql.DB, userID int, permissions []string, expiresAt *time.Time) (string, error) {
 	// Generate random API key (32 bytes = 64 hex chars)
-	key := generateRandomKey(32)
+	key, err := generateRandomKey(32)
+	if err != nil {
+		return "", err
+	}
 	keyHash := hashAPIKey(key)
 
 	query := `INSERT INTO api_keys (key_hash, user_id, permissions, created_at, expires_at, revoked)
@@ -87,8 +92,7 @@ func CreateAPIKey(db *sql.DB, userID int, permissions []string, expiresAt *time.
 		expiresUnix = expiresAt.Unix()
 	}
 
-	_, err := db.Exec(query, keyHash, userID, permJSON, time.Now().Unix(), expiresUnix)
-	if err != nil {
+	if _, err := db.Exec(query, keyHash, userID, permJSON, time.Now().Unix(), expiresUnix); err != nil {
 		return "", ErrDatabaseQuery.WithError(err)
 	}
 
@@ -152,15 +156,38 @@ func hashAPIKey(key string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// generateRandomKey generates a random API key
-func generateRandomKey(length int) string {
-	// Simple random key generator - in production use crypto/rand
+// generateRandomKey generates a random API key.
+//
+// Every byte comes from crypto/rand. The previous implementation derived each
+// byte from time.Now().UnixNano() inside a tight loop, so consecutive bytes
+// shared a clock reading and the whole key was recoverable from its
+// approximate creation time.
+func generateRandomKey(length int) (string, error) {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, length)
-	for i := range b {
-		b[i] = charset[time.Now().UnixNano()%int64(len(charset))]
+
+	// 62 does not divide 256, so rejection sampling avoids the modulo bias
+	// that would favour the first 8 characters of the set.
+	const maxUnbiased = 256 - (256 % len(charset))
+
+	key := make([]byte, 0, length)
+	buf := make([]byte, length)
+
+	for len(key) < length {
+		if _, err := rand.Read(buf); err != nil {
+			return "", fmt.Errorf("failed to read random bytes: %w", err)
+		}
+		for _, b := range buf {
+			if int(b) >= maxUnbiased {
+				continue
+			}
+			key = append(key, charset[int(b)%len(charset)])
+			if len(key) == length {
+				break
+			}
+		}
 	}
-	return string(b)
+
+	return string(key), nil
 }
 
 // AuthMiddleware validates JWT or API key authentication
