@@ -8,6 +8,7 @@ $error = '';
 
 // Handle torrent actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_require();
     $action = $_POST['action'] ?? '';
 
     try {
@@ -137,18 +138,18 @@ include 'includes/header.php';
                     ?>
                     <tr>
                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-white">
-                            <?= $torrent['torrent_id'] ?>
+                            <?= e($torrent['torrent_id']) ?>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-green-400">
                             <?= icon('arrow-up', 'inline w-4 h-4') ?>
-                            <?= $torrent['seeders'] ?>
+                            <?= e($torrent['seeders']) ?>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-yellow-400">
                             <?= icon('arrow-down', 'inline w-4 h-4') ?>
-                            <?= $torrent['leechers'] ?>
+                            <?= e($torrent['leechers']) ?>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-blue-400">
-                            <?= $torrent['total_peers'] ?>
+                            <?= e($torrent['total_peers']) ?>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-purple-400">
                             <?= $snatches ?>
@@ -236,6 +237,7 @@ include 'includes/header.php';
             </div>
 
             <form method="POST" class="space-y-4">
+                <?= csrf_field() ?>
                 <input type="hidden" name="action" value="add">
 
                 <div>
@@ -318,6 +320,8 @@ function torrentUploader() {
             try {
                 const response = await fetch('api/parse-torrent.php', {
                     method: 'POST',
+                    // Same token the forms carry. The endpoint requires it.
+                    headers: { 'X-CSRF-Token': CSRF_TOKEN },
                     body: formData
                 });
 

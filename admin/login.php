@@ -5,10 +5,22 @@ require_once 'includes/icons.php';
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // Login itself is CSRF-protected: without this, a third-party page can
+    // silently sign the operator into an account the attacker controls.
+    csrf_require();
+
     $username = $_POST['username'] ?? '';
     $password = $_POST['password'] ?? '';
 
     if ($username === ADMIN_USER && password_verify($password, ADMIN_PASS)) {
+        // FV-05: a session id issued before authentication must never carry
+        // privilege. Regenerating here invalidates any id an attacker planted
+        // in the browser beforehand (session fixation).
+        session_regenerate_id(true);
+
+        // The CSRF token is bound to the session, so it is re-minted with it.
+        unset($_SESSION['csrf_token']);
+
         $_SESSION['authenticated'] = true;
         $_SESSION['username'] = $username;
         header('Location: index.php');
@@ -129,6 +141,7 @@ if (isAuthenticated()) {
         <?php endif; ?>
 
         <form method="POST" autocomplete="off">
+            <?= csrf_field() ?>
             <div class="field">
                 <label for="username">Username</label>
                 <input id="username" name="username" type="text" required autofocus>

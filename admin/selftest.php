@@ -109,6 +109,79 @@ $hdr = file_get_contents($root . '/includes/header.php');
 check('header.php escapes $pageTitle in <title>',
     (bool) preg_match('~<title><\?=\s*htmlspecialchars\(~', $hdr));
 
+echo "\nFV-05  session fixation\n";
+$login = file_get_contents($root . '/login.php');
+check('login.php regenerates the session id on success',
+    str_contains($login, 'session_regenerate_id(true)'));
+check('login.php re-mints the CSRF token with the new session',
+    str_contains($login, 'unset($_SESSION[') && str_contains($login, 'csrf_token'));
+$cfg = file_get_contents($root . '/config.php');
+check('session cookie is httponly', str_contains($cfg, "'httponly' => true"));
+check('session cookie is samesite', str_contains($cfg, "'samesite' => 'Lax'"));
+// Match the statement form, not the prose: the comment above the call also
+// contains the words "session_start()" and would otherwise match first.
+check('cookie params are set before session_start()',
+    strpos($cfg, 'session_set_cookie_params') < strpos($cfg, 'session_start();'));
+$logout = file_get_contents($root . '/logout.php');
+check('logout clears $_SESSION, cookie and session',
+    str_contains($logout, '$_SESSION = []')
+    && str_contains($logout, 'setcookie(session_name()')
+    && str_contains($logout, 'session_destroy()'));
+
+echo "\nFV-06  CSRF token covers every state-mutating path\n";
+check('csrf_verify rejects an empty token',   !csrf_verify(''));
+check('csrf_verify rejects a wrong token',    !csrf_verify(str_repeat('a', 64)));
+check('csrf_verify accepts the session token', csrf_verify(csrf_token()));
+check('token is 256 bits of entropy, hex-encoded',
+    strlen(csrf_token()) === 64 && ctype_xdigit(csrf_token()));
+check('csrf_field embeds the live token',
+    str_contains(csrf_field(), csrf_token()));
+foreach (['users.php', 'torrents.php', 'login.php'] as $f) {
+    $src = file_get_contents($root . '/' . $f);
+    check("$f: POST handler calls csrf_require()", str_contains($src, 'csrf_require()'));
+}
+// Every POST form must carry the field. GET forms (filters) must not need it.
+foreach (array_merge($pages, $incs) as $f) {
+    $src  = file_get_contents($f);
+    $name = str_replace($root . '/', '', $f);
+    $posts = preg_match_all('~<form[^>]*method\s*=\s*["\']POST["\'][^>]*>~i', $src);
+    if ($posts > 0) {
+        check("$name: all $posts POST form(s) carry csrf_field()",
+            substr_count($src, 'csrf_field()') >= $posts);
+    }
+}
+check('logout.php requires a token',   str_contains($logout, 'csrf_verify'));
+$api = file_get_contents($root . '/api/parse-torrent.php');
+check('parse-torrent.php requires authentication', str_contains($api, 'isAuthenticated()'));
+check('parse-torrent.php requires a CSRF token',   str_contains($api, 'csrf_require(true)'));
+check('torrents.php sends the token with fetch()',
+    str_contains(file_get_contents($root . '/torrents.php'), "'X-CSRF-Token': CSRF_TOKEN"));
+
+echo "\nR-01  DB-derived output is encoded for its context\n";
+check('e() escapes HTML metacharacters',
+    e('<script>&"') === '&lt;script&gt;&amp;&quot;');
+check('eu() percent-encodes URL metacharacters',
+    eu('a b&c=d') === 'a+b%26c%3Dd');
+$sinks = [];
+foreach (array_merge($pages, $incs) as $f) {
+    $src = file_get_contents($f);
+    if (preg_match_all('~<\?=\s*\$(?:peer|torrent|user|row|snatch)\[[^\]]+\]\s*\?>~', $src, $m)) {
+        foreach ($m[0] as $hit) {
+            $sinks[] = str_replace($root . '/', '', $f) . ': ' . $hit;
+        }
+    }
+}
+check('no unescaped DB-derived echo remains (' . count($sinks) . ' found)',
+    $sinks === [], implode(' | ', array_slice($sinks, 0, 3)));
+
+echo "\nParser hardening (admin/api/parse-torrent.php)\n";
+check('bdecode recursion is bounded',      str_contains($api, 'BDECODE_MAX_DEPTH'));
+check('recursive calls propagate depth',   substr_count($api, '$depth + 1') === 3);
+check('string length is range-checked',    str_contains($api, 'string length out of range'));
+check('upload size is bounded',            str_contains($api, 'MAX_TORRENT_BYTES'));
+check('upload provenance is verified',     str_contains($api, 'is_uploaded_file'));
+check('formatBytes is not re-declared',    !preg_match('~^function formatBytes~m', $api));
+
 $total = $pass + $fail;
 echo "\n" . str_repeat('-', 58) . "\n";
 printf("  %d/%d invariants hold%s\n", $pass, $total, $fail ? " -- $fail REGRESSED" : '');

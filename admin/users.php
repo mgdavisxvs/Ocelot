@@ -8,6 +8,7 @@ $error = '';
 
 // Handle user actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_require();
     $action = $_POST['action'] ?? '';
 
     try {
@@ -126,7 +127,7 @@ include 'includes/header.php';
                     ?>
                     <tr>
                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-white">
-                            <?= $user['user_id'] ?>
+                            <?= e($user['user_id']) ?>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-green-400">
                             <?= formatBytes($user['uploaded']) ?>
@@ -141,7 +142,7 @@ include 'includes/header.php';
                             <?= timeAgo($user['last_seen']) ?>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                            <button @click="deleteUserId = <?= $user['user_id'] ?>"
+                            <button @click="deleteUserId = <?= (int) $user['user_id'] ?>"
                                     class="text-red-400 hover:text-red-300">
                                 <?= icon('trash-2', 'w-4 h-4') ?>
                             </button>
@@ -166,6 +167,7 @@ include 'includes/header.php';
             </div>
 
             <form method="POST" class="space-y-4">
+                <?= csrf_field() ?>
                 <input type="hidden" name="action" value="add">
 
                 <div>
@@ -222,6 +224,7 @@ include 'includes/header.php';
             <p class="text-gray-300 mb-6">Are you sure you want to remove this user? This action cannot be undone.</p>
 
             <form method="POST" class="flex gap-2">
+                <?= csrf_field() ?>
                 <input type="hidden" name="action" value="delete">
                 <input type="hidden" name="user_id" :value="deleteUserId">
 

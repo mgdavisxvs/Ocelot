@@ -173,8 +173,105 @@ function timeAgo($timestamp) {
     return date('Y-m-d H:i', $timestamp);
 }
 
-// Simple session-based auth
-session_start();
+// ---------------------------------------------------------------------------
+// Session hardening (FV-05)
+//
+// Cookie parameters must be set BEFORE session_start() or they are ignored.
+// httponly keeps the session cookie out of reach of any script on the page;
+// samesite=Lax is defence in depth BEHIND the CSRF token below, never instead
+// of it. 'secure' is set only when the request actually arrived over TLS, so
+// this still works on a plain-HTTP development host.
+// ---------------------------------------------------------------------------
+$isHttps = (!empty($_SERVER['HTTPS']) && strtolower($_SERVER['HTTPS']) !== 'off')
+        || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path'     => '/',
+        'httponly' => true,
+        'secure'   => $isHttps,
+        'samesite' => 'Lax',
+    ]);
+    session_start();
+}
+
+// ---------------------------------------------------------------------------
+// CSRF protection (FV-06)
+//
+// Every state-mutating request must present a token bound to the session.
+// Browsers will happily send the session cookie on a cross-site request; they
+// will not send this token, because an attacker's page cannot read it.
+// ---------------------------------------------------------------------------
+
+/** Per-session CSRF token, minted on first use. */
+function csrf_token(): string
+{
+    if (empty($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['csrf_token'];
+}
+
+/** Hidden input carrying the token. Place inside every mutating <form>. */
+function csrf_field(): string
+{
+    return '<input type="hidden" name="csrf_token" value="'
+         . htmlspecialchars(csrf_token(), ENT_QUOTES) . '">';
+}
+
+/** Constant-time comparison against the session token. */
+function csrf_verify(?string $token): bool
+{
+    return is_string($token)
+        && $token !== ''
+        && !empty($_SESSION['csrf_token'])
+        && hash_equals($_SESSION['csrf_token'], $token);
+}
+
+/**
+ * Reject the request unless it carries a valid token.
+ *
+ * Accepts the token from a form field or from the X-CSRF-Token header, so
+ * fetch()-driven endpoints are covered by the same check as <form> posts.
+ */
+function csrf_require(bool $asJson = false): void
+{
+    $token = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    if (csrf_verify(is_string($token) ? $token : '')) {
+        return;
+    }
+    http_response_code(403);
+    if ($asJson) {
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'CSRF token missing or invalid']);
+    } else {
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "403 Forbidden - CSRF token missing or invalid.";
+    }
+    exit;
+}
+
+// ---------------------------------------------------------------------------
+// Output encoding helpers (FV-04 / R-01)
+//
+// Distinct helpers per output context, because the contexts are not
+// interchangeable: HTML text, URL query parameter, and JS numeric literal each
+// require a different encoder. Named short so that escaping is the path of
+// least resistance at the call site.
+// ---------------------------------------------------------------------------
+
+/** Escape for HTML text or a quoted attribute value. */
+function e($value): string
+{
+    return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+}
+
+/** Escape for use inside a URL query string. */
+function eu($value): string
+{
+    return urlencode((string) $value);
+}
 
 function requireAuth() {
     if (!isset($_SESSION['authenticated']) || $_SESSION['authenticated'] !== true) {

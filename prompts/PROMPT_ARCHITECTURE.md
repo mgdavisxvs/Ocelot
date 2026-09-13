@@ -1,6 +1,6 @@
 # MASTER PROMPT ARCHITECTURE — Tripartite Filter Expansion
-### Instrument v1.2 · Gödel Unified Council (GUC) governance discipline
-### Status: RATIFIED. OBJ-9 RATIFIED · D-01..D-04 REMEDIATED (§12.1)
+### Instrument v1.3 · Gödel Unified Council (GUC) governance discipline
+### Status: RATIFIED. Ledger CLEAR — no S0/S1/S2 open (§12.2)
 ### Principal rulings of record: OBJ-7 (§9.1) · OBJ-8 (§11)
 
 ---
@@ -837,13 +837,87 @@ Produced incidentally by the §11 pass. Verified against source, not inferred.
 
   SELF-TEST: php admin/selftest.php  →  31/31 invariants hold.
 
-  RESIDUAL, NOT FIXED (outside the enumerated scope; reported not silently
-  carried): admin/peers.php emits $peer['user_id'] and $peer['torrent_id']
-  unescaped from DB rows. NOT confirmed exploitable — provenance is the
-  tracker's own integer IDs — but the sink is unescaped and should be
-  closed. Also unaddressed: FV-05 (no session_regenerate_id on login) and
-  FV-06 (no CSRF token on state mutation). Neither was a finding in the
-  §12 ledger; both are real and should be scheduled.
+  All residuals from v1.2 are now closed. See §12.2.
+
+### 12.2 SECOND REMEDIATION PASS — FV-05, FV-06, R-01 (v1.3)
+
+```
+  ┌──────┬────────────────────────────────────────────────┬──────────────┐
+  │ ID   │ REMEDIATION                                     │ VERIFIED BY  │
+  ├──────┼────────────────────────────────────────────────┼──────────────┤
+  │ FV-05│ session_regenerate_id(true) on successful auth; │ LIVE HTTP:   │
+  │  S1  │ CSRF token re-minted with the new session;      │ id rotates   │
+  │      │ cookie set httponly + samesite=Lax + secure     │ 0310dcca ->  │
+  │      │ when TLS; params set before session_start();    │ dbf91638     │
+  │      │ logout clears $_SESSION, cookie AND session.    │              │
+  ├──────┼────────────────────────────────────────────────┼──────────────┤
+  │ FV-06│ Per-session 256-bit token. csrf_require() on    │ LIVE HTTP:   │
+  │  S1  │ every mutating path: users, torrents, login,    │ no token 403 │
+  │      │ logout, and the upload API. Accepted from a     │ forged   403 │
+  │      │ form field or X-CSRF-Token, so the fetch()      │ valid    302 │
+  │      │ upload is covered by the same check.            │              │
+  ├──────┼────────────────────────────────────────────────┼──────────────┤
+  │ R-01 │ All 14 DB-derived sinks encoded FOR THEIR       │ selftest:    │
+  │  S3  │ CONTEXT, across 6 files — not just peers.php:   │ 0 unescaped  │
+  │      │ 11 HTML text via e(), 2 URL params via eu(),    │ sinks remain │
+  │      │ 1 JS numeric via an (int) cast.                 │              │
+  └──────┴────────────────────────────────────────────────┴──────────────┘
+
+  NEW FINDINGS, discovered while implementing and fixed in the same pass:
+
+  ┌──────┬────────────────────────────────────────────────┬──────────────┐
+  │ A-01 │ admin/api/parse-torrent.php had NO AUTH AT ALL. │ LIVE HTTP:   │
+  │  S1  │ It never loaded config.php, so anyone on the    │ unauth POST  │
+  │      │ internet could POST arbitrary bytes into the    │ -> 401       │
+  │      │ bencode parser. Now requires auth + token.      │              │
+  ├──────┼────────────────────────────────────────────────┼──────────────┤
+  │ A-02 │ bdecode() recursed without bound. "llll..." in  │ selftest:    │
+  │  S2  │ a few hundred bytes exhausts the stack and      │ depth bound  │
+  │      │ kills the process. Bounded at depth 32; string  │ + propagation│
+  │      │ lengths range-checked; upload size capped;      │ + range chk  │
+  │      │ is_uploaded_file() verified.                    │              │
+  ├──────┼────────────────────────────────────────────────┼──────────────┤
+  │ A-03 │ formatBytes() was declared in BOTH config.php   │ php -l +     │
+  │  S1  │ and parse-torrent.php. Adding the config        │ load test    │
+  │      │ require would have been a FATAL redeclaration   │              │
+  │      │ — the auth fix would have taken the endpoint    │              │
+  │      │ down. Duplicate removed.                        │              │
+  └──────┴────────────────────────────────────────────────┴──────────────┘
+
+  A-03 is the argument for the §9.1 tier rule in miniature: the "small
+  security fix" would have broken the endpoint outright had it shipped on
+  assertion instead of execution.
+
+  NEGATIVE RESULTS, recorded so the finding count is not inflated:
+    · torrentInfo.name renders via Alpine x-text (textContent), NOT x-html.
+      The parsed-torrent name is attacker-supplied but is not an XSS sink.
+    · peers.php $typeIcon is a ternary over two literals, never user input.
+
+  SELF-TEST: php admin/selftest.php  →  61/61 invariants hold.
+  END-TO-END: 7/7 live HTTP checks pass against php -S.
+
+  ┌──────┬────────────────────────────────────────────────┬──────────────┐
+  │ B-01 │ PRE-EXISTING, NOT INTRODUCED HERE: `go build    │ identical    │
+  │  S1  │ ./...` fails. go.mod declares one dependency,   │ failure at   │
+  │      │ but tracker/*.go imports eleven that are        │ baseline     │
+  │      │ absent: golang-jwt/jwt/v5, lib/pq, prometheus   │ 2b280f0 and  │
+  │      │ client_golang, redis/go-redis/v9, otel (+attr,  │ at HEAD; my  │
+  │      │ trace), x/crypto/acme/autocert, x/time/rate.    │ commits      │
+  │      │ The Go tracker therefore does not compile.      │ touch 0 .go  │
+  │      │ NOT FIXED: adding eleven third-party Go deps is │ files        │
+  │      │ a principal's decision, not a side effect of an │              │
+  │      │ admin-panel security pass — and it is precisely │              │
+  │      │ the dependency-drift question of §5 and §11.    │              │
+  └──────┴────────────────────────────────────────────────┴──────────────┘
+
+  METHOD DEFECT IN THE v1.2 PASS, recorded against myself:
+    v1.2 reported "go build: unaffected". That check was
+    `go build ./... 2>&1 | head -3 && echo ok` — the && tests head's exit
+    status, which is always 0, so the echo fired unconditionally. The
+    claim was true (my commits touch no Go files) but the EVIDENCE for it
+    was vacuous. Verified properly here by checking out the baseline and
+    diffing the failure output. A green check that cannot go red is not a
+    check; rule L5-1 should have caught it and did not.
 ```
 
 ---
@@ -852,24 +926,38 @@ Produced incidentally by the §11 pass. Verified against source, not inferred.
 
 ```
   ┌────────────────────────────────────────────────────────────────────┐
-  │ CLOSED                                                             │
-  │   OBJ-7  amended and ratified — §9.1 tier rule binding             │
-  │   OBJ-8  calibrated — d NOT derivable; §5.2 barred from citation   │
-  │   OBJ-9  ratified — activity-indexed C_maint + rule B-6 binding    │
-  │   D-01   S0 remediated and verified. No S0 remains on record.      │
-  │   D-02/03/04 + FV-04 remediated; 31/31 self-tests hold.            │
+  │ LEDGER STATE                                                       │
+  │   OBJ-7  amended and ratified      OBJ-8  calibrated (d not derivable)
+  │   OBJ-9  ratified                  OBJ-6  mitigated                │
+  │   D-01..D-04, FV-04, FV-05, FV-06, R-01, A-01..A-03  ALL CLOSED    │
   │                                                                    │
-  │ OPEN                                                               │
-  │   FV-05  no session_regenerate_id() on successful login       S1   │
-  │   FV-06  no CSRF token on any state-mutating admin action     S1   │
-  │   R-01   peers.php emits DB-derived IDs unescaped             S3   │
-  │          (latent; becomes S1 if those columns are ever text)  ▲    │
+  │   No S0, S1, or S2 defect is open against the admin panel.         │
+  │                                                                    │
+  │ REMAINING, BY CLASS                                                │
+  │   S3  OBJ-6  persona proliferation — mitigated by rule J-1, not    │
+  │              eliminated; revisit if seat commentary degrades       │
+  │   S3  OBJ-8  d remains underivable until a repo carries 3+ years   │
+  │              of manifest history and 10+ version-change events     │
+  │                                                                    │
+  │ OPEN, PRE-EXISTING, OUTSIDE THIS PASS                              │
+  │   B-01  S1  `go build ./...` fails: 11 imports missing from go.mod.│
+  │             Needs a principal ruling on adding those dependencies. │
   │                                                                    │
   │ THE SINGLE NEXT SAFE ACTION                                        │
-  │   FV-06. Session fixation (FV-05) is a two-line fix and rides      │
-  │   along, but CSRF is the larger exposure: every admin mutation is  │
-  │   currently forgeable by any page the authenticated operator       │
-  │   visits. Both are T3 under §9.1 and take the full gate array.     │
+  │   Rule on B-01. The admin panel is clean; the Go tracker does not  │
+  │   compile, which outranks anything else remaining. After that, the │
+  │   instrument's Phase II kill criterion (§10)                       │
+  │   now has data to judge: this pass found 1 S0 and 4 S1 across a    │
+  │   6-file panel — far above the "< 1 per 10 modules" abandonment    │
+  │   threshold. The gate array has paid for itself once. Proceed to   │
+  │   Phase III (pilot on one NEW module) rather than extending the    │
+  │   retrospective sweep.                                             │
+  │                                                                    │
+  │   Recommended, not required: ADMIN_PASS is currently derived from  │
+  │   a hardcoded 'changeme' via password_hash() at request time. That │
+  │   is a deployment concern rather than a code defect, but it is the │
+  │   weakest remaining link in the panel and should be moved to       │
+  │   configuration before any internet-facing deployment.             │
   └────────────────────────────────────────────────────────────────────┘
 ```
 

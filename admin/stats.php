@@ -172,7 +172,7 @@ include 'includes/header.php';
                 ?>
                 <div>
                     <div class="flex justify-between text-sm mb-1">
-                        <span class="text-blue-400">#<?= $i + 1 ?> Torrent <?= $torrent['torrent_id'] ?></span>
+                        <span class="text-blue-400">#<?= $i + 1 ?> Torrent <?= e($torrent['torrent_id']) ?></span>
                         <span class="text-white font-medium"><?= number_format($torrent['announce_count']) ?> announces</span>
                     </div>
                     <div class="w-full bg-gray-700 rounded-full h-2">

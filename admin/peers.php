@@ -167,13 +167,13 @@ include 'includes/header.php';
                     ?>
                     <tr class="hover:bg-gray-750">
                         <td class="px-4 py-3 whitespace-nowrap text-sm text-blue-400">
-                            <a href="?user_id=<?= $peer['user_id'] ?>" class="hover:underline">
-                                <?= $peer['user_id'] ?>
+                            <a href="?user_id=<?= eu($peer['user_id']) ?>" class="hover:underline">
+                                <?= e($peer['user_id']) ?>
                             </a>
                         </td>
                         <td class="px-4 py-3 whitespace-nowrap text-sm text-purple-400">
-                            <a href="?torrent_id=<?= $peer['torrent_id'] ?>" class="hover:underline">
-                                <?= $peer['torrent_id'] ?>
+                            <a href="?torrent_id=<?= eu($peer['torrent_id']) ?>" class="hover:underline">
+                                <?= e($peer['torrent_id']) ?>
                             </a>
                         </td>
                         <td class="px-4 py-3 whitespace-nowrap text-sm <?= $typeClass ?>">
@@ -181,7 +181,7 @@ include 'includes/header.php';
                             <?= $typeLabel ?>
                         </td>
                         <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-400 font-mono">
-                            <?= htmlspecialchars($peer['ip']) ?>:<?= $peer['port'] ?>
+                            <?= htmlspecialchars($peer['ip']) ?>:<?= e($peer['port']) ?>
                         </td>
                         <td class="px-4 py-3 whitespace-nowrap text-sm text-green-400">
                             <?= formatBytes($peer['uploaded']) ?>

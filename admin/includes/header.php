@@ -28,6 +28,12 @@
     <style>
         [x-cloak] { display: none !important; }
     </style>
+
+    <script>
+        // Token for fetch()-driven endpoints. Same value the forms carry;
+        // readable by same-origin script only, which is the point.
+        const CSRF_TOKEN = <?= json_encode(csrf_token()) ?>;
+    </script>
 </head>
 <body class="h-full">
     <div class="min-h-full">
@@ -72,7 +78,7 @@
                                 }
                                 ?>
                             </span>
-                            <a href="logout.php" class="text-gray-300 hover:text-white">
+                            <a href="logout.php?csrf_token=<?= eu(csrf_token()) ?>" class="text-gray-300 hover:text-white">
                                 <?= icon('log-out', 'w-5 h-5') ?>
                             </a>
                         </div>
@@ -93,7 +99,7 @@
                     <a href="users.php" class="<?= basename($_SERVER['PHP_SELF']) === 'users.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Users</a>
                     <a href="peers.php" class="<?= basename($_SERVER['PHP_SELF']) === 'peers.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Peers</a>
                     <a href="stats.php" class="<?= basename($_SERVER['PHP_SELF']) === 'stats.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Statistics</a>
-                    <a href="logout.php" class="text-gray-300 hover:bg-gray-700 hover:text-white block rounded-md px-3 py-2 text-base font-medium">Logout</a>
+                    <a href="logout.php?csrf_token=<?= eu(csrf_token()) ?>" class="text-gray-300 hover:bg-gray-700 hover:text-white block rounded-md px-3 py-2 text-base font-medium">Logout</a>
                 </div>
             </div>
         </nav>

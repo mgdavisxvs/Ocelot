@@ -206,8 +206,8 @@ include 'includes/header.php';
                     <?php else: ?>
                         <?php foreach (array_slice($recentSnatches, 0, 10) as $snatch): ?>
                         <tr>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-white"><?= $snatch['torrent_id'] ?></td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-blue-400"><?= $snatch['user_id'] ?></td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-white"><?= e($snatch['torrent_id']) ?></td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-blue-400"><?= e($snatch['user_id']) ?></td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400"><?= timeAgo($snatch['timestamp']) ?></td>
                         </tr>
                         <?php endforeach; ?>
