@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -111,23 +112,48 @@ func main() {
 		}
 	}()
 
-	// ── Server ────────────────────────────────────────────────────────────────
+	// ── Servers (M-03: port split :34000/:34001/:34002) ──────────────────────
 	server := tracker.NewServer(config, worker)
+	controlSrv := tracker.NewControlServer(config, worker)
+	opsSrv, readyFlag := tracker.NewOpsServer(config, worker)
 
 	shutdownCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("Listening on %s", config.ListenAddr)
+		log.Printf("Tracker plane listening on %s", config.ListenAddr)
 		if err := server.ListenAndServe(); err != nil {
-			log.Printf("Server error: %v", err)
+			log.Printf("Tracker server error: %v", err)
+		}
+	}()
+	go func() {
+		if err := controlSrv.ListenAndServe(); err != nil {
+			log.Printf("Control server error: %v", err)
+		}
+	}()
+	go func() {
+		if err := opsSrv.ListenAndServe(); err != nil {
+			log.Printf("Ops server error: %v", err)
 		}
 	}()
 
+	// Mark ready after all servers are started.
+	readyFlag.SetReady()
+
 	<-shutdownCh
 	log.Println("Shutdown signal received — draining connections...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	if err := server.Shutdown(); err != nil {
-		log.Printf("Shutdown error: %v", err)
+		log.Printf("Tracker shutdown error: %v", err)
+	}
+	if err := controlSrv.Shutdown(ctx); err != nil {
+		log.Printf("Control shutdown error: %v", err)
+	}
+	if err := opsSrv.Shutdown(ctx); err != nil {
+		log.Printf("Ops shutdown error: %v", err)
 	}
 	log.Println("Shutdown complete")
 }

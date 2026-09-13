@@ -31,6 +31,14 @@ type FileConfig struct {
 	Readonly          bool
 	DBDir             string
 	GazelleURL        string // optional Gazelle callback endpoint
+
+	// Port-split (M-03)
+	ControlPort int // default 34001 — REST management API
+	OpsPort     int // default 34002 — health/metrics/pprof
+
+	// TLS for the control plane (S-03)
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -54,6 +62,8 @@ func DefaultFileConfig() *FileConfig {
 		ScheduleInterval:  3,
 		Readonly:          false,
 		DBDir:             "./data/db",
+		ControlPort:       34001,
+		OpsPort:           34002,
 	}
 }
 
@@ -131,6 +141,14 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.DBDir = val
 		case "gazelle_url":
 			cfg.GazelleURL = val
+		case "control_port":
+			cfg.ControlPort = parseIntVal(val, cfg.ControlPort)
+		case "ops_port":
+			cfg.OpsPort = parseIntVal(val, cfg.OpsPort)
+		case "tls_cert_file":
+			cfg.TLSCertFile = val
+		case "tls_key_file":
+			cfg.TLSKeyFile = val
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -153,6 +171,10 @@ func (fc *FileConfig) ToTrackerConfig() *Config {
 		ReportPassword:   fc.ReportPassword,
 		ReadTimeout:      readTimeout,
 		WriteTimeout:     readTimeout,
+		ControlAddr:      fmt.Sprintf(":%d", fc.ControlPort),
+		OpsAddr:          fmt.Sprintf(":%d", fc.OpsPort),
+		TLSCertFile:      fc.TLSCertFile,
+		TLSKeyFile:       fc.TLSKeyFile,
 	}
 }
 

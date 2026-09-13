@@ -42,6 +42,14 @@ type Config struct {
 	WriteTimeout     time.Duration
 	ScheduleInterval int
 	GazelleURL       string
+
+	// Port-split (M-03): control plane (:34001) and operational plane (:34002).
+	ControlAddr string
+	OpsAddr     string
+
+	// TLS for the control plane (S-03).
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
 func NewServer(config *Config, worker *Worker) *Server {
@@ -170,7 +178,9 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 	passkey := parts[0]
 	action := parts[1]
 
-	if len(passkey) != 32 {
+	// M-01: admin routes use SitePassword as passkey, which need not be 32 chars.
+	isAdminAction := action == "update" || action == "stats" || action == "torrents" || action == "peers" || action == "whitelist"
+	if !isAdminAction && len(passkey) != 32 {
 		return s.errorResponse("Malformed announce", httpClose), httpClose
 	}
 
