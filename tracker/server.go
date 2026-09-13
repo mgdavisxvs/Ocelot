@@ -539,8 +539,10 @@ func (s *Server) handleScrape(req *http.Request, passkey string, clientIP net.IP
 	params := req.URL.Query()
 	infoHashes := params["info_hash"]
 
-	// Build scrape response
-	response := "d5:filesd"
+	// Built through BencodeDict, which sorts keys. Concatenating them by hand
+	// emitted complete/incomplete/downloaded, which is not the sorted order
+	// BEP 3 requires.
+	files := make(map[string]string, len(infoHashes))
 
 	for _, infoHash := range infoHashes {
 		torrent, ok := s.worker.Torrents.Get(infoHash)
@@ -554,14 +556,16 @@ func (s *Server) handleScrape(req *http.Request, passkey string, clientIP net.IP
 		completed := torrent.Completed
 		torrent.mu.RUnlock()
 
-		// Bencode: length:hash d8:completei<seeders>e10:incompletei<leechers>e10:downloadedi<completed>ee
-		response += fmt.Sprintf("%d:%s", len(infoHash), infoHash)
-		response += fmt.Sprintf("d8:completei%de10:incompletei%de10:downloadedi%dee",
-			seederCount, leecherCount, completed)
+		files[infoHash] = BencodeDict(map[string]string{
+			"complete":   BencodeInt(int64(seederCount)),
+			"downloaded": BencodeInt(int64(completed)),
+			"incomplete": BencodeInt(int64(leecherCount)),
+		})
 	}
 
-	response += "ee"
-	return s.response(response, httpClose, false)
+	return s.response(BencodeDict(map[string]string{
+		"files": BencodeDict(files),
+	}), httpClose, false)
 }
 
 // handleUpdate processes tracker update requests (admin API)
@@ -637,48 +641,27 @@ func (s *Server) jsonResponse(content []byte, httpClose bool) []byte {
 
 // bencodedAnnounceResponse builds a bencoded announce response
 func (s *Server) bencodedAnnounceResponse(resp *AnnounceResponse, httpClose bool) []byte {
-	// Build bencoded dictionary (matches C++ worker.cpp:703-725)
-	var b strings.Builder
-	b.Grow(350)
-
-	b.WriteString("d8:completei")
-	b.WriteString(fmt.Sprintf("%d", resp.Complete))
-	b.WriteString("e10:downloadedi")
-	b.WriteString(fmt.Sprintf("%d", 0)) // TODO: get from torrent
-	b.WriteString("e10:incompletei")
-	b.WriteString(fmt.Sprintf("%d", resp.Incomplete))
-	b.WriteString("e8:intervali")
-	b.WriteString(fmt.Sprintf("%d", resp.Interval))
-	b.WriteString("e12:min intervali")
-	b.WriteString(fmt.Sprintf("%d", resp.MinInterval))
-	b.WriteString("e5:peers")
-
-	if len(resp.Peers) == 0 {
-		b.WriteString("0:")
-	} else {
-		b.WriteString(fmt.Sprintf("%d:", len(resp.Peers)))
-		b.Write(resp.Peers)
+	// BencodeDict sorts the keys, so correct ordering is structural rather
+	// than something each new field has to be slotted into by hand.
+	dict := map[string]string{
+		"complete":     BencodeInt(int64(resp.Complete)),
+		"downloaded":   BencodeInt(0),
+		"incomplete":   BencodeInt(int64(resp.Incomplete)),
+		"interval":     BencodeInt(int64(resp.Interval)),
+		"min interval": BencodeInt(int64(resp.MinInterval)),
+		"peers":        BencodeString(string(resp.Peers)),
 	}
 
-	// BEP 7 puts IPv6 peers in a separate key. Bencode dictionaries are
-	// ordered by key, and "peers" sorts before "peers6" before "warning
-	// message", so this belongs here. Omitted when empty, as BEP 7 allows.
+	// BEP 7 keeps IPv6 peers separate, and allows omitting the key entirely.
 	if len(resp.Peers6) > 0 {
-		b.WriteString("6:peers6")
-		b.WriteString(fmt.Sprintf("%d:", len(resp.Peers6)))
-		b.Write(resp.Peers6)
+		dict["peers6"] = BencodeString(string(resp.Peers6))
 	}
 
 	if resp.Warning != "" {
-		// Add warning message
-		b.WriteString("15:warning message")
-		b.WriteString(fmt.Sprintf("%d:", len(resp.Warning)))
-		b.WriteString(resp.Warning)
+		dict["warning message"] = BencodeString(resp.Warning)
 	}
 
-	b.WriteString("e")
-
-	return s.response(b.String(), httpClose, false)
+	return s.response(BencodeDict(dict), httpClose, false)
 }
 
 // errorResponse returns a bencoded error response
