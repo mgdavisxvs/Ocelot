@@ -8,7 +8,9 @@
 #include <iostream>
 #include <mutex>
 #include <ctime>
-#include "site_comm.h"
+#include "config.h"
+#include "db_interface.h"
+#include "site_comm_interface.h"
 #include "ocelot.h"
 
 enum tracker_status { OPEN, PAUSED, CLOSING }; // tracker status
@@ -16,8 +18,8 @@ enum tracker_status { OPEN, PAUSED, CLOSING }; // tracker status
 class worker {
 	private:
 		config * conf;
-		mysql * db;
-		site_comm * s_comm;
+		db_interface * db;
+		site_comm_interface * s_comm;
 		torrent_list &torrents_list;
 		user_list &users_list;
 		std::vector<std::string> &whitelist;
@@ -44,7 +46,7 @@ class worker {
 		inline bool peer_is_visible(user_ptr &u, peer *p);
 
 	public:
-		worker(config * conf_obj, torrent_list &torrents, user_list &users, std::vector<std::string> &_whitelist, mysql * db_obj, site_comm * sc);
+		worker(config * conf_obj, torrent_list &torrents, user_list &users, std::vector<std::string> &_whitelist, db_interface * db_obj, site_comm_interface * sc);
 		void reload_config(config * conf);
 		std::string work(const std::string &input, std::string &ip, client_opts_t &client_opts);
 		std::string announce(const std::string &input, torrent &tor, user_ptr &u, params_type &params, params_type &headers, std::string &ip, client_opts_t &client_opts);
