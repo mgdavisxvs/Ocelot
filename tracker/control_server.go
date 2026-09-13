@@ -19,6 +19,7 @@ type ControlServer struct {
 	worker  *Worker
 	config  *Config
 	httpSrv *http.Server
+	ext     *ControlServerExt // optional swarm-coordination layer; nil when unused
 }
 
 func NewControlServer(config *Config, worker *Worker) *ControlServer {

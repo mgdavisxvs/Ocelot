@@ -69,6 +69,15 @@ func main() {
 		Stats:     stats,
 	}
 
+	// ── Swarm coordination plane ──────────────────────────────────────────────
+	artifacts := tracker.NewArtifactList()
+	nodes := tracker.NewNodeRegistry()
+	replicas := tracker.NewNodeReplicaMap()
+	admission := tracker.NewSwarmAdmissionPolicy()
+	controller := tracker.NewSwarmPolicyController(
+		artifacts, torrents, nodes, replicas, admission, 60*time.Second,
+	)
+
 	// ── Background subsystems ─────────────────────────────────────────────────
 	reaper := tracker.NewReaper(torrents, config.ScheduleInterval, config.PeersTimeout)
 	reaper.Start()
@@ -115,6 +124,8 @@ func main() {
 	// ── Servers (M-03: port split :34000/:34001/:34002) ──────────────────────
 	server := tracker.NewServer(config, worker)
 	controlSrv := tracker.NewControlServer(config, worker)
+	controlSrv.AttachControllerDeps(nodes, replicas, admission, controller)
+	controlSrv.RegisterAgentRoutes()
 	opsSrv, readyFlag := tracker.NewOpsServer(config, worker)
 
 	shutdownCh := make(chan os.Signal, 1)
@@ -136,6 +147,11 @@ func main() {
 			log.Printf("Ops server error: %v", err)
 		}
 	}()
+
+	// Swarm policy controller runs until shutdown.
+	controllerCtx, stopController := context.WithCancel(context.Background())
+	go controller.Run(controllerCtx)
+	defer stopController()
 
 	// Mark ready after all servers are started.
 	readyFlag.SetReady()
