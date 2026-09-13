@@ -417,30 +417,34 @@ func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwan
 	if isLeecher {
 		seederCount := torrent.Seeders.Size()
 		if seederCount > 0 {
-			seederKeys := make([]string, 0, seederCount)
-			seederMap := make(map[string]*Peer, seederCount)
+			// Single allocation: key+peer pairs in one slice avoids the
+			// separate seederKeys []string + seederMap map from before.
+			type seederEntry struct {
+				key  string
+				peer *Peer
+			}
+			entries := make([]seederEntry, 0, seederCount)
 			torrent.Seeders.ForEach(func(key string, peer *Peer) bool {
-				seederKeys = append(seederKeys, key)
-				seederMap[key] = peer
+				entries = append(entries, seederEntry{key, peer})
 				return true
 			})
 
 			startIdx := 0
 			if torrent.LastSelectedSeeder != "" {
-				for i, key := range seederKeys {
-					if key == torrent.LastSelectedSeeder {
-						startIdx = (i + 1) % len(seederKeys)
+				for i, e := range entries {
+					if e.key == torrent.LastSelectedSeeder {
+						startIdx = (i + 1) % len(entries)
 						break
 					}
 				}
 			}
 
-			for i := 0; i < len(seederKeys) && found < int(numwant); i++ {
-				idx := (startIdx + i) % len(seederKeys)
-				key := seederKeys[idx]
-				addPeer(seederMap[key], key)
+			for i := 0; i < len(entries) && found < int(numwant); i++ {
+				idx := (startIdx + i) % len(entries)
+				e := entries[idx]
+				addPeer(e.peer, e.key)
 				if found > 0 {
-					torrent.LastSelectedSeeder = key
+					torrent.LastSelectedSeeder = e.key
 				}
 			}
 		}

@@ -35,7 +35,8 @@ type Config struct {
 	ListenAddr       string
 	AnnounceInterval int
 	PeersTimeout     int
-	MaxMiddlemen     int
+	MaxConnections   int // hard cap on open TCP sockets; 0 = no limit
+	MaxMiddlemen     int // goroutine-pool size for request handling
 	NumWantLimit     int
 	KeepaliveTimeout time.Duration
 	SitePassword     string
@@ -89,7 +90,7 @@ func (s *Server) ListenAndServe() error {
 		}
 
 		s.mu.Lock()
-		if len(s.activeConns) >= s.config.MaxMiddlemen {
+		if s.config.MaxConnections > 0 && len(s.activeConns) >= s.config.MaxConnections {
 			s.mu.Unlock()
 			conn.Close()
 			continue

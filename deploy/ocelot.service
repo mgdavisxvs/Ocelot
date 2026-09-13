@@ -14,6 +14,12 @@ ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
 
+# GC tuning: collect at 200% live-set growth rather than the default 100%.
+# Halves GC frequency on a 2 GB VPS; costs ~1.5× peak heap vs baseline.
+Environment=GOGC=200
+# Pin to available CPUs; adjust to match your VPS vCPU count.
+Environment=GOMAXPROCS=2
+
 # Reload torrent/user/whitelist state on SIGUSR1
 KillMode=mixed
 SendSIGKILL=yes

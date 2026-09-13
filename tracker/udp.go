@@ -29,14 +29,19 @@ type udpConnRecord struct {
 	expires time.Time
 }
 
+// udpWorkerPoolSize is the maximum number of concurrent UDP packet handlers.
+// Excess packets are dropped rather than blocking the receive loop.
+const udpWorkerPoolSize = 512
+
 // UDPServer is a BEP-15 UDP tracker server.
 type UDPServer struct {
-	conn       *net.UDPConn
-	worker     *Worker
-	mu         sync.Mutex
-	connIDs    map[uint64]*udpConnRecord
-	stopCh     chan struct{}
-	wg         sync.WaitGroup
+	conn     *net.UDPConn
+	worker   *Worker
+	mu       sync.Mutex
+	connIDs  map[uint64]*udpConnRecord
+	stopCh   chan struct{}
+	wg       sync.WaitGroup
+	sem      chan struct{} // bounded pool semaphore
 }
 
 // NewUDPServer creates a UDPServer bound to addr.
@@ -49,11 +54,16 @@ func NewUDPServer(addr string, worker *Worker) (*UDPServer, error) {
 	if err != nil {
 		return nil, err
 	}
+	sem := make(chan struct{}, udpWorkerPoolSize)
+	for i := 0; i < udpWorkerPoolSize; i++ {
+		sem <- struct{}{}
+	}
 	return &UDPServer{
 		conn:    conn,
 		worker:  worker,
 		connIDs: make(map[uint64]*udpConnRecord),
 		stopCh:  make(chan struct{}),
+		sem:     sem,
 	}, nil
 }
 
@@ -84,9 +94,21 @@ func (s *UDPServer) Serve() {
 			continue
 		}
 
+		// Acquire a worker slot non-blocking; drop the packet if the pool
+		// is full rather than spawning unlimited goroutines under flood.
+		select {
+		case <-s.sem:
+		default:
+			continue // pool exhausted — drop packet
+		}
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
-		go s.handle(pkt, addr)
+		s.wg.Add(1)
+		go func(p []byte, a *net.UDPAddr) {
+			defer func() { s.sem <- struct{}{} }()
+			defer s.wg.Done()
+			s.handle(p, a)
+		}(pkt, addr)
 	}
 }
 

@@ -42,16 +42,17 @@ type Peer struct {
 // PeerKey generates a unique, randomized key for a peer.
 // Randomization distributes peers across hash buckets for better map performance,
 // matching the C++ worker.cpp:315 logic.
+// The [25]byte lives on the caller's stack; only the final string conversion
+// allocates, halving the allocations vs the previous make([]byte) approach.
 func PeerKey(peerID []byte, userID UserID, torrentID TorrentID) string {
-	randomByte := peerID[12+(torrentID&7)]
-	key := make([]byte, 1+4+len(peerID))
-	key[0] = randomByte
+	var key [25]byte
+	key[0] = peerID[12+(torrentID&7)]
 	key[1] = byte(userID >> 24)
 	key[2] = byte(userID >> 16)
 	key[3] = byte(userID >> 8)
 	key[4] = byte(userID)
 	copy(key[5:], peerID)
-	return string(key)
+	return string(key[:])
 }
 
 // CompactIPPort creates the 6-byte compact peer format (BEP-23, IPv4 only).

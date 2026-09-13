@@ -164,6 +164,7 @@ func (fc *FileConfig) ToTrackerConfig() *Config {
 		ListenAddr:       fmt.Sprintf(":%d", fc.ListenPort),
 		AnnounceInterval: fc.AnnounceInterval,
 		PeersTimeout:     fc.PeersTimeout,
+		MaxConnections:   fc.MaxConnections,
 		MaxMiddlemen:     fc.MaxMiddlemen,
 		NumWantLimit:     fc.NumWantLimit,
 		KeepaliveTimeout: time.Duration(fc.KeepaliveTimeout) * time.Second,
