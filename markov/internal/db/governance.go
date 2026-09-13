@@ -6,6 +6,42 @@ import (
 	"encoding/json"
 )
 
+// DeploymentStage is the lifecycle stage of a Markov chain model (UMM-06).
+// Stages advance only via explicit operator action — never automatically.
+//
+//   SHADOW         → records predictions; no tracker effect (safe default)
+//   ADVISORY       → recommendations surfaced to operators; no automated action
+//   BOUNDED_CONTROL → recommendations applied within strict operator-defined bounds
+//   ACTIVE         → full live recommendations applied to tracker behavior
+//
+// Promotion gates (minimum requirements, not automated):
+//   SHADOW → ADVISORY:        sufficient N_eff, calibration review completed
+//   ADVISORY → BOUNDED_CONTROL: measured operational value, FPR acceptable, operator approval
+//   BOUNDED_CONTROL → ACTIVE:  extended validation, explicit operator sign-off
+//
+// A new model version must restart from SHADOW. Never allow a model version
+// change to carry the previous stage forward automatically.
+type DeploymentStage string
+
+const (
+	StageShadow         DeploymentStage = "SHADOW"
+	StageAdvisory       DeploymentStage = "ADVISORY"
+	StageBoundedControl DeploymentStage = "BOUNDED_CONTROL"
+	StageActive         DeploymentStage = "ACTIVE"
+)
+
+// EvidenceStats separates quantities that were formerly conflated in a single
+// EffectiveSamples field (UMM-04). These are distinct:
+//   - EffectiveSamples measures data volume (how much was observed)
+//   - PosteriorMean and the credible interval measure transition-probability
+//     certainty (how confident is the dominant-state forecast)
+type EvidenceStats struct {
+	EffectiveSamples float64 `json:"effective_samples"` // Σ counts - n×α: real obs beyond prior
+	PosteriorMean    float64 `json:"posterior_mean"`    // MLE probability of dominant next-state transition
+	CILow            float64 `json:"ci_low"`            // 95% Beta credible interval, lower bound
+	CIHigh           float64 `json:"ci_high"`           // 95% Beta credible interval, upper bound
+}
+
 // ModelMetadata holds versioned governance metadata for a named chain.
 type ModelMetadata struct {
 	ChainName       string
@@ -14,7 +50,8 @@ type ModelMetadata struct {
 	SmoothingAlpha  float64
 	ObsIntervalSec  int
 	MatrixVersion   int
-	EffSamples      []float64 // effective sample count per state
+	EffSamples      []float64       // effective sample count per state
+	DeploymentStage DeploymentStage // lifecycle stage (UMM-06)
 	CreatedAt       int64
 	UpdatedAt       int64
 }
@@ -25,11 +62,15 @@ func (d *DB) UpsertModelMetadata(ctx context.Context, m ModelMetadata) error {
 	if b, err := json.Marshal(m.EffSamples); err == nil {
 		sampJSON = string(b)
 	}
+	stage := string(m.DeploymentStage)
+	if stage == "" {
+		stage = string(StageShadow)
+	}
 	_, err := d.pool.ExecContext(ctx, `
 		INSERT INTO markov_model_metadata
 			(chain_name, schema_version, decay_lambda, smoothing_alpha,
-			 obs_interval_sec, matrix_version, eff_samples_json, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?)
+			 obs_interval_sec, matrix_version, eff_samples_json, deployment_stage, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(chain_name) DO UPDATE SET
 			schema_version=excluded.schema_version,
 			decay_lambda=excluded.decay_lambda,
@@ -39,7 +80,7 @@ func (d *DB) UpsertModelMetadata(ctx context.Context, m ModelMetadata) error {
 			eff_samples_json=excluded.eff_samples_json,
 			updated_at=excluded.updated_at`,
 		m.ChainName, m.SchemaVersion, m.DecayLambda, m.SmoothingAlpha,
-		m.ObsIntervalSec, m.MatrixVersion, sampJSON, m.CreatedAt, m.UpdatedAt)
+		m.ObsIntervalSec, m.MatrixVersion, sampJSON, stage, m.CreatedAt, m.UpdatedAt)
 	return err
 }
 
@@ -47,7 +88,8 @@ func (d *DB) UpsertModelMetadata(ctx context.Context, m ModelMetadata) error {
 func (d *DB) LoadModelMetadata(ctx context.Context) ([]ModelMetadata, error) {
 	rows, err := d.pool.QueryContext(ctx,
 		`SELECT chain_name, schema_version, decay_lambda, smoothing_alpha,
-		        obs_interval_sec, matrix_version, eff_samples_json, created_at, updated_at
+		        obs_interval_sec, matrix_version, eff_samples_json,
+		        COALESCE(deployment_stage, 'SHADOW'), created_at, updated_at
 		 FROM markov_model_metadata`)
 	if err != nil {
 		return nil, err
@@ -57,16 +99,44 @@ func (d *DB) LoadModelMetadata(ctx context.Context) ([]ModelMetadata, error) {
 	for rows.Next() {
 		var m ModelMetadata
 		var sampJSON sql.NullString
+		var stage string
 		if err := rows.Scan(&m.ChainName, &m.SchemaVersion, &m.DecayLambda, &m.SmoothingAlpha,
-			&m.ObsIntervalSec, &m.MatrixVersion, &sampJSON, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			&m.ObsIntervalSec, &m.MatrixVersion, &sampJSON, &stage, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if sampJSON.Valid && sampJSON.String != "" {
 			_ = json.Unmarshal([]byte(sampJSON.String), &m.EffSamples)
 		}
+		m.DeploymentStage = DeploymentStage(stage)
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// SetDeploymentStage updates the deployment stage for a named chain (UMM-06).
+// This is an operator action; validation of promotion gates is the caller's
+// responsibility. The function records only the requested stage transition.
+func (d *DB) SetDeploymentStage(ctx context.Context, chainName string, stage DeploymentStage) error {
+	_, err := d.pool.ExecContext(ctx,
+		`UPDATE markov_model_metadata SET deployment_stage=? WHERE chain_name=?`,
+		string(stage), chainName)
+	return err
+}
+
+// GetDeploymentStage returns the current deployment stage for a chain.
+// Returns StageShadow if the chain is not yet tracked.
+func (d *DB) GetDeploymentStage(ctx context.Context, chainName string) (DeploymentStage, error) {
+	var stage string
+	err := d.pool.QueryRowContext(ctx,
+		`SELECT COALESCE(deployment_stage, 'SHADOW') FROM markov_model_metadata WHERE chain_name=?`,
+		chainName).Scan(&stage)
+	if err == sql.ErrNoRows {
+		return StageShadow, nil
+	}
+	if err != nil {
+		return StageShadow, err
+	}
+	return DeploymentStage(stage), nil
 }
 
 // RecommendationRecord is a single logged recommendation from the Markov engine.

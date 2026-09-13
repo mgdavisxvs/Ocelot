@@ -35,6 +35,7 @@ func New(addr string, eng *engine.Engine) *Server {
 	mux.HandleFunc("/freeleech", s.handleFreeleech)
 	mux.HandleFunc("/model/metadata", s.handleModelMetadata)
 	mux.HandleFunc("/model/calibration", s.handleCalibration)
+	mux.HandleFunc("/model/stage", s.handleModelStage)
 	s.server = &http.Server{
 		Addr:         addr,
 		Handler:      mux,
@@ -119,22 +120,25 @@ func (s *Server) handleTorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOK(w, map[string]any{
-		"torrent_id":           pred.TorrentID,
-		"health_state":         chain.TorrentStateNames[pred.HealthState],
-		"health_state_id":      pred.HealthState,
-		"pi_current":           pred.Pi,
-		"pi_1h":                pred.Pi1h,
-		"pi_6h":                pred.Pi6h,
-		"pi_24h":               pred.Pi24h,
-		"pi_72h":               pred.Pi72h,
-		"dead_prob_1h":         pred.DeadProb1h,
-		"dead_prob_6h":         pred.DeadProb6h,
-		"dead_prob_24h":        pred.DeadProb24h,
-		"dead_prob_72h":        pred.DeadProb72h,
-		"expected_dead_hours":  pred.ExpectedDeadHours,
-		"entropy_bits":         pred.Entropy,
-		"effective_samples":    pred.EffectiveSamples,
-		"recommended_interval": pred.RecommendedInterval,
+		"torrent_id":               pred.TorrentID,
+		"health_state":             chain.TorrentStateNames[pred.HealthState],
+		"health_state_id":          pred.HealthState,
+		"pi_current":               pred.Pi,
+		"pi_1h":                    pred.Pi1h,
+		"pi_6h":                    pred.Pi6h,
+		"pi_24h":                   pred.Pi24h,
+		"pi_72h":                   pred.Pi72h,
+		"unavailable_prob_1h":      pred.UnavailableProb1h,
+		"unavailable_prob_6h":      pred.UnavailableProb6h,
+		"unavailable_prob_24h":     pred.UnavailableProb24h,
+		"unavailable_prob_72h":     pred.UnavailableProb72h,
+		"expected_unavailable_hours": pred.ExpectedUnavailableHours,
+		"entropy_bits":             pred.Entropy,
+		"effective_samples":        pred.Evidence.EffectiveSamples,
+		"posterior_mean":           pred.Evidence.PosteriorMean,
+		"ci_low":                   pred.Evidence.CILow,
+		"ci_high":                  pred.Evidence.CIHigh,
+		"recommended_interval":     pred.RecommendedInterval,
 	})
 }
 
@@ -270,20 +274,62 @@ func (s *Server) handleModelMetadata(w http.ResponseWriter, r *http.Request) {
 	rows := make([]map[string]any, len(metas))
 	for i, m := range metas {
 		rows[i] = map[string]any{
-			"chain_name":       m.ChainName,
-			"schema_version":   m.SchemaVersion,
-			"decay_lambda":     m.DecayLambda,
-			"smoothing_alpha":  m.SmoothingAlpha,
-			"obs_interval_sec": m.ObsIntervalSec,
-			"matrix_version":   m.MatrixVersion,
-			"eff_samples":      m.EffSamples,
-			"updated_at":       m.UpdatedAt,
+			"chain_name":        m.ChainName,
+			"schema_version":    m.SchemaVersion,
+			"decay_lambda":      m.DecayLambda,
+			"smoothing_alpha":   m.SmoothingAlpha,
+			"obs_interval_sec":  m.ObsIntervalSec,
+			"matrix_version":    m.MatrixVersion,
+			"eff_samples":       m.EffSamples,
+			"deployment_stage":  string(m.DeploymentStage),
+			"updated_at":        m.UpdatedAt,
 		}
 	}
 	jsonOK(w, map[string]any{
 		"chains":      rows,
 		"shadow_mode": s.eng.ShadowMode(),
 	})
+}
+
+// GET  /model/stage?chain=<name>          — returns current deployment stage (UMM-06)
+// POST /model/stage?chain=<name>&stage=<STAGE> — sets deployment stage (operator action only)
+//
+// Valid stages: SHADOW, ADVISORY, BOUNDED_CONTROL, ACTIVE.
+// Promotion gates are enforced by policy, not code. This endpoint records only the
+// requested transition; operators are responsible for gate validation before calling POST.
+func (s *Server) handleModelStage(w http.ResponseWriter, r *http.Request) {
+	chainName := r.URL.Query().Get("chain")
+	if chainName == "" {
+		http.Error(w, "chain query parameter required", http.StatusBadRequest)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		stage, err := s.eng.GetDeploymentStage(r.Context(), chainName)
+		if err != nil {
+			slog.Error("GetDeploymentStage", "chain", chainName, "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		jsonOK(w, map[string]string{"chain": chainName, "stage": stage})
+	case http.MethodPost:
+		stage := r.URL.Query().Get("stage")
+		switch stage {
+		case "SHADOW", "ADVISORY", "BOUNDED_CONTROL", "ACTIVE":
+		default:
+			http.Error(w, "invalid stage; valid: SHADOW, ADVISORY, BOUNDED_CONTROL, ACTIVE", http.StatusBadRequest)
+			return
+		}
+		if err := s.eng.SetDeploymentStage(r.Context(), chainName, stage); err != nil {
+			slog.Error("SetDeploymentStage", "chain", chainName, "stage", stage, "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		slog.Info("deployment stage updated", "chain", chainName, "stage", stage)
+		jsonOK(w, map[string]string{"chain": chainName, "stage": stage})
+	default:
+		http.Error(w, "GET or POST only", http.StatusMethodNotAllowed)
+	}
 }
 
 // GET /model/calibration — returns aggregate Brier/log-loss calibration by chain/horizon.

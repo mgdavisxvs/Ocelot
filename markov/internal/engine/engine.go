@@ -48,9 +48,10 @@ func New(cfg *config.Config, database *db.DB) (*Engine, error) {
 	e := &Engine{
 		cfg:           cfg,
 		db:            database,
-		peers:         newPeerEngine(cfg.DecayFactor, cfg.SmoothingAlpha),
-		users:         newUserEngine(cfg.DecayFactor, cfg.SmoothingAlpha, cfg.PathHistoryLen),
-		torrents:      newTorrentEngine(cfg.DecayFactor, cfg.SmoothingAlpha),
+		// UMM-02: each chain has its own decay factor tuned to its behavioral timescale.
+		peers:         newPeerEngine(cfg.PeerDecayFactor, cfg.SmoothingAlpha),
+		users:         newUserEngine(cfg.UserDecayFactor, cfg.SmoothingAlpha, cfg.PathHistoryLen),
+		torrents:      newTorrentEngine(cfg.TorrentDecayFactor, cfg.SmoothingAlpha),
 		beta:          newBetaEngine(),
 		matrixVersion: 1,
 	}
@@ -258,7 +259,7 @@ func (e *Engine) persist(ctx context.Context) {
 		slog.Error("UpsertUserStates", "err", err)
 	}
 
-	// Torrent predictions
+	// Torrent predictions (UMM-05: evidence-gated adaptive interval)
 	predictions := e.torrents.buildPredictions(
 		e.cfg.ForecastSteps1h,
 		e.cfg.ForecastSteps6h,
@@ -268,6 +269,7 @@ func (e *Engine) persist(ctx context.Context) {
 		e.cfg.MinAnnounceIntervalSec,
 		e.cfg.MaxAnnounceIntervalSec,
 		e.cfg.HysteresisFactor,
+		e.cfg.MinEvidenceForAdaptiveInterval,
 	)
 	predRecs := make([]db.TorrentPredictionRecord, len(predictions))
 	for i, p := range predictions {
@@ -371,20 +373,17 @@ func (e *Engine) logAnomalyRecommendations(ctx context.Context, anomalies []Anom
 }
 
 // persistModelMetadata writes current chain governance metadata to the DB.
+// UMM-02: decay_lambda is stored per-chain using the chain-specific factor.
 func (e *Engine) persistModelMetadata(ctx context.Context, now int64) {
-	type chainInfo struct {
-		name     string
-		n        int
-		effSamps func(int) float64
-	}
 	chains := []struct {
-		name string
-		n    int
-		efn  func(int) float64
+		name  string
+		n     int
+		efn   func(int) float64
+		decay float64
 	}{
-		{"peer", 5, e.peers.globalChain.EffectiveSampleCount},
-		{"user", 5, e.users.globalChain.EffectiveSampleCount},
-		{"torrent", 5, e.torrents.globalChain.EffectiveSampleCount},
+		{"peer", 5, e.peers.globalChain.EffectiveSampleCount, e.cfg.PeerDecayFactor},
+		{"user", 5, e.users.globalChain.EffectiveSampleCount, e.cfg.UserDecayFactor},
+		{"torrent", 5, e.torrents.globalChain.EffectiveSampleCount, e.cfg.TorrentDecayFactor},
 	}
 	for _, ch := range chains {
 		eff := make([]float64, ch.n)
@@ -394,7 +393,7 @@ func (e *Engine) persistModelMetadata(ctx context.Context, now int64) {
 		meta := db.ModelMetadata{
 			ChainName:      ch.name,
 			SchemaVersion:  e.cfg.ModelSchemaVersion,
-			DecayLambda:    e.cfg.DecayFactor,
+			DecayLambda:    ch.decay,
 			SmoothingAlpha: e.cfg.SmoothingAlpha,
 			ObsIntervalSec: e.cfg.ModelClockSec,
 			MatrixVersion:  e.matrixVersion,
@@ -405,6 +404,19 @@ func (e *Engine) persistModelMetadata(ctx context.Context, now int64) {
 			slog.Error("UpsertModelMetadata", "chain", ch.name, "err", err)
 		}
 	}
+}
+
+// GetDeploymentStage returns the current deployment stage for a named chain (UMM-06).
+func (e *Engine) GetDeploymentStage(ctx context.Context, chainName string) (string, error) {
+	stage, err := e.db.GetDeploymentStage(ctx, chainName)
+	return string(stage), err
+}
+
+// SetDeploymentStage advances the deployment stage for a named chain (UMM-06).
+// Validation of promotion gates is the caller's responsibility; this layer only
+// persists the requested stage. Never call this from automated code paths.
+func (e *Engine) SetDeploymentStage(ctx context.Context, chainName, stage string) error {
+	return e.db.SetDeploymentStage(ctx, chainName, db.DeploymentStage(stage))
 }
 
 func countFlagged(a []AnomalyResult) int {
@@ -431,6 +443,7 @@ func (e *Engine) TorrentPredictionForID(torrentID int64) *TorrentPrediction {
 		e.cfg.MinAnnounceIntervalSec,
 		e.cfg.MaxAnnounceIntervalSec,
 		e.cfg.HysteresisFactor,
+		e.cfg.MinEvidenceForAdaptiveInterval,
 	)
 }
 

@@ -15,13 +15,13 @@ func TestBoundedAdaptiveInterval_Bounds(t *testing.T) {
 	maxH := chain.MaxEntropy(5)
 	h := maxH // entropy at maximum
 
-	iv := boundedAdaptiveInterval(h, maxH, 600, 3600, 0, 0.1)
+	iv := boundedAdaptiveInterval(h, maxH, 600, 3600, 0, 0.1, 0, 0)
 	if iv != 3600 {
 		t.Errorf("max entropy should map to maxInterval 3600, got %d", iv)
 	}
 
 	// Zero entropy (point mass) → maximum interval.
-	iv2 := boundedAdaptiveInterval(0, maxH, 600, 3600, 0, 0.1)
+	iv2 := boundedAdaptiveInterval(0, maxH, 600, 3600, 0, 0.1, 0, 0)
 	if iv2 != 600 {
 		t.Errorf("zero entropy should map to minInterval 600, got %d", iv2)
 	}
@@ -30,7 +30,7 @@ func TestBoundedAdaptiveInterval_Bounds(t *testing.T) {
 func TestBoundedAdaptiveInterval_Clamp(t *testing.T) {
 	// Proposed value below min should clamp.
 	maxH := chain.MaxEntropy(5)
-	iv := boundedAdaptiveInterval(maxH, maxH, 600, 3600, 0, 0.0)
+	iv := boundedAdaptiveInterval(maxH, maxH, 600, 3600, 0, 0.0, 0, 0)
 	if iv < 600 {
 		t.Errorf("interval %d below min 600", iv)
 	}
@@ -44,18 +44,18 @@ func TestBoundedAdaptiveInterval_Hysteresis(t *testing.T) {
 	maxH := chain.MaxEntropy(5)
 	// Entropy ≈ half of maxH → interval near middle.
 	h := maxH * 0.5
-	iv1 := boundedAdaptiveInterval(h, maxH, 600, 3600, 0, 0.1)
+	iv1 := boundedAdaptiveInterval(h, maxH, 600, 3600, 0, 0.1, 0, 0)
 
 	// Small perturbation — slightly different entropy, should keep iv1.
 	h2 := h * 1.01 // 1% change
-	iv2 := boundedAdaptiveInterval(h2, maxH, 600, 3600, iv1, 0.1)
+	iv2 := boundedAdaptiveInterval(h2, maxH, 600, 3600, iv1, 0.1, 0, 0)
 	if iv2 != iv1 {
 		t.Logf("iv1=%d iv2=%d — small perturbation may or may not trigger hysteresis depending on rounding", iv1, iv2)
 	}
 
 	// Large change should update.
 	h3 := maxH * 0.99 // near-maximum entropy
-	iv3 := boundedAdaptiveInterval(h3, maxH, 600, 3600, iv1, 0.1)
+	iv3 := boundedAdaptiveInterval(h3, maxH, 600, 3600, iv1, 0.1, 0, 0)
 	if iv1 != 0 && iv3 == iv1 {
 		t.Logf("large entropy change from half to near-max: interval %d → %d", iv1, iv3)
 	}
@@ -72,7 +72,7 @@ func TestModelClockDecoupled(t *testing.T) {
 		te.globalChain.Observe(1, 2)
 	}
 	before := te.globalChain.Counts()
-	_ = te.getPrediction(999, 4, 24, 96, 288, 900, 600, 3600, 0.1)
+	_ = te.getPrediction(999, 4, 24, 96, 288, 900, 600, 3600, 0.1, 0)
 	after := te.globalChain.Counts()
 	for i := range before {
 		for j := range before[i] {
@@ -238,7 +238,7 @@ func TestTorrentBuildPredictionsMultiHorizon(t *testing.T) {
 	for range 50 {
 		te.globalChain.Observe(chain.TorrentHealthy, chain.TorrentAtRisk)
 		te.globalChain.Observe(chain.TorrentAtRisk, chain.TorrentDying)
-		te.globalChain.Observe(chain.TorrentDying, chain.TorrentDead)
+		te.globalChain.Observe(chain.TorrentDying, chain.TorrentUnavailable)
 	}
 	// Manually add a torrent.
 	te.mu.Lock()
@@ -248,7 +248,7 @@ func TestTorrentBuildPredictionsMultiHorizon(t *testing.T) {
 	te.distributions[1] = pi
 	te.mu.Unlock()
 
-	preds := te.buildPredictions(4, 24, 96, 288, 900, 600, 3600, 0.1)
+	preds := te.buildPredictions(4, 24, 96, 288, 900, 600, 3600, 0.1, 0)
 	if len(preds) != 1 {
 		t.Fatalf("buildPredictions returned %d, want 1", len(preds))
 	}
@@ -275,12 +275,12 @@ func TestTorrentBuildPredictionsMultiHorizon(t *testing.T) {
 		_ = label
 	}
 
-	// Dead probability should be non-decreasing over horizon (absorbing state).
-	if p.DeadProb1h > p.DeadProb6h+1e-6 {
-		t.Errorf("DeadProb1h %v > DeadProb6h %v", p.DeadProb1h, p.DeadProb6h)
+	// Unavailable probability should be non-decreasing over horizon (near-terminal state).
+	if p.UnavailableProb1h > p.UnavailableProb6h+1e-6 {
+		t.Errorf("UnavailableProb1h %v > UnavailableProb6h %v", p.UnavailableProb1h, p.UnavailableProb6h)
 	}
-	if p.DeadProb6h > p.DeadProb24h+1e-6 {
-		t.Errorf("DeadProb6h %v > DeadProb24h %v", p.DeadProb6h, p.DeadProb24h)
+	if p.UnavailableProb6h > p.UnavailableProb24h+1e-6 {
+		t.Errorf("UnavailableProb6h %v > UnavailableProb24h %v", p.UnavailableProb6h, p.UnavailableProb24h)
 	}
 
 	// Recommended interval must be within bounds.
@@ -303,7 +303,7 @@ func TestPredictionEntropyAndEvidence(t *testing.T) {
 	te.distributions[1] = pi
 	te.mu.Unlock()
 
-	pred := te.getPrediction(1, 4, 24, 96, 288, 900, 600, 3600, 0.1)
+	pred := te.getPrediction(1, 4, 24, 96, 288, 900, 600, 3600, 0.1, 0)
 	if pred == nil {
 		t.Fatal("getPrediction returned nil")
 	}
@@ -312,8 +312,8 @@ func TestPredictionEntropyAndEvidence(t *testing.T) {
 		t.Errorf("point-mass distribution entropy = %v, want < 0.5", pred.Entropy)
 	}
 	// EffectiveSamples should be large after 200 observations.
-	if pred.EffectiveSamples < 100 {
-		t.Errorf("EffectiveSamples = %v, want ≥ 100 after 200 obs", pred.EffectiveSamples)
+	if pred.Evidence.EffectiveSamples < 100 {
+		t.Errorf("Evidence.EffectiveSamples = %v, want ≥ 100 after 200 obs", pred.Evidence.EffectiveSamples)
 	}
 }
 
@@ -323,7 +323,7 @@ func TestFreeleechCandidatesSorted(t *testing.T) {
 	te := newTorrentEngine(0.99, 1.0)
 	for range 20 {
 		te.globalChain.Observe(chain.TorrentAtRisk, chain.TorrentDying)
-		te.globalChain.Observe(chain.TorrentDying, chain.TorrentDead)
+		te.globalChain.Observe(chain.TorrentDying, chain.TorrentUnavailable)
 	}
 	te.mu.Lock()
 	for id := int64(1); id <= 5; id++ {
@@ -334,7 +334,7 @@ func TestFreeleechCandidatesSorted(t *testing.T) {
 	}
 	te.mu.Unlock()
 
-	preds := te.buildPredictions(4, 24, 96, 288, 900, 600, 3600, 0.1)
+	preds := te.buildPredictions(4, 24, 96, 288, 900, 600, 3600, 0.1, 0)
 	candidates := te.buildFreeleechCandidates(preds, 10)
 
 	scores := make([]float64, len(candidates))

@@ -170,7 +170,8 @@ func (pe *PeerEngine) adaptiveInterval(torrentID int64, minInterval, maxInterval
 	pi := pe.distribution(torrentID)
 	h := chain.Entropy(pi)
 	maxH := chain.MaxEntropy(chain.NumPeerStates)
-	return boundedAdaptiveInterval(h, maxH, minInterval, maxInterval, 0, hysteresis)
+	// UMM-05: peer engine uses no evidence gating (effSamples=0, minEvidence=0).
+	return boundedAdaptiveInterval(h, maxH, minInterval, maxInterval, 0, hysteresis, 0, 0)
 }
 
 // snapshotStates returns all current peer states for DB persistence.

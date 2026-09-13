@@ -340,6 +340,28 @@ func ones(m int) []float64 {
 	return v
 }
 
+// DominantTransitionP returns the probability of the most-likely next state
+// from state s under the current smoothed transition matrix. Used by the engine
+// to compute Beta credible intervals without a full Counts() deep copy.
+func (c *Chain) DominantTransitionP(s int) float64 {
+	if s < 0 || s >= c.n {
+		return 0
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var total, maxCount float64
+	for _, v := range c.counts[s] {
+		total += v
+		if v > maxCount {
+			maxCount = v
+		}
+	}
+	if total < 1e-12 {
+		return 1.0 / float64(c.n)
+	}
+	return maxCount / total
+}
+
 // solveLinear solves A·x = b via Gaussian elimination with partial pivoting.
 func solveLinear(a [][]float64, b []float64, m int) []float64 {
 	// Augment [A|b]

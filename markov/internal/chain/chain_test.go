@@ -431,7 +431,7 @@ func TestTorrentHealthState(t *testing.T) {
 		seeders, leechers int64
 		want              int
 	}{
-		{0, 0, TorrentDead},
+		{0, 0, TorrentUnavailable},
 		{0, 5, TorrentDying},
 		{1, 10, TorrentAtRisk},
 		{2, 0, TorrentAtRisk},
@@ -451,25 +451,27 @@ func TestTorrentHealthState(t *testing.T) {
 }
 
 func TestUserRatioState(t *testing.T) {
+	// UMM-01: pure ratio bands only; no canLeech/freeleech parameters.
 	tests := []struct {
-		up, down  int64
-		canLeech  bool
-		freeleech bool
-		want      int
+		up, down int64
+		want     int
 	}{
-		{100, 0, true, false, UserHealthy},
-		{60, 100, true, false, UserHealthy},
-		{45, 100, true, false, UserWarning},
-		{15, 100, true, false, UserProbation},
-		{5, 100, true, false, UserBanned},
-		{0, 0, false, false, UserBanned},
-		{5, 100, true, true, UserFreeleech},
+		{2000, 0, UserSurplus},       // uploaded > 0, no downloads → surplus
+		{0, 0, UserSevereDeficit},    // new user, no activity → severe deficit
+		{200, 100, UserSurplus},      // ratio 2.0 → surplus
+		{199, 100, UserHealthy},      // ratio 1.99 → healthy
+		{60, 100, UserHealthy},       // ratio 0.6 → healthy
+		{59, 100, UserMarginal},      // ratio 0.59 → marginal
+		{30, 100, UserMarginal},      // ratio 0.3 → marginal
+		{29, 100, UserDeficit},       // ratio 0.29 → deficit
+		{10, 100, UserDeficit},       // ratio 0.1 → deficit
+		{9, 100, UserSevereDeficit},  // ratio 0.09 < 0.1 → severe deficit
 	}
 	for _, tt := range tests {
-		got := UserRatioState(tt.up, tt.down, tt.canLeech, tt.freeleech)
+		got := UserRatioState(tt.up, tt.down)
 		if got != tt.want {
-			t.Errorf("UserRatioState(%d, %d, %v, %v) = %s, want %s",
-				tt.up, tt.down, tt.canLeech, tt.freeleech,
+			t.Errorf("UserRatioState(%d, %d) = %s, want %s",
+				tt.up, tt.down,
 				UserStateNames[got], UserStateNames[tt.want])
 		}
 	}

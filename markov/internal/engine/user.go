@@ -69,10 +69,13 @@ func (ue *UserEngine) observe(users []db.UserRow, freeleechUIDs db.FreeleechUID)
 	seenUIDs := make(map[int64]struct{}, len(users))
 	for _, u := range users {
 		seenUIDs[u.ID] = struct{}{}
+		// UMM-01: skip freeleech users from chain observations. Accounting-regime
+		// changes (freeleech on/off) create artificial ratio jumps that corrupt
+		// the chain's model of organic ratio dynamics.
 		_, hasFreeleech := freeleechUIDs[u.ID]
-		newState := chain.UserRatioState(u.Uploaded, u.Downloaded, u.CanLeech, hasFreeleech)
+		newState := chain.UserRatioState(u.Uploaded, u.Downloaded)
 
-		if prev, ok := ue.lastState[u.ID]; ok && prev != newState {
+		if prev, ok := ue.lastState[u.ID]; ok && prev != newState && !hasFreeleech {
 			ue.globalChain.Observe(prev, newState)
 		}
 		ue.lastState[u.ID] = newState

@@ -41,7 +41,8 @@ func Open(cfg *config.Config) (*DB, error) {
 
 func (d *DB) Close() error { return d.pool.Close() }
 
-// ExpireDeadPeerStates removes peer state rows in TorrentDead state (4) older than olderThanUnix.
+// ExpireDeadPeerStates removes peer state rows in PeerDead state (4) older than olderThanUnix.
+// Note: state=4 here is PeerDead (peer lifecycle), not TorrentUnavailable (torrent health).
 // Called once per persist cycle to bound table growth (FR-008).
 func (d *DB) ExpireDeadPeerStates(ctx context.Context, olderThanUnix int64) error {
 	_, err := d.pool.ExecContext(ctx,
@@ -167,5 +168,8 @@ func (d *DB) createSchema() error {
 			return fmt.Errorf("exec %q: %w", s[:40], err)
 		}
 	}
+	// Schema migration: add deployment_stage column to existing installations (UMM-06).
+	// SQLite returns "duplicate column name" error if the column already exists; ignore it.
+	_, _ = d.pool.Exec(`ALTER TABLE markov_model_metadata ADD COLUMN deployment_stage TEXT NOT NULL DEFAULT 'SHADOW'`)
 	return nil
 }
