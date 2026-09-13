@@ -57,7 +57,7 @@ include 'includes/header.php';
 <?php if (isset($error)): ?>
 <div class="rounded-md bg-red-900 border border-red-700 p-4 mb-6">
     <div class="flex">
-        <i data-lucide="alert-circle" class="h-5 w-5 text-red-400"></i>
+        <?= icon('alert-circle', 'h-5 w-5 text-red-400') ?>
         <div class="ml-3">
             <p class="text-sm text-red-200">Database Error: <?= htmlspecialchars($error) ?></p>
         </div>
@@ -72,7 +72,7 @@ include 'includes/header.php';
         <div class="p-5">
             <div class="flex items-center">
                 <div class="flex-shrink-0">
-                    <i data-lucide="users" class="h-8 w-8 text-blue-400"></i>
+                    <?= icon('users', 'h-8 w-8 text-blue-400') ?>
                 </div>
                 <div class="ml-5 w-0 flex-1">
                     <dl>
@@ -89,7 +89,7 @@ include 'includes/header.php';
         <div class="p-5">
             <div class="flex items-center">
                 <div class="flex-shrink-0">
-                    <i data-lucide="arrow-up" class="h-8 w-8 text-green-400"></i>
+                    <?= icon('arrow-up', 'h-8 w-8 text-green-400') ?>
                 </div>
                 <div class="ml-5 w-0 flex-1">
                     <dl>
@@ -106,7 +106,7 @@ include 'includes/header.php';
         <div class="p-5">
             <div class="flex items-center">
                 <div class="flex-shrink-0">
-                    <i data-lucide="arrow-down" class="h-8 w-8 text-yellow-400"></i>
+                    <?= icon('arrow-down', 'h-8 w-8 text-yellow-400') ?>
                 </div>
                 <div class="ml-5 w-0 flex-1">
                     <dl>
@@ -123,7 +123,7 @@ include 'includes/header.php';
         <div class="p-5">
             <div class="flex items-center">
                 <div class="flex-shrink-0">
-                    <i data-lucide="activity" class="h-8 w-8 text-purple-400"></i>
+                    <?= icon('activity', 'h-8 w-8 text-purple-400') ?>
                 </div>
                 <div class="ml-5 w-0 flex-1">
                     <dl>

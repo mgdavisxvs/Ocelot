@@ -63,7 +63,7 @@ include 'includes/header.php';
     <?php if ($success): ?>
     <div class="rounded-md bg-green-900 border border-green-700 p-4 mb-6">
         <div class="flex">
-            <i data-lucide="check-circle" class="h-5 w-5 text-green-400"></i>
+            <?= icon('check-circle', 'h-5 w-5 text-green-400') ?>
             <div class="ml-3">
                 <p class="text-sm text-green-200"><?= htmlspecialchars($success) ?></p>
             </div>
@@ -74,7 +74,7 @@ include 'includes/header.php';
     <?php if ($error): ?>
     <div class="rounded-md bg-red-900 border border-red-700 p-4 mb-6">
         <div class="flex">
-            <i data-lucide="alert-circle" class="h-5 w-5 text-red-400"></i>
+            <?= icon('alert-circle', 'h-5 w-5 text-red-400') ?>
             <div class="ml-3">
                 <p class="text-sm text-red-200"><?= htmlspecialchars($error) ?></p>
             </div>
@@ -86,13 +86,13 @@ include 'includes/header.php';
     <div class="mb-6 flex justify-between items-center">
         <div>
             <p class="text-sm text-gray-400">
-                <i data-lucide="info" class="inline-block w-4 h-4"></i>
+                <?= icon('info', 'inline-block w-4 h-4') ?>
                 Showing <?= count($activeUsers) ?> active users
             </p>
         </div>
         <button @click="showAddModal = true"
                 class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700">
-            <i data-lucide="user-plus" class="w-4 h-4 mr-2"></i>
+            <?= icon('user-plus', 'w-4 h-4 mr-2') ?>
             Add User
         </button>
     </div>
@@ -114,7 +114,7 @@ include 'includes/header.php';
                 <?php if (empty($activeUsers)): ?>
                 <tr>
                     <td colspan="6" class="px-6 py-8 text-center text-gray-400">
-                        <i data-lucide="users" class="w-12 h-12 mx-auto mb-2 opacity-50"></i>
+                        <?= icon('users', 'w-12 h-12 mx-auto mb-2 opacity-50') ?>
                         <p>No active users found</p>
                     </td>
                 </tr>
@@ -143,7 +143,7 @@ include 'includes/header.php';
                         <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                             <button @click="deleteUserId = <?= $user['user_id'] ?>"
                                     class="text-red-400 hover:text-red-300">
-                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                <?= icon('trash-2', 'w-4 h-4') ?>
                             </button>
                         </td>
                     </tr>
@@ -161,7 +161,7 @@ include 'includes/header.php';
             <div class="flex justify-between items-center mb-4">
                 <h3 class="text-lg font-medium text-white">Add New User</h3>
                 <button @click="showAddModal = false" class="text-gray-400 hover:text-white">
-                    <i data-lucide="x" class="w-5 h-5"></i>
+                    <?= icon('x', 'w-5 h-5') ?>
                 </button>
             </div>
 
@@ -181,7 +181,7 @@ include 'includes/header.php';
                                class="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
                         <button type="button" onclick="generatePasskey()"
                                 class="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white hover:bg-gray-600">
-                            <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                            <?= icon('refresh-cw', 'w-4 h-4') ?>
                         </button>
                     </div>
                     <p class="text-xs text-gray-400 mt-1" id="passkeyLength">0/32</p>

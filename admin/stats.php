@@ -77,7 +77,7 @@ include 'includes/header.php';
 <?php if (isset($error)): ?>
 <div class="rounded-md bg-red-900 border border-red-700 p-4 mb-6">
     <div class="flex">
-        <i data-lucide="alert-circle" class="h-5 w-5 text-red-400"></i>
+        <?= icon('alert-circle', 'h-5 w-5 text-red-400') ?>
         <div class="ml-3">
             <p class="text-sm text-red-200">Error: <?= htmlspecialchars($error) ?></p>
         </div>
@@ -123,7 +123,7 @@ include 'includes/header.php';
     <!-- Database Shards -->
     <div class="bg-gray-800 shadow rounded-lg border border-gray-700 p-6">
         <h2 class="text-xl font-semibold text-white mb-4">
-            <i data-lucide="database" class="inline w-5 h-5"></i>
+            <?= icon('database', 'inline w-5 h-5') ?>
             Database Shards
         </h2>
         <div class="space-y-4">
@@ -149,7 +149,7 @@ include 'includes/header.php';
 
         <div class="mt-6 p-4 bg-gray-900 rounded-lg">
             <div class="flex items-center text-sm text-gray-300">
-                <i data-lucide="info" class="w-4 h-4 mr-2 text-blue-400"></i>
+                <?= icon('info', 'w-4 h-4 mr-2 text-blue-400') ?>
                 <span>SQLite with WAL mode • Auto-rotation at 84GB</span>
             </div>
         </div>
@@ -158,7 +158,7 @@ include 'includes/header.php';
     <!-- Top Torrents -->
     <div class="bg-gray-800 shadow rounded-lg border border-gray-700 p-6">
         <h2 class="text-xl font-semibold text-white mb-4">
-            <i data-lucide="trending-up" class="inline w-5 h-5"></i>
+            <?= icon('trending-up', 'inline w-5 h-5') ?>
             Top Torrents (Last Hour)
         </h2>
         <div class="space-y-3">
@@ -189,7 +189,7 @@ include 'includes/header.php';
 <!-- System Information -->
 <div class="bg-gray-800 shadow rounded-lg border border-gray-700 p-6">
     <h2 class="text-xl font-semibold text-white mb-4">
-        <i data-lucide="server" class="inline w-5 h-5"></i>
+        <?= icon('server', 'inline w-5 h-5') ?>
         System Information
     </h2>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6">

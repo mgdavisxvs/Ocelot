@@ -1,6 +1,6 @@
 # MASTER PROMPT ARCHITECTURE — Tripartite Filter Expansion
-### Instrument v1.1 · Gödel Unified Council (GUC) governance discipline
-### Status: RATIFIED. OBJ-7 AMENDED-AND-RATIFIED · OBJ-8 CALIBRATED
+### Instrument v1.2 · Gödel Unified Council (GUC) governance discipline
+### Status: RATIFIED. OBJ-9 RATIFIED · D-01..D-04 REMEDIATED (§12.1)
 ### Principal rulings of record: OBJ-7 (§9.1) · OBJ-8 (§11)
 
 ---
@@ -546,11 +546,12 @@ is pre-existing GUC structure.
  │      │ events; manifest lifetime 1 day. §5.2 stands  │      │ as ILLUS-│
  │      │ as illustrative and is barred from citation.  │      │ TRATIVE  │
  ├──────┼──────────────────────────────────────────────┼──────┼──────────┤
- │ OBJ-9│ C_maint(t)=C_0(1+d)^t assumes CONTINUOUS      │ S2   │ OPEN     │
- │      │ decay. Repository evidence (10.8-year         │      │ model    │
- │      │ dormancy at zero cost, then successful        │      │ revision │
- │      │ resurrection) falsifies it. Maintenance is    │      │ proposed │
- │      │ BURSTY and DEFERRABLE, not continuous.        │      │ rule B-6 │
+ │ OBJ-9│ C_maint(t)=C_0(1+d)^t assumes CONTINUOUS      │ S2   │ RATIFIED │
+ │      │ decay. Repository evidence (10.8-year         │      │ v1.2 —   │
+ │      │ dormancy at zero cost, then successful        │      │ activity-│
+ │      │ resurrection) falsifies it. Maintenance is    │      │ indexed  │
+ │      │ BURSTY and DEFERRABLE, not continuous.        │      │ form is  │
+ │      │ Activity-indexed form + rule B-6 adopted.     │      │ binding  │
  ├──────┼──────────────────────────────────────────────┼──────┼──────────┤
  │OBJ-10│ FV-07 severity UNDERSTATED in v1.0. It was    │ S1   │ RESOLVED │
  │      │ classified S2 (availability). Unpinned third- │      │ FV-07    │
@@ -731,7 +732,7 @@ maintenance model:
       Maintenance cost is not a continuous function of elapsed time. It is
       a function of ACTIVITY, plus a STEP cost at reactivation.
 
-  PROPOSED v2 FORM (not yet ratified):
+  RATIFIED FORM (v1.2, binding — supersedes the §5.1 continuous form):
                                         τ(t)
         C_maint(t) = A(t) · C_0 · (1+d)        +  R · [reactivation event]
 
@@ -784,10 +785,65 @@ Produced incidentally by the §11 pass. Verified against source, not inferred.
     request-derived. NOT TRIGGERED. Logged as S3 latent: the construct
     becomes S1 the moment any caller assigns from $_GET/$_POST.
 
-  REMEDIATION (not applied — outside the scope of the OBJ-7/OBJ-8 ruling):
-    pin every CDN URL to an exact version · add integrity= + crossorigin
-    to all four · vendor a local fallback and a window.* presence check ·
-    remove ALL third-party script tags from login.php, which needs none.
+### 12.1 REMEDIATION — APPLIED AND VERIFIED (v1.2)
+
+```
+  Tier under the §9.1 ratified rule: T3 (third-party script URL + auth page)
+  → FULL GATE ARRAY. Gate findings recorded below.
+
+  ┌──────┬────────────────────────────────────────────────┬──────────────┐
+  │ ID   │ REMEDIATION                                     │ VERIFIED BY  │
+  ├──────┼────────────────────────────────────────────────┼──────────────┤
+  │ D-01 │ login.php rebuilt with ZERO third-party         │ selftest     │
+  │      │ resources: hand-written CSS replaces the        │ D-01 block   │
+  │      │ Tailwind CDN, server-rendered inline SVG        │ (4 assertions│
+  │      │ replaces the icon library. Default-credential   │  green)      │
+  │      │ hint removed from the page.                     │              │
+  │ D-02 │ ASSET_MODE=local serves pinned, vendored        │ selftest     │
+  │      │ copies same-origin. No code path emits an       │ D-02/03      │
+  │      │ unpinned third-party script in either mode.     │ (13 files)   │
+  │ D-03 │ 'cdn' mode always emits integrity= +            │ asset_script │
+  │      │ crossorigin. SRI digests computed from the      │ both modes   │
+  │      │ actual served bytes, never fabricated.          │ exercised    │
+  │ D-04 │ Vendored fallbacks committed (764 KB). CDN      │ selftest     │
+  │      │ outage can no longer blank the admin UI.        │ byte-match   │
+  │ FV-04│ header.php <title> now escapes $pageTitle.      │ selftest     │
+  │      │ Latent sink closed before it became reachable.  │ FV-04 block  │
+  └──────┴────────────────────────────────────────────────┴──────────────┘
+
+  GATE [B] RULING — Lucide ELIMINATED, not pinned.
+    355 KB of JavaScript to render 21 icons. Rule B-3 (defence and
+    complexity proportionate to blast radius) rejects pinning a dependency
+    whose entire utility is 21 static shapes. Replaced by a 4.8 KB
+    server-rendered whitelist: a 71x reduction that also removes an origin,
+    a script-execution surface, and a runtime bootstrap call.
+
+  GATE [R] RULING — the whitelist is the guard, not the pin.
+    icon() resolves names against a fixed table and NEVER interpolates the
+    caller's string into output. peers.php passes a computed name; under the
+    old markup that was a latent injection sink, under icon() it cannot be.
+    Asserted directly: icon('"><script>alert(1)</script>') === ''.
+
+  GATE [M] RULING — ΔF = 0 on every pre-existing task.
+    No task gained a step, a decision, a recall item, or a wait. Local
+    assets remove a network round-trip per page, so ΔF is weakly negative.
+
+  DEPENDENCY SURFACE
+                                      BEFORE   AFTER
+    third-party origins (login page)       2       0
+    third-party origins (admin panel)      4       0
+    floating version specifiers            3       0
+    scripts without SRI                    4       0
+
+  SELF-TEST: php admin/selftest.php  →  31/31 invariants hold.
+
+  RESIDUAL, NOT FIXED (outside the enumerated scope; reported not silently
+  carried): admin/peers.php emits $peer['user_id'] and $peer['torrent_id']
+  unescaped from DB rows. NOT confirmed exploitable — provenance is the
+  tracker's own integer IDs — but the sink is unescaped and should be
+  closed. Also unaddressed: FV-05 (no session_regenerate_id on login) and
+  FV-06 (no CSRF token on state mutation). Neither was a finding in the
+  §12 ledger; both are real and should be scheduled.
 ```
 
 ---
@@ -796,19 +852,24 @@ Produced incidentally by the §11 pass. Verified against source, not inferred.
 
 ```
   ┌────────────────────────────────────────────────────────────────────┐
-  │ RULINGS CLOSED                                                     │
-  │   OBJ-7  amended and ratified — §9.1 tier rule is binding          │
+  │ CLOSED                                                             │
+  │   OBJ-7  amended and ratified — §9.1 tier rule binding             │
   │   OBJ-8  calibrated — d NOT derivable; §5.2 barred from citation   │
+  │   OBJ-9  ratified — activity-indexed C_maint + rule B-6 binding    │
+  │   D-01   S0 remediated and verified. No S0 remains on record.      │
+  │   D-02/03/04 + FV-04 remediated; 31/31 self-tests hold.            │
   │                                                                    │
-  │ RULINGS NOW OPEN                                                   │
-  │   OBJ-9  ratify or reject the activity-indexed C_maint form (§11.3)│
-  │   D-01   S0 in admin/login.php. Under rule L1-1 and the S0 class,  │
-  │          this BLOCKS emission for the admin panel. It is live in   │
-  │          the repository now. No override exists for S0.            │
+  │ OPEN                                                               │
+  │   FV-05  no session_regenerate_id() on successful login       S1   │
+  │   FV-06  no CSRF token on any state-mutating admin action     S1   │
+  │   R-01   peers.php emits DB-derived IDs unescaped             S3   │
+  │          (latent; becomes S1 if those columns are ever text)  ▲    │
   │                                                                    │
   │ THE SINGLE NEXT SAFE ACTION                                        │
-  │   Remediate D-01. It is four lines, needs no design decision, and  │
-  │   is the only S0 on record. Everything else waits behind it.       │
+  │   FV-06. Session fixation (FV-05) is a two-line fix and rides      │
+  │   along, but CSRF is the larger exposure: every admin mutation is  │
+  │   currently forgeable by any page the authenticated operator       │
+  │   visits. Both are T3 under §9.1 and take the full gate array.     │
   └────────────────────────────────────────────────────────────────────┘
 ```
 

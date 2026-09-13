@@ -105,7 +105,7 @@ include 'includes/header.php';
         <div class="flex items-end">
             <button type="submit"
                     class="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
-                <i data-lucide="filter" class="inline w-4 h-4 mr-1"></i>
+                <?= icon('filter', 'inline w-4 h-4 mr-1') ?>
                 Apply Filters
             </button>
         </div>
@@ -153,7 +153,7 @@ include 'includes/header.php';
                 <?php if (empty($peers)): ?>
                 <tr>
                     <td colspan="9" class="px-6 py-8 text-center text-gray-400">
-                        <i data-lucide="wifi-off" class="w-12 h-12 mx-auto mb-2 opacity-50"></i>
+                        <?= icon('wifi-off', 'w-12 h-12 mx-auto mb-2 opacity-50') ?>
                         <p>No active peers found</p>
                     </td>
                 </tr>
@@ -177,7 +177,7 @@ include 'includes/header.php';
                             </a>
                         </td>
                         <td class="px-4 py-3 whitespace-nowrap text-sm <?= $typeClass ?>">
-                            <i data-lucide="<?= $typeIcon ?>" class="inline w-4 h-4"></i>
+                            <?= icon($typeIcon, 'inline w-4 h-4') ?>
                             <?= $typeLabel ?>
                         </td>
                         <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-400 font-mono">
