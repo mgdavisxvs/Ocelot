@@ -43,6 +43,10 @@ type FileConfig struct {
 	// ControlSecret is the Bearer token for the REST control API (:34001).
 	// Independent of site_password; defaults to site_password when empty.
 	ControlSecret string
+
+	// AlertWebhookURL receives a POST when a node transitions REACHABLE → FLAPPING.
+	// Empty string disables flap alerts.
+	AlertWebhookURL string
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -155,6 +159,8 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.TLSKeyFile = val
 		case "control_secret":
 			cfg.ControlSecret = val
+		case "alert_webhook_url":
+			cfg.AlertWebhookURL = val
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -182,6 +188,7 @@ func (fc *FileConfig) ToTrackerConfig() *Config {
 		TLSCertFile:      fc.TLSCertFile,
 		TLSKeyFile:       fc.TLSKeyFile,
 		ControlSecret:    fc.ControlSecret,
+		AlertWebhookURL:  fc.AlertWebhookURL,
 	}
 }
 

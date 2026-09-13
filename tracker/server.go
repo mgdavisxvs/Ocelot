@@ -55,6 +55,10 @@ type Config struct {
 	// When set, it is required instead of SitePassword, keeping the two
 	// credentials independent. Defaults to SitePassword when empty.
 	ControlSecret string
+
+	// AlertWebhookURL is an optional HTTP endpoint that receives a POST when a
+	// managed node transitions REACHABLE → FLAPPING (OPP-D). Empty disables alerts.
+	AlertWebhookURL string
 }
 
 func NewServer(config *Config, worker *Worker) *Server {

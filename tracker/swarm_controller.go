@@ -1,9 +1,13 @@
 package tracker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"time"
 )
 
@@ -109,6 +113,16 @@ func (w PlacementWeights) Score(in PlacementInput) float64 {
 // (JOIN_SWARM, RETIRE_REPLICA) to agents via the directive channel, which the
 // agent transport layer delivers over HTTP.
 
+// heatCycleKey identifies a (artifact, node) pair for the auto-classification counter.
+type heatCycleKey struct {
+	infoHash string
+	nodeID   uint64
+}
+
+// flapAlertBaseDelay is the initial back-off between webhook retry attempts.
+// Declared as var so tests can patch it to zero for speed.
+var flapAlertBaseDelay = 2 * time.Second
+
 type SwarmPolicyController struct {
 	artifacts *ArtifactList
 	torrents  *TorrentList
@@ -123,6 +137,14 @@ type SwarmPolicyController struct {
 	directives chan ControllerAction
 
 	interval time.Duration // reconcile tick rate
+
+	// OPP-D: flap alert webhook.
+	alertWebhookURL string
+	alertHTTPClient *http.Client
+
+	// OPP-A: per-(artifact, node) consecutive high-demand cycle counter.
+	// Reconcile loop is single-threaded; no mutex needed.
+	heatCycles map[heatCycleKey]int
 }
 
 // NewSwarmPolicyController creates a controller. Callers must call Run(ctx).
@@ -144,7 +166,53 @@ func NewSwarmPolicyController(
 		weights:    DefaultPlacementWeights,
 		directives: make(chan ControllerAction, 256),
 		interval:   interval,
+		heatCycles: make(map[heatCycleKey]int),
 	}
+}
+
+// SetAlertWebhookURL configures the OPP-D flap alert endpoint.
+// Call before Run; safe to call with an empty string to disable alerts.
+func (c *SwarmPolicyController) SetAlertWebhookURL(url string) {
+	c.alertWebhookURL = url
+	if url != "" {
+		c.alertHTTPClient = &http.Client{Timeout: 5 * time.Second}
+	}
+}
+
+// sendFlapAlert dispatches a goroutine that POSTs a flap event to the configured
+// webhook URL. Retries up to 3 times on 5xx; does not retry on 4xx or network error.
+// No-op when alertWebhookURL is empty.
+func (c *SwarmPolicyController) sendFlapAlert(nodeID uint64, hostname string, flapCount int) {
+	if c.alertWebhookURL == "" {
+		return
+	}
+	url := c.alertWebhookURL
+	client := c.alertHTTPClient
+	payload, _ := json.Marshal(map[string]interface{}{
+		"node_id":    nodeID,
+		"hostname":   hostname,
+		"flap_count": flapCount,
+		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+	})
+	go func() {
+		const maxAttempts = 3
+		for i := 0; i < maxAttempts; i++ {
+			if i > 0 {
+				time.Sleep(flapAlertBaseDelay << (i - 1))
+			}
+			resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+			if err != nil {
+				continue
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+			if resp.StatusCode >= 500 {
+				continue
+			}
+			return // success or 4xx client error — do not retry
+		}
+		log.Printf("controller: flap alert for node %d (%s) failed after %d attempts", nodeID, hostname, maxAttempts)
+	}()
 }
 
 // Directives returns the read-only channel of outbound controller actions.
@@ -166,7 +234,7 @@ func (c *SwarmPolicyController) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			c.nodes.MarkStale(hbCutoff)
+			c.nodes.MarkStale(hbCutoff, c.sendFlapAlert)
 			c.reconcile()
 		}
 	}
@@ -182,7 +250,54 @@ func (c *SwarmPolicyController) reconcile() {
 	})
 }
 
+// heatmap-driven auto-classification thresholds (OPP-A).
+const (
+	heatFractionThreshold = 0.30 // fraction of demand from one /16 net to trigger upgrade
+	heatCyclePromote      = 3    // consecutive reconcile cycles above threshold to promote
+)
+
+// classifyEdgeReplicas auto-promotes EPHEMERAL replicas on EDGE nodes to CACHE
+// when their /16 network accounts for > 30% of demand for heatCyclePromote consecutive cycles.
+func (c *SwarmPolicyController) classifyEdgeReplicas(infoHash string, artifact *Artifact) {
+	if artifact.Heatmap == nil || artifact.Heatmap.TotalCount() == 0 {
+		return
+	}
+	c.replicas.ForHash(infoHash, func(r *NodeReplica) bool {
+		if !r.GetState().CountsAsVerified() || r.Class != ReplicaEphemeral {
+			return true
+		}
+		n, ok := c.nodes.Get(r.NodeID)
+		if !ok {
+			return true
+		}
+		n.mu.RLock()
+		tier := n.Tier
+		asn := n.ASN
+		n.mu.RUnlock()
+		if tier != NodeTierEdge || asn == 0 {
+			return true
+		}
+		nodeNet := uint16(asn & 0xFFFF)
+		frac := artifact.Heatmap.NetFraction(nodeNet)
+		key := heatCycleKey{infoHash: infoHash, nodeID: r.NodeID}
+		if frac > heatFractionThreshold {
+			c.heatCycles[key]++
+			if c.heatCycles[key] >= heatCyclePromote {
+				if r.UpgradeClass(ReplicaCache) {
+					log.Printf("controller: auto-promoted replica %s on node %d to CACHE (net=%d, cycles=%d)",
+						infoHash, r.NodeID, nodeNet, c.heatCycles[key])
+				}
+			}
+		} else {
+			c.heatCycles[key] = 0
+		}
+		return true
+	})
+}
+
 func (c *SwarmPolicyController) reconcileArtifact(infoHash string, artifact *Artifact) {
+	c.classifyEdgeReplicas(infoHash, artifact) // OPP-A: heatmap-driven tier classification
+
 	artifact.mu.RLock()
 	minR := artifact.MinReplicas
 	maxR := artifact.MaxReplicas

@@ -186,7 +186,7 @@ func TestNodeRegistryMarkStale(t *testing.T) {
 	r.Register(n)
 
 	// First MarkStale call: REACHABLE → FLAPPING (still IsReachable, not IsDirectable).
-	r.MarkStale(2 * time.Minute)
+	r.MarkStale(2*time.Minute, nil)
 	if n.GetReachState() != NodeFlapping {
 		t.Errorf("first missed HB should set FLAPPING, got %s", n.GetReachState())
 	}
@@ -199,7 +199,7 @@ func TestNodeRegistryMarkStale(t *testing.T) {
 
 	// Subsequent misses advance FlapCount until UNREACHABLE.
 	for i := 0; i < FlapThreshold; i++ {
-		r.MarkStale(2 * time.Minute)
+		r.MarkStale(2*time.Minute, nil)
 	}
 	if n.IsReachable() {
 		t.Error("node should be UNREACHABLE after FlapThreshold missed HBs")
@@ -486,7 +486,7 @@ func TestMarkStaleRaceWithHeartbeat(t *testing.T) {
 		close(done)
 	}()
 	for i := 0; i < 200; i++ {
-		r.MarkStale(2 * time.Minute)
+		r.MarkStale(2*time.Minute, nil)
 	}
 	<-done
 	// Primary assertion is that -race detects no data race.
@@ -509,7 +509,7 @@ func TestMarkStaleHeartbeatPreemptsFlap(t *testing.T) {
 	// Because MarkStale re-checks LastSeen under write lock, it must not flap.
 	n.Heartbeat("10.0.0.1", NodeCapabilities{}) // now LastSeen = time.Now()
 
-	r.MarkStale(2 * time.Minute) // threshold = 2min ago; node is fresh now
+	r.MarkStale(2*time.Minute, nil) // threshold = 2min ago; node is fresh now
 
 	if n.GetReachState() != NodeReachable {
 		t.Errorf("heartbeat before MarkStale should keep node REACHABLE, got %s",

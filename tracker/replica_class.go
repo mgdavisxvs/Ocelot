@@ -170,6 +170,18 @@ func (r *NodeReplica) GetState() NodeReplicaState {
 	return r.State
 }
 
+// UpgradeClass promotes the replica's class when to is higher priority than current.
+// Returns true if a promotion occurred. Used by the auto-classification engine.
+func (r *NodeReplica) UpgradeClass(to ReplicaClass) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if to > r.Class {
+		r.Class = to
+		return true
+	}
+	return false
+}
+
 // ── NodeReplicaMap ────────────────────────────────────────────────────────────
 // Concurrent-safe registry of NodeReplica indexed by (nodeID, infoHash).
 

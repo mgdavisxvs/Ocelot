@@ -468,7 +468,9 @@ func (r *NodeRegistry) DirectableNodes() []*NodeIdentity {
 
 // MarkStale advances the reach state of nodes silent for > cutoff.
 // REACHABLE → FLAPPING on first miss; FLAPPING → UNREACHABLE after FlapThreshold misses.
-func (r *NodeRegistry) MarkStale(cutoff time.Duration) {
+// onFlap, when non-nil, is called (outside any lock) whenever a node transitions
+// REACHABLE → FLAPPING. Used to fire observability alerts (OPP-D).
+func (r *NodeRegistry) MarkStale(cutoff time.Duration, onFlap func(id uint64, hostname string, flapCount int)) {
 	threshold := time.Now().Add(-cutoff)
 	r.mu.RLock()
 	stale := make([]uint64, 0)
@@ -494,11 +496,17 @@ func (r *NodeRegistry) MarkStale(cutoff time.Duration) {
 			n.mu.Unlock()
 			continue
 		}
+		var justFlapped bool
+		var snapID uint64
+		var snapHostname string
+		var snapFlapCount int
 		switch n.ReachState {
 		case NodeReachable:
 			n.ReachState = NodeFlapping
 			n.FlapCount = 1
 			n.LastFlap = time.Now()
+			justFlapped = true
+			snapID, snapHostname, snapFlapCount = n.NodeID, n.Hostname, n.FlapCount
 		case NodeFlapping:
 			n.FlapCount++
 			if n.FlapCount >= FlapThreshold {
@@ -506,6 +514,9 @@ func (r *NodeRegistry) MarkStale(cutoff time.Duration) {
 			}
 		}
 		n.mu.Unlock()
+		if justFlapped && onFlap != nil {
+			onFlap(snapID, snapHostname, snapFlapCount)
+		}
 	}
 }
 
