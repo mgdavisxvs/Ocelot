@@ -81,6 +81,9 @@ func main() {
 		auditLogger = nil
 	}
 
+	// ── Event Bus ─────────────────────────────────────────────────────────────
+	bus := tracker.NewEventBus()
+
 	// ── Worker ────────────────────────────────────────────────────────────────
 	worker := &tracker.Worker{
 		Config:      config,
@@ -93,6 +96,7 @@ func main() {
 		Whitelist:   whitelist,
 		Stats:       stats,
 		Audit:       auditLogger,
+		Bus:         bus,
 	}
 
 	// ── Background subsystems ─────────────────────────────────────────────────
@@ -149,6 +153,7 @@ func main() {
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintln(w, "ok")
 		})
+		mux.Handle("/events", tracker.SSEHandler(bus, config.SitePassword))
 		metricsAddr := fc.MetricsAddr
 		if metricsAddr == "" {
 			metricsAddr = ":6880"

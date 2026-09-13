@@ -516,6 +516,14 @@ type Worker struct {
 	Stats       *Stats
 	CB          *CircuitBreaker // optional DB circuit-breaker; nil → no protection
 	Audit       *AuditLogger    // optional audit log; nil → no audit
+	Bus         *EventBus       // optional event bus; nil → no events published
+}
+
+// publish is a nil-safe helper that emits e to the event bus when one is configured.
+func (w *Worker) publish(e Event) {
+	if w.Bus != nil {
+		w.Bus.Publish(e)
+	}
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.

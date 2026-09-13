@@ -63,6 +63,7 @@ func (w *Worker) adminAddTorrent(params map[string][]string) ([]byte, error) {
 		return nil, fmt.Errorf("persist torrent hash: %w", dbErr)
 	}
 	w.audit(context.Background(), "add_torrent", "torrent", idStr, true, nil)
+	w.publish(Event{Type: EventTorrentAdded, Payload: TorrentEventPayload{InfoHash: infoHash, ID: id, FreeType: uint8(ft)}, Time: time.Now()})
 	return jsonOK("torrent added")
 }
 
@@ -73,6 +74,7 @@ func (w *Worker) adminDeleteTorrent(params map[string][]string) ([]byte, error) 
 	}
 	w.Torrents.Delete(infoHash)
 	w.audit(context.Background(), "delete_torrent", "torrent", infoHash, true, nil)
+	w.publish(Event{Type: EventTorrentRemoved, Payload: TorrentEventPayload{InfoHash: infoHash}, Time: time.Now()})
 	return jsonOK("torrent deleted")
 }
 
@@ -98,6 +100,7 @@ func (w *Worker) adminUpdateTorrent(params map[string][]string) ([]byte, error) 
 		t.FreeType = FreeType(v)
 		t.mu.Unlock()
 	}
+	w.publish(Event{Type: EventTorrentUpdated, Payload: TorrentEventPayload{InfoHash: infoHash, ID: uint32(t.ID)}, Time: time.Now()})
 	return jsonOK("torrent updated")
 }
 
@@ -119,6 +122,7 @@ func (w *Worker) adminAddUser(params map[string][]string) ([]byte, error) {
 	if err := w.DB.RecordUserPasskey(UserID(id), passkey, canLeech, protectIP); err != nil {
 		return nil, fmt.Errorf("persist user passkey: %w", err)
 	}
+	w.publish(Event{Type: EventUserAdded, Payload: UserEventPayload{UserID: id, Passkey: passkey}, Time: time.Now()})
 	return jsonOK("user added")
 }
 
@@ -128,6 +132,7 @@ func (w *Worker) adminRemoveUser(params map[string][]string) ([]byte, error) {
 		return nil, fmt.Errorf("remove_user requires passkey")
 	}
 	w.Users.Delete(passkey)
+	w.publish(Event{Type: EventUserRemoved, Payload: UserEventPayload{Passkey: passkey}, Time: time.Now()})
 	return jsonOK("user removed")
 }
 
@@ -146,6 +151,7 @@ func (w *Worker) adminChangePasskey(params map[string][]string) ([]byte, error) 
 	if err := w.DB.RecordUserPasskey(u.ID, newPasskey, u.CanLeech.Load(), u.ProtectIP.Load()); err != nil {
 		return nil, fmt.Errorf("persist passkey change: %w", err)
 	}
+	w.publish(Event{Type: EventPasskeyChanged, Payload: PasskeyChangedPayload{UserID: uint32(u.ID), OldPasskey: oldPasskey, NewPasskey: newPasskey}, Time: time.Now()})
 	return jsonOK("passkey changed")
 }
 
@@ -158,6 +164,7 @@ func (w *Worker) adminAddWhitelist(params map[string][]string) ([]byte, error) {
 	if err := w.DB.AddWhitelistEntry(prefix); err != nil {
 		return nil, fmt.Errorf("persist whitelist entry: %w", err)
 	}
+	w.publish(Event{Type: EventWhitelistAdded, Payload: WhitelistEventPayload{Prefix: prefix}, Time: time.Now()})
 	return jsonOK("whitelist entry added")
 }
 
@@ -170,6 +177,7 @@ func (w *Worker) adminRemoveWhitelist(params map[string][]string) ([]byte, error
 	if err := w.DB.RemoveWhitelistEntry(prefix); err != nil {
 		return nil, fmt.Errorf("persist whitelist removal: %w", err)
 	}
+	w.publish(Event{Type: EventWhitelistRemoved, Payload: WhitelistEventPayload{Prefix: prefix}, Time: time.Now()})
 	return jsonOK("whitelist entry removed")
 }
 

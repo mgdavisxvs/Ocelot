@@ -348,6 +348,41 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		response.Warning = "Illegal character found in IP address"
 	}
 
+	// Publish events (nil-safe; no-op when Bus is not configured).
+	w.publish(Event{
+		Type: EventAnnounce,
+		Payload: AnnounceEventPayload{
+			InfoHash:   req.InfoHash,
+			UserID:     uint32(user.ID),
+			Event:      req.Event,
+			Left:       req.Left,
+			Uploaded:   req.Uploaded,
+			Downloaded: req.Downloaded,
+		},
+		Time: now,
+	})
+	if completedTorrent {
+		w.publish(Event{
+			Type:    EventSnatch,
+			Payload: SnatchEventPayload{InfoHash: req.InfoHash, UserID: uint32(user.ID)},
+			Time:    now,
+		})
+	}
+	if inserted {
+		w.publish(Event{
+			Type:    EventPeerJoined,
+			Payload: PeerEventPayload{InfoHash: req.InfoHash, UserID: uint32(user.ID), IP: ip.String(), Port: req.Port, Seeder: req.Left == 0},
+			Time:    now,
+		})
+	}
+	if stoppedTorrent {
+		w.publish(Event{
+			Type:    EventPeerLeft,
+			Payload: PeerEventPayload{InfoHash: req.InfoHash, UserID: uint32(user.ID), IP: ip.String(), Port: req.Port, Seeder: req.Left == 0},
+			Time:    now,
+		})
+	}
+
 	return response, nil
 }
 
