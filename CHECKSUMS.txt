@@ -1,0 +1,5 @@
+573b47a2a67844808576e98ac0619a93259b42b0dc9fac25334a7426f49206cb  ocelot-linux-amd64.tar.gz
+7dea99771b6e07cbcc15722574f12dde2cc0059b3f2b673d876de5bb9b872973  ocelot-linux-arm64.tar.gz
+02bd75b0ecc3e2704bd52dc3d36874ccbcb8f7c9e31a25f839a0a7d9c2fdf476  ocelot-macos-arm64.tar.gz
+eefb0e5900ee23b91fd858859df30b082929517716e3ee527b3fe13e43b60330  ocelot-macos-intel.tar.gz
+939ece819522d9bae0236f84dd826ec6f1acc04c18d433fdc22adc124e79d9ba  ocelot-windows.zip
