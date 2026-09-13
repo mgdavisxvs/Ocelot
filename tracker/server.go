@@ -258,6 +258,30 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 		}
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
+	case "stats":
+		if passkey == s.config.SitePassword {
+			return s.handleStatsAPI(httpClose), httpClose
+		}
+		return s.errorResponse("Authentication failure", httpClose), httpClose
+
+	case "torrents":
+		if passkey == s.config.SitePassword {
+			return s.handleTorrentsAPI(req, httpClose), httpClose
+		}
+		return s.errorResponse("Authentication failure", httpClose), httpClose
+
+	case "peers":
+		if passkey == s.config.SitePassword {
+			return s.handlePeersAPI(req, httpClose), httpClose
+		}
+		return s.errorResponse("Authentication failure", httpClose), httpClose
+
+	case "whitelist":
+		if passkey == s.config.SitePassword {
+			return s.handleWhitelistAPI(httpClose), httpClose
+		}
+		return s.errorResponse("Authentication failure", httpClose), httpClose
+
 	default:
 		return s.response("Nothing to see here", httpClose, false), httpClose
 	}
@@ -350,9 +374,73 @@ func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool)
 
 // handleUpdate processes tracker update requests (admin API)
 func (s *Server) handleUpdate(req *http.Request, httpClose bool) []byte {
-	// Implementation would handle add_torrent, update_user, etc.
-	// Similar to C++ worker::update() (worker.cpp:768-996)
-	return s.response("success", httpClose, false)
+	jsonData, err := s.worker.HandleUpdate(req)
+	if err != nil {
+		return s.jsonResponse(jsonData, httpClose)
+	}
+	return s.jsonResponse(jsonData, httpClose)
+}
+
+// handleStatsAPI returns tracker statistics as JSON
+func (s *Server) handleStatsAPI(httpClose bool) []byte {
+	jsonData, err := s.worker.GetStats()
+	if err != nil {
+		return s.errorResponse(err.Error(), httpClose)
+	}
+	return s.jsonResponse(jsonData, httpClose)
+}
+
+// handleTorrentsAPI returns torrent list as JSON
+func (s *Server) handleTorrentsAPI(req *http.Request, httpClose bool) []byte {
+	limit := queryInt(req, "limit", 100)
+	jsonData, err := s.worker.GetTorrents(limit)
+	if err != nil {
+		return s.errorResponse(err.Error(), httpClose)
+	}
+	return s.jsonResponse(jsonData, httpClose)
+}
+
+// handlePeersAPI returns peer list for a torrent as JSON
+func (s *Server) handlePeersAPI(req *http.Request, httpClose bool) []byte {
+	infoHash := req.URL.Query().Get("info_hash")
+	if infoHash == "" {
+		return s.errorResponse("Missing info_hash", httpClose)
+	}
+	limit := queryInt(req, "limit", 100)
+	jsonData, err := s.worker.GetPeers(infoHash, limit)
+	if err != nil {
+		return s.errorResponse(err.Error(), httpClose)
+	}
+	return s.jsonResponse(jsonData, httpClose)
+}
+
+// handleWhitelistAPI returns whitelist as JSON
+func (s *Server) handleWhitelistAPI(httpClose bool) []byte {
+	jsonData, err := s.worker.GetWhitelist()
+	if err != nil {
+		return s.errorResponse(err.Error(), httpClose)
+	}
+	return s.jsonResponse(jsonData, httpClose)
+}
+
+// jsonResponse wraps JSON content in HTTP response
+func (s *Server) jsonResponse(content []byte, httpClose bool) []byte {
+	var b strings.Builder
+
+	b.WriteString("HTTP/1.1 200 OK\r\n")
+	b.WriteString("Content-Type: application/json\r\n")
+	b.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(content)))
+
+	if httpClose {
+		b.WriteString("Connection: close\r\n")
+	} else {
+		b.WriteString("Connection: keep-alive\r\n")
+	}
+
+	b.WriteString("\r\n")
+	b.Write(content)
+
+	return []byte(b.String())
 }
 
 // bencodedAnnounceResponse builds a bencoded announce response

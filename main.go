@@ -55,9 +55,6 @@ func main() {
 	// Create mock site communication (replace with real Gazelle integration)
 	siteComm := &MockSiteComm{}
 
-	// Load initial data (in production, load from database)
-	loadSampleData(torrents, users, whitelist)
-
 	// Create worker with all dependencies
 	worker := &tracker.Worker{
 		Config:    config,
@@ -67,6 +64,31 @@ func main() {
 		Users:     users,
 		Whitelist: whitelist,
 		Stats:     stats,
+	}
+
+	// Create loader and load initial state from database
+	loader := tracker.NewLoader(db, torrents, users, whitelist)
+
+	// Create schema if needed
+	if err := loader.CreateSchemaIfNeeded(); err != nil {
+		log.Printf("Warning: Failed to create schema: %v", err)
+	}
+
+	// Load initial data from database
+	log.Println("Loading initial state from database...")
+	if err := loader.LoadAll(); err != nil {
+		log.Printf("Warning: Failed to load initial state: %v", err)
+		log.Println("Starting with empty state - add torrents and users via admin panel")
+	} else {
+		log.Println("✅ Initial state loaded from database")
+	}
+
+	// Fallback: Load sample data if database is empty
+	torrentCount := torrents.Size()
+	userCount := users.Size()
+	if torrentCount == 0 || userCount == 0 {
+		log.Println("Database is empty, loading sample data...")
+		loadSampleData(torrents, users, whitelist)
 	}
 
 	// Create server

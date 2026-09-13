@@ -87,56 +87,8 @@ class OcelotDB {
     }
 }
 
-// API Helper - Communicate with tracker
-class TrackerAPI {
-    public static function request($endpoint, $data = []) {
-        $url = TRACKER_URL . '/' . SITE_PASSWORD . '/' . $endpoint;
-
-        if (!empty($data)) {
-            $url .= '?' . http_build_query($data);
-        }
-
-        $ch = curl_init($url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        if ($httpCode !== 200) {
-            throw new Exception("Tracker API error: HTTP $httpCode");
-        }
-
-        return $response;
-    }
-
-    public static function addTorrent($torrentID, $infoHash) {
-        return self::request('update', [
-            'action' => 'add_torrent',
-            'id' => $torrentID,
-            'info_hash' => $infoHash,
-            'freetorrent' => 0
-        ]);
-    }
-
-    public static function updateUser($userID, $passkey, $canLeech = true, $isProtected = false) {
-        return self::request('update', [
-            'action' => 'update_user',
-            'id' => $userID,
-            'passkey' => $passkey,
-            'can_leech' => $canLeech ? 1 : 0,
-            'protect_ip' => $isProtected ? 1 : 0
-        ]);
-    }
-
-    public static function deleteUser($userID) {
-        return self::request('update', [
-            'action' => 'remove_user',
-            'id' => $userID
-        ]);
-    }
-}
+// Load Tracker API client (new JSON-based implementation)
+require_once __DIR__ . '/api/tracker-api.php';
 
 // Utility Functions
 function formatBytes($bytes, $precision = 2) {

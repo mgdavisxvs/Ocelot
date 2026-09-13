@@ -211,9 +211,17 @@ func (sm *SQLiteShardManager) initSchema(db *sql.DB) error {
 		PRIMARY KEY (user_id, torrent_id)
 	) WITHOUT ROWID;
 
-	-- Indexes for common queries
-	CREATE INDEX IF NOT EXISTS idx_peers_torrent ON peers(torrent_id, active);
-	CREATE INDEX IF NOT EXISTS idx_peers_last_announce ON peers(last_announce);
+	-- Erdős optimization: Composite covering indexes
+	-- Covering index includes all SELECT columns (no table lookup needed)
+	CREATE INDEX IF NOT EXISTS idx_peers_torrent_cover ON peers(
+		torrent_id, user_id, last_announce, uploaded, downloaded, remaining
+	) WHERE active = 1;
+
+	-- Index for cleanup queries (expired peers)
+	CREATE INDEX IF NOT EXISTS idx_peers_last_announce ON peers(last_announce) WHERE active = 1;
+
+	-- Index for user activity queries
+	CREATE INDEX IF NOT EXISTS idx_peers_user ON peers(user_id, torrent_id, last_announce);
 
 	-- Torrents table
 	CREATE TABLE IF NOT EXISTS torrents (
@@ -222,6 +230,7 @@ func (sm *SQLiteShardManager) initSchema(db *sql.DB) error {
 		leechers INTEGER DEFAULT 0,
 		snatched INTEGER DEFAULT 0,
 		balance INTEGER DEFAULT 0,
+		free_type INTEGER DEFAULT 0,
 		last_action INTEGER DEFAULT 0
 	) WITHOUT ROWID;
 
