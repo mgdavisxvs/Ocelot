@@ -79,14 +79,23 @@ func NewServer(config *Config, worker *Worker) *Server {
 // This matches C++ libev's behavior but with zero manual setup!
 func (s *Server) ListenAndServe() error {
 	// Create listener - this sets up the epoll/kqueue fd
-	listener, err := net.Listen("tcp", s.config.ListenAddr)
+	// Listen on [::] for dual-stack IPv4/IPv6 support
+	listenAddr := s.config.ListenAddr
+	if !strings.Contains(listenAddr, ":") || listenAddr[0] != '[' {
+		// Default to dual-stack if not explicitly IPv6
+		if strings.HasPrefix(listenAddr, ":") {
+			listenAddr = "[::]" + listenAddr
+		}
+	}
+
+	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 	s.listener = listener
 
-	fmt.Printf("Ocelot tracker listening on %s (using %s netpoller)\n",
-		s.config.ListenAddr, s.getNetpollerType())
+	fmt.Printf("Ocelot tracker listening on %s (dual-stack IPv4/IPv6, using %s netpoller)\n",
+		listenAddr, s.getNetpollerType())
 	fmt.Printf("Worker goroutines: %d (GOMAXPROCS=%d)\n",
 		runtime.NumGoroutine(), runtime.GOMAXPROCS(0))
 

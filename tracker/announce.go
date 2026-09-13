@@ -373,9 +373,11 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	}
 
 	// Build response (bencoded format will be handled by caller)
+	// Use adaptive intervals for better load balancing (Tao optimization)
+	interval := AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval)
 	response := &AnnounceResponse{
-		Interval:    int32(w.Config.AnnounceInterval + min(600, seederCount)),
-		MinInterval: int32(w.Config.AnnounceInterval),
+		Interval:    interval,
+		MinInterval: interval / 2,
 		Complete:    int32(seederCount),
 		Incomplete:  int32(leecherCount),
 		Peers:       peers,
