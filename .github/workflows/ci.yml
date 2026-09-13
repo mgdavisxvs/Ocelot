@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  test:
+    name: Test (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.21", "1.22", "1.23"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go ${{ matrix.go }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Build
+        run: go build ./tracker/ ./cmd/ocelot/
+
+      - name: Vet
+        run: go vet ./tracker/ ./cmd/ocelot/
+
+      - name: Test (with race detector)
+        run: go test -race -count=1 -timeout=120s ./tracker/
+
+  bench:
+    name: Benchmarks (sanity)
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: Run benchmarks (1 iteration each, verify they compile and run)
+        run: go test ./tracker/ -run '^$' -bench=. -benchtime=1x -benchmem
