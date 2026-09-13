@@ -13,6 +13,10 @@ func (w *Worker) HandleUpdate(req *http.Request) ([]byte, error) {
 	params := req.URL.Query()
 	action := params.Get("action")
 
+	if w.Config.Readonly && action != "info" {
+		return nil, fmt.Errorf("tracker is in readonly mode")
+	}
+
 	switch action {
 	case "add_torrent":
 		return w.adminAddTorrent(params)

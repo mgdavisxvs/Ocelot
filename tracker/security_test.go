@@ -49,10 +49,20 @@ func TestSecurity_DeletedUserAnnounce(t *testing.T) {
 	f := newTestFixture()
 	u, _ := f.worker.Users.Get(testPasskey)
 	u.Deleted.Store(true)
-	// Deleted users still exist in the map but the announce logic checks Left>0
-	// + CanLeech; the more direct path is to remove them from Users.
-	// Instead test via CanLeech=false + Left>0 → leeching forbidden.
-	u.Deleted.Store(false)
+
+	ip := net.ParseIP(testIP)
+	req := newAnnounceReqFull(testInfoHash, testPeerID, "started", 0, 0, 1000)
+	_, err := f.worker.Announce(req, u, ip, "test-client", "")
+	if err == nil || !strings.Contains(err.Error(), "deleted") {
+		t.Errorf("deleted user should be rejected, got: %v", err)
+	}
+}
+
+// TestSecurity_CanLeechFalseRejectsLeecher verifies that a user with CanLeech=false
+// cannot leech (Left > 0) regardless of deletion status.
+func TestSecurity_CanLeechFalseRejectsLeecher(t *testing.T) {
+	f := newTestFixture()
+	u, _ := f.worker.Users.Get(testPasskey)
 	u.CanLeech.Store(false)
 
 	ip := net.ParseIP(testIP)

@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"strconv"
@@ -41,6 +42,9 @@ type AnnounceResponse struct {
 func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, userAgent string, passkey string) (*AnnounceResponse, error) {
 	now := time.Now()
 
+	if user.Deleted.Load() {
+		return nil, fmt.Errorf("user account deleted")
+	}
 	if !req.Compact {
 		return nil, fmt.Errorf("your client does not support compact announces")
 	}
@@ -187,13 +191,17 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 			default:
 				if hasToken {
 					expireToken = true
-					w.DB.RecordToken(user.ID, torrent.ID, downloadedChange)
+					if err := w.DB.RecordToken(user.ID, torrent.ID, downloadedChange); err != nil {
+						log.Printf("announce: RecordToken uid=%d tid=%d: %v", user.ID, torrent.ID, err)
+					}
 					downloadedChange = 0
 				}
 			}
 
 			if uploadedChange > 0 || downloadedChange > 0 {
-				w.DB.RecordUserStats(user.ID, uploadedChange, downloadedChange)
+				if err := w.DB.RecordUserStats(user.ID, uploadedChange, downloadedChange); err != nil {
+					log.Printf("announce: RecordUserStats uid=%d: %v", user.ID, err)
+				}
 			}
 		}
 	}
@@ -228,12 +236,16 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		if !user.ProtectIP.Load() {
 			ipStr = ip.String()
 		}
-		w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
+		if err := w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
 			upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
-			ipStr, string(req.PeerID), userAgent)
+			ipStr, string(req.PeerID), userAgent); err != nil {
+			log.Printf("announce: RecordPeer uid=%d tid=%d: %v", user.ID, torrent.ID, err)
+		}
 	} else {
 		announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
-		w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, string(req.PeerID))
+		if err := w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, string(req.PeerID)); err != nil {
+			log.Printf("announce: RecordPeerLight uid=%d tid=%d: %v", user.ID, torrent.ID, err)
+		}
 	}
 
 	numwant := req.NumWant
@@ -261,7 +273,9 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		if !user.ProtectIP.Load() {
 			ipStr = ip.String()
 		}
-		w.DB.RecordSnatch(user.ID, torrent.ID, now, ipStr)
+		if err := w.DB.RecordSnatch(user.ID, torrent.ID, now, ipStr); err != nil {
+			log.Printf("announce: RecordSnatch uid=%d tid=%d: %v", user.ID, torrent.ID, err)
+		}
 
 		if !inserted {
 			torrent.mu.Lock()
@@ -330,8 +344,10 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	torrent.mu.Lock()
 	if updateTorrent || now.Sub(torrent.LastFlushed) > time.Hour {
 		torrent.LastFlushed = now
-		w.DB.RecordTorrent(torrent.ID, uint32(torrent.Seeders.Size()),
-			uint32(torrent.Leechers.Size()), snatched, torrent.Balance)
+		if err := w.DB.RecordTorrent(torrent.ID, uint32(torrent.Seeders.Size()),
+			uint32(torrent.Leechers.Size()), snatched, torrent.Balance); err != nil {
+			log.Printf("announce: RecordTorrent tid=%d: %v", torrent.ID, err)
+		}
 	}
 	seederCount := torrent.Seeders.Size()
 	leecherCount := torrent.Leechers.Size()

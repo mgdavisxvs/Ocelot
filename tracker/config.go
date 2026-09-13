@@ -192,6 +192,7 @@ func (fc *FileConfig) ToTrackerConfig() *Config {
 		ScheduleInterval: fc.ScheduleInterval,
 		GazelleURL:       fc.GazelleURL,
 		RedisURL:         fc.RedisURL,
+		Readonly:         fc.Readonly,
 		ControlAddr:      fmt.Sprintf(":%d", fc.ControlPort),
 		OpsAddr:          fmt.Sprintf(":%d", fc.OpsPort),
 		TLSCertFile:      fc.TLSCertFile,

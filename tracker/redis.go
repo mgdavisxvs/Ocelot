@@ -77,8 +77,10 @@ func (r *RedisBackend) AddPeer(infoHash string, peerID string, peer *Peer, ttl t
 		return err
 	}
 
-	// Set TTL on the hash
-	r.client.Expire(r.ctx, key, ttl)
+	// Set TTL on the hash.
+	if err := r.client.Expire(r.ctx, key, ttl).Err(); err != nil {
+		r.logger.Warn("failed to set TTL on peer hash", "key", key, "error", err)
+	}
 
 	r.logger.Debug("peer added to Redis",
 		"info_hash", infoHash,

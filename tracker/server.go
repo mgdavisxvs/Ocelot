@@ -63,6 +63,9 @@ type Config struct {
 	// RedisURL is an optional Redis connection URL for multi-instance shared state.
 	// Empty disables the Redis backend.
 	RedisURL string
+
+	// Readonly disables all admin write endpoints when true.
+	Readonly bool
 }
 
 func NewServer(config *Config, worker *Worker) *Server {

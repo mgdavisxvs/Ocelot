@@ -195,6 +195,10 @@ func main() {
 	<-shutdownCh
 	log.Println("Shutdown signal received — draining connections...")
 
+	// Stop delivering signals to sigCh and close it so the handler goroutine exits.
+	signal.Stop(sigCh)
+	close(sigCh)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
