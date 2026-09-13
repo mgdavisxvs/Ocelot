@@ -98,7 +98,7 @@ func (cb *CircuitBreaker) canExecute() bool {
 				"name", cb.name,
 			)
 			cb.state = StateHalfOpen
-			cb.halfOpenCount = 0
+			cb.halfOpenCount = 1 // Count this transition request
 			return true
 		}
 		return false
