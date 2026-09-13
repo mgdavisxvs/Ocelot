@@ -1,6 +1,7 @@
 # MASTER PROMPT ARCHITECTURE — Tripartite Filter Expansion
-### Instrument v1.0 · Gödel Unified Council (GUC) governance discipline
-### Status: RATIFIED WITH OBJECTIONS (see §9 Objection Log)
+### Instrument v1.1 · Gödel Unified Council (GUC) governance discipline
+### Status: RATIFIED. OBJ-7 AMENDED-AND-RATIFIED · OBJ-8 CALIBRATED
+### Principal rulings of record: OBJ-7 (§9.1) · OBJ-8 (§12)
 
 ---
 
@@ -262,8 +263,11 @@ correct construct is **maintenance-cost decay under dependency drift**.
 
 ### 5.2 Why the zero-Composer mandate is economically correct
 
-Illustrative model, not measurement — drift rates are order-of-magnitude
-estimates and must be re-derived per project:
+Illustrative model. The Phase II calibration (§12) attempted to replace
+these estimates with measured values and FAILED to derive them — the
+repository carries no usable dependency history. These figures therefore
+remain EXPLICITLY ILLUSTRATIVE and may not be cited as evidence. §12 also
+falsifies the continuous-decay form of C_maint used below; see rule B-6.
 
 ```
                        d       Σ(1+d)^t, t=0..4      5-yr maint. multiple
@@ -303,6 +307,11 @@ estimates and must be re-derived per project:
         measured profile is speculative and enters the ledger as S3 waste.
    B-5  Durable > clever. If a construct requires a comment to be read,
         it requires a comment to be maintained. Price that comment.
+   B-6  (added v1.1, from §12) Maintenance is BURSTY, not continuous.
+        Do not integrate drift over wall-clock time for a system that is
+        frozen or unused. Index C_maint by ACTIVE years, and model
+        reactivation as a STEP cost, not as accrued decay. A system that
+        nobody runs costs nothing to not maintain.
 ```
 
 ---
@@ -531,22 +540,89 @@ is pre-existing GUC structure.
  │      │ it to every trivial change is itself a        │      │ rule     │
  │      │ violation of rule B-3 (proportionality).      │      │          │
  ├──────┼──────────────────────────────────────────────┼──────┼──────────┤
- │ OBJ-8│ Drift rates d in §5.2 are estimates, not      │ S3   │ OPEN     │
- │      │ measurements. Presented as illustrative. Must │      │ needs    │
- │      │ be re-derived from actual repo history before │      │ empirical│
- │      │ being cited as evidence.                      │      │ grounding│
+ │ OBJ-8│ Drift rates d in §5.2 are estimates, not      │ S3   │ CALIBRA- │
+ │      │ measurements.                                 │      │ TED §12  │
+ │      │ RESULT: NOT DERIVABLE. n=0 version-change     │      │ retained │
+ │      │ events; manifest lifetime 1 day. §5.2 stands  │      │ as ILLUS-│
+ │      │ as illustrative and is barred from citation.  │      │ TRATIVE  │
+ ├──────┼──────────────────────────────────────────────┼──────┼──────────┤
+ │ OBJ-9│ C_maint(t)=C_0(1+d)^t assumes CONTINUOUS      │ S2   │ OPEN     │
+ │      │ decay. Repository evidence (10.8-year         │      │ model    │
+ │      │ dormancy at zero cost, then successful        │      │ revision │
+ │      │ resurrection) falsifies it. Maintenance is    │      │ proposed │
+ │      │ BURSTY and DEFERRABLE, not continuous.        │      │ rule B-6 │
+ ├──────┼──────────────────────────────────────────────┼──────┼──────────┤
+ │OBJ-10│ FV-07 severity UNDERSTATED in v1.0. It was    │ S1   │ RESOLVED │
+ │      │ classified S2 (availability). Unpinned third- │      │ FV-07    │
+ │      │ party script in an authenticated or           │      │ split;   │
+ │      │ credential-entry page is arbitrary code       │      │ see §13  │
+ │      │ execution → S0. Self-inflicted defect of the  │      │          │
+ │      │ instrument's own taxonomy.                    │      │          │
  └──────┴──────────────────────────────────────────────┴──────┴──────────┘
 ```
 
-**OBJ-7 scoping rule (proposed, requires principal ratification):**
+### 9.1 OBJ-7 RULING — AMENDED AND RATIFIED
+
+The rule proposed in v1.0 was **rejected as drafted** and replaced. Three
+defects were found in it, one of them confirmed empirically by §13.
 
 ```
-   FULL GATE ARRAY      modules touching persistent state, authentication,
-                        authorisation, money, or external I/O
-   [R] + [B] ONLY       internal refactors, performance work
-   [M] ONLY             presentation, layout, copy
-   NO GATE              typo fixes, comment edits, S4 cosmetics
+ DEFECT OF THE PROPOSED RULE          CORRECTION IN THE RATIFIED RULE
+ ────────────────────────────────────────────────────────────────────────
+ D1  Classified by AUTHOR INTENT      Classify by DIFF TOUCH-SET. A tier
+     ("this is a presentation         computed from what the diff touches
+     change"). Self-classification    cannot be lowered by how the change
+     is gameable and error-prone.     is described.
+ D2  "[M] only" tier for presen-      T1 becomes [M] + [R-lite]. FV-04
+     tation omits [R] entirely —      (stored XSS via x-html/x-text) is a
+     but the stack's S1 XSS vector    PRESENTATION defect. An [M]-only
+     lives precisely in presentation. tier is structurally blind to it.
+ D3  No rule for diffs spanning       Rule A-2: tier = MAX over all
+     tiers.                           triggers matched. Never the mode.
+ ────────────────────────────────────────────────────────────────────────
+ D4  CONFIRMED BY CALIBRATION: the proposed rule routed <script src="…">
+     tags to T1 ([M] only) as "layout". That is the exact file position
+     of the live S0 recorded in §13. The proposed rule would have MISSED
+     the single most severe defect in the repository it governs.
+     Correction: third-party script/style URLs are a T3 trigger.
 ```
+
+**RATIFIED TIER RULE (binding, v1.1)**
+
+```
+ TIER │ TRIGGER — computed from the DIFF TOUCH-SET, never from intent │ GATES
+ ─────┼───────────────────────────────────────────────────────────────┼──────
+  T3  │ schema or migration · any SQL text · auth / session / token   │ FULL
+      │ · authorisation check · monetary field · filesystem, network  │ ARRAY
+      │ or process I/O · serialization boundary · cryptography        │ [R]
+      │ · THIRD-PARTY SCRIPT OR STYLE URL            ◄── added by D4  │ [M]
+      │                                                               │ [B]
+ ─────┼───────────────────────────────────────────────────────────────┼──────
+  T2  │ control flow · concurrency · caching · index · query shape     │ [R]
+      │ with SQL semantics unchanged · build, deploy or CI config      │ [B]
+ ─────┼───────────────────────────────────────────────────────────────┼──────
+  T1  │ template · markup · CSS · user-visible copy                    │ [M]
+      │ R-lite = interrogatives R1 and R6 ONLY (what hostile input     │  +
+      │ reaches this output; what leaks if this is served)             │ R-lite
+ ─────┼───────────────────────────────────────────────────────────────┼──────
+  T0  │ comments · whitespace · prose in non-executable position       │ NONE
+ ─────┴───────────────────────────────────────────────────────────────┴──────
+
+  A-2  TIER = MAX over every trigger the diff matches. A diff touching
+       both copy and a migration is T3, not T1 and not "mostly T1".
+  A-3  ESCALATION is always permitted and needs no justification.
+       DE-ESCALATION requires a written reason and is itself a ledger
+       entry, reviewable. Asymmetry is deliberate: the cheap error is
+       over-gating, the expensive error is under-gating.
+  A-4  The tier is computed BEFORE the artifact is written, from the
+       planned touch-set, and RECOMPUTED after. If the realised diff
+       raises the tier, the module re-enters the gate array at the
+       higher tier. Scope creep cannot silently lower assurance.
+```
+
+This rule satisfies rule B-3 (proportionality) — the array's cost now
+tracks blast radius rather than being levied uniformly — while closing
+the two blindnesses that made the v1.0 draft unsafe.
 
 ---
 
@@ -589,20 +665,150 @@ is pre-existing GUC structure.
 
 ---
 
-## 11. NEXT SAFE STEP
+## 12. PHASE II CALIBRATION REPORT (OBJ-8 ruling of record)
+
+**Authorised and executed against real repository history. Result: the
+requested measurement is NOT DERIVABLE from this repository.** Reported
+as a negative finding rather than substituted with plausible numbers.
+
+### 12.1 What the history actually contains
+
+```
+  OBSERVATION WINDOW      2010-10-27 … 2026-09-13   (15.9 yr, 45 commits)
+
+  2010 ──── C++ era, active ──── 2015-01-27
+                                  │◄──── 10.8 yr DORMANCY ────►│
+                                                          2025-11-17 ──── Go
+                                                          port era ──── 2026
+
+  MANIFEST                 FIRST SEEN    COMMITS TOUCHING    LIFETIME
+  ──────────────────────────────────────────────────────────────────────
+  go.mod                   2026-09-13           1             1 day
+  go.sum                   2026-09-13           1             1 day
+  markov/go.mod            2026-09-13           1             1 day
+  markov/go.sum            2026-09-13           1             1 day
+
+  VERSION-CHANGE EVENTS OBSERVED : 0
+  DEPENDENCY UPGRADES OBSERVED   : 0
+  DERIVABLE ANNUAL DRIFT RATE d  : NONE — n = 0
+```
+
+### 12.2 Ruling
+
+```
+  §5.2 drift table REMAINS EXPLICITLY ILLUSTRATIVE and is BARRED from
+  citation as evidence in any ruling, estimate, or specification.
+
+  The zero-Composer mandate stands on its constitutional (L0) footing —
+  it is a principal's decision — NOT on the §5.2 numbers, which are
+  unvalidated. Stating the distinction is the point: an unvalidated
+  model that happens to endorse a decision you already made is the most
+  dangerous kind of evidence, because it is indistinguishable from
+  confirmation until someone checks it.
+
+  RE-CALIBRATION PRECONDITION: d becomes derivable only from a repo with
+  ≥ 3 years of manifest history and ≥ 10 observed version-change events.
+  No repository in scope currently meets this. Until one does, the drift
+  argument is a HYPOTHESIS, not a finding.
+```
+
+### 12.3 Unrequested finding — the model is wrong (OBJ-9)
+
+The calibration failed at its stated task and succeeded at an unstated one.
+The 10.8-year dormancy is direct evidence against the instrument's own
+maintenance model:
+
+```
+  PREDICTED by C_maint(t) = C_0(1+d)^t over 2015→2025:
+      continuous accrual; ~10 years of compounding maintenance obligation;
+      codebase expected to be economically unrecoverable by 2025.
+
+  OBSERVED:
+      ZERO commits, ZERO maintenance cost incurred, and the codebase was
+      then successfully resurrected and ported to Go in a bounded effort.
+
+  CONCLUSION: the exponential-decay form is FALSIFIED for dormant systems.
+      Maintenance cost is not a continuous function of elapsed time. It is
+      a function of ACTIVITY, plus a STEP cost at reactivation.
+
+  PROPOSED v2 FORM (not yet ratified):
+                                        τ(t)
+        C_maint(t) = A(t) · C_0 · (1+d)        +  R · [reactivation event]
+
+        A(t) ∈ {0,1}   activity indicator
+        τ(t)           cumulative ACTIVE years, not elapsed years
+        R              one-time reactivation cost (the Go port, here)
+
+  PRACTICAL CONSEQUENCE: "freeze it" is a legitimate and cheap strategy
+  that the v1.0 model could not express. Buffett's own discipline —
+  inactivity as a position — was absent from the gate that bears his name.
+```
+
+---
+
+## 13. LIVE DEFECT LEDGER — Ocelot admin panel
+
+Produced incidentally by the §12 pass. Verified against source, not inferred.
+
+```
+ ┌──────┬───────────────────────────────────────────────┬──────┬──────────┐
+ │ ID   │ DEFECT                                         │ SEV  │ EVIDENCE │
+ ├──────┼───────────────────────────────────────────────┼──────┼──────────┤
+ │ D-01 │ admin/login.php loads an UNPINNED third-party  │  S0  │ login.   │
+ │      │ script (unpkg.com/lucide@latest, floating tag, │      │ php:32   │
+ │      │ no SRI) on the page whose form posts the admin │      │ form :55 │
+ │      │ password. A hijacked or compromised publish at │      │ pwd input│
+ │      │ that tag executes arbitrary JS in the          │      │ :67      │
+ │      │ credential-entry document → admin credential   │      │          │
+ │      │ capture at keystroke time. Meets the S0        │      │          │
+ │      │ definition: full credential disclosure.        │      │          │
+ ├──────┼───────────────────────────────────────────────┼──────┼──────────┤
+ │ D-02 │ Same pattern across the AUTHENTICATED panel:   │  S1  │ header.  │
+ │      │ lucide@latest and alpinejs@3.x.x (both         │      │ php:25,  │
+ │      │ floating), cdn.tailwindcss.com (unversioned),  │      │ :31, :9  │
+ │      │ d3.v7.min.js (major-pinned only). Arbitrary JS │      │          │
+ │      │ in an authenticated admin session → full DB    │      │          │
+ │      │ read via the admin API surface.                │      │          │
+ ├──────┼───────────────────────────────────────────────┼──────┼──────────┤
+ │ D-03 │ ZERO integrity= (SRI) attributes anywhere in   │  S1  │ grep:    │
+ │      │ admin/. Nothing detects a substituted payload. │      │ 0 hits   │
+ ├──────┼───────────────────────────────────────────────┼──────┼──────────┤
+ │ D-04 │ FV-07 (availability) confirmed live: four CDN  │  S2  │ 4 hosts, │
+ │      │ origins, no local fallback. Any one outage →   │      │ 0 local  │
+ │      │ total admin UI loss.                           │      │ vendored │
+ └──────┴───────────────────────────────────────────────┴──────┴──────────┘
+
+  NEGATIVE RESULT, recorded to avoid inflation:
+    FV-04 (unescaped output) — header.php:6 emits $pageTitle unescaped,
+    but $pageTitle is literal-assigned at five call sites and is NOT
+    request-derived. NOT TRIGGERED. Logged as S3 latent: the construct
+    becomes S1 the moment any caller assigns from $_GET/$_POST.
+
+  REMEDIATION (not applied — outside the scope of the OBJ-7/OBJ-8 ruling):
+    pin every CDN URL to an exact version · add integrity= + crossorigin
+    to all four · vendor a local fallback and a window.* presence check ·
+    remove ALL third-party script tags from login.php, which needs none.
+```
+
+---
+
+## 14. NEXT SAFE STEP
 
 ```
   ┌────────────────────────────────────────────────────────────────────┐
+  │ RULINGS CLOSED                                                     │
+  │   OBJ-7  amended and ratified — §9.1 tier rule is binding          │
+  │   OBJ-8  calibrated — d NOT derivable; §5.2 barred from citation   │
+  │                                                                    │
+  │ RULINGS NOW OPEN                                                   │
+  │   OBJ-9  ratify or reject the activity-indexed C_maint form (§12.3)│
+  │   D-01   S0 in admin/login.php. Under rule L1-1 and the S0 class,  │
+  │          this BLOCKS emission for the admin panel. It is live in   │
+  │          the repository now. No override exists for S0.            │
+  │                                                                    │
   │ THE SINGLE NEXT SAFE ACTION                                        │
-  │                                                                    │
-  │ Principal ruling required on TWO items before any further build:   │
-  │   (a) OBJ-7 — ratify or amend the scoping rule (§9). Without it    │
-  │       the array is applied uniformly and violates its own rule B-3.│
-  │   (b) OBJ-8 — authorise Phase II calibration against real repo     │
-  │       history, OR accept §5.2 as explicitly illustrative.          │
-  │                                                                    │
-  │ Everything else in this instrument is self-consistent and may be   │
-  │ applied immediately. Nothing here has been applied to Ocelot code. │
+  │   Remediate D-01. It is four lines, needs no design decision, and  │
+  │   is the only S0 on record. Everything else waits behind it.       │
   └────────────────────────────────────────────────────────────────────┘
 ```
 
