@@ -1,11 +1,7 @@
 {
-  "_comment": "ocelot-markov configuration — copy to ocelot-markov.conf and fill in credentials",
+  "_comment": "ocelot-markov configuration — copy to ocelot-markov.conf and edit db_path",
 
-  "db_host": "127.0.0.1",
-  "db_port": 3306,
-  "db_name": "gazelle",
-  "db_user": "",
-  "db_pass": "",
+  "db_path": "/var/lib/ocelot/ocelot-2026-09.db",
 
   "decay_factor": 0.995,
   "decay_every_n_polls": 60,

@@ -5,23 +5,23 @@ import (
 	"fmt"
 )
 
-// PeerRow is one row from xbt_files_users.
+// PeerRow is one row from the peers table.
 type PeerRow struct {
 	UID       int64
-	FID       int64 // torrent ID
+	FID       int64 // torrent_id
 	Active    bool
 	Remaining int64
-	Mtime     int64 // Unix timestamp of last announce
+	Mtime     int64 // last_announce Unix timestamp
 }
 
-// TorrentRow is one row from torrents.
+// TorrentRow is one row from the torrents table.
 type TorrentRow struct {
 	ID       int64
 	Seeders  int64
 	Leechers int64
 }
 
-// UserRow is one row from users_main relevant to ratio state.
+// UserRow is one row from users joined with user_passkeys.
 type UserRow struct {
 	ID         int64
 	Uploaded   int64
@@ -29,13 +29,13 @@ type UserRow struct {
 	CanLeech   bool
 }
 
-// FreeleechUID is a set of user IDs with active freeleech tokens.
+// FreeleechUID is the set of user IDs with active freeleech tokens.
 type FreeleechUID = map[int64]struct{}
 
-// SnatchRow is one row from xbt_snatched.
+// SnatchRow is one row from the snatches table.
 type SnatchRow struct {
-	UID   int64
-	FID   int64
+	UID    int64
+	FID    int64
 	Tstamp int64
 }
 
@@ -62,10 +62,10 @@ type StoredUserState struct {
 	ObservedAt int64
 }
 
-// LoadPeers fetches all rows from xbt_files_users.
+// LoadPeers fetches all rows from the peers table.
 func (d *DB) LoadPeers(ctx context.Context) ([]PeerRow, error) {
 	rows, err := d.pool.QueryContext(ctx,
-		`SELECT uid, fid, active, remaining, mtime FROM xbt_files_users`)
+		`SELECT user_id, torrent_id, active, remaining, last_announce FROM peers`)
 	if err != nil {
 		return nil, fmt.Errorf("LoadPeers: %w", err)
 	}
@@ -73,7 +73,7 @@ func (d *DB) LoadPeers(ctx context.Context) ([]PeerRow, error) {
 	var out []PeerRow
 	for rows.Next() {
 		var r PeerRow
-		var active int8
+		var active int64
 		if err := rows.Scan(&r.UID, &r.FID, &active, &r.Remaining, &r.Mtime); err != nil {
 			return nil, err
 		}
@@ -83,10 +83,10 @@ func (d *DB) LoadPeers(ctx context.Context) ([]PeerRow, error) {
 	return out, rows.Err()
 }
 
-// LoadTorrents fetches Seeders/Leechers from the torrents table.
+// LoadTorrents fetches seeders/leechers from the torrents table.
 func (d *DB) LoadTorrents(ctx context.Context) ([]TorrentRow, error) {
 	rows, err := d.pool.QueryContext(ctx,
-		`SELECT ID, Seeders, Leechers FROM torrents`)
+		`SELECT id, seeders, leechers FROM torrents`)
 	if err != nil {
 		return nil, fmt.Errorf("LoadTorrents: %w", err)
 	}
@@ -102,10 +102,13 @@ func (d *DB) LoadTorrents(ctx context.Context) ([]TorrentRow, error) {
 	return out, rows.Err()
 }
 
-// LoadUsers fetches ratio-relevant columns from users_main.
+// LoadUsers fetches ratio-relevant columns from users joined with user_passkeys.
+// can_leech lives in user_passkeys; users without a passkey row are excluded.
 func (d *DB) LoadUsers(ctx context.Context) ([]UserRow, error) {
-	rows, err := d.pool.QueryContext(ctx,
-		`SELECT ID, Uploaded, Downloaded, can_leech FROM users_main WHERE Enabled='1'`)
+	rows, err := d.pool.QueryContext(ctx, `
+		SELECT u.id, u.uploaded, u.downloaded, p.can_leech
+		FROM users u
+		JOIN user_passkeys p ON p.user_id = u.id`)
 	if err != nil {
 		return nil, fmt.Errorf("LoadUsers: %w", err)
 	}
@@ -113,7 +116,7 @@ func (d *DB) LoadUsers(ctx context.Context) ([]UserRow, error) {
 	var out []UserRow
 	for rows.Next() {
 		var r UserRow
-		var canLeech int8
+		var canLeech int64
 		if err := rows.Scan(&r.ID, &r.Uploaded, &r.Downloaded, &canLeech); err != nil {
 			return nil, err
 		}
@@ -123,10 +126,19 @@ func (d *DB) LoadUsers(ctx context.Context) ([]UserRow, error) {
 	return out, rows.Err()
 }
 
-// LoadFreeleechUIDs returns the set of user IDs with active freeleech tokens.
+// LoadFreeleechUIDs returns the set of user IDs whose torrents carry a freeleech
+// token (free_type != 0 on the torrent they are actively leeching).
+// In the SQLite schema there is no separate freeleech-token table; a user is
+// considered "on freeleech" when the torrent's free_type is non-zero and they
+// are an active leecher, or when they appear in tokened_users (stored in the
+// tracker in-memory only — not persisted). We approximate by returning users
+// active on at least one freeleech torrent.
 func (d *DB) LoadFreeleechUIDs(ctx context.Context) (FreeleechUID, error) {
-	rows, err := d.pool.QueryContext(ctx,
-		`SELECT UserID FROM users_freeleeches WHERE Expired='0'`)
+	rows, err := d.pool.QueryContext(ctx, `
+		SELECT DISTINCT p.user_id
+		FROM peers p
+		JOIN torrents t ON t.id = p.torrent_id
+		WHERE p.active = 1 AND t.free_type != 0`)
 	if err != nil {
 		return nil, fmt.Errorf("LoadFreeleechUIDs: %w", err)
 	}
@@ -145,7 +157,8 @@ func (d *DB) LoadFreeleechUIDs(ctx context.Context) (FreeleechUID, error) {
 // LoadSnatches returns snatch events after the given Unix timestamp watermark.
 func (d *DB) LoadSnatches(ctx context.Context, afterTstamp int64) ([]SnatchRow, error) {
 	rows, err := d.pool.QueryContext(ctx,
-		`SELECT uid, fid, tstamp FROM xbt_snatched WHERE tstamp > ? ORDER BY tstamp ASC`,
+		`SELECT user_id, torrent_id, snatched_time FROM snatches
+		 WHERE snatched_time > ? ORDER BY snatched_time ASC`,
 		afterTstamp)
 	if err != nil {
 		return nil, fmt.Errorf("LoadSnatches: %w", err)
@@ -219,14 +232,14 @@ func (d *DB) LoadStoredUserStates(ctx context.Context) ([]StoredUserState, error
 	return out, rows.Err()
 }
 
-// LoadChainCounts loads persisted Markov counts for the named chain.
-// Returns a flat slice of [from, to, count] triples.
+// ChainCountRow is a flat [from, to, count] triple for chain persistence.
 type ChainCountRow struct {
 	From  int
 	To    int
 	Count float64
 }
 
+// LoadChainCounts loads persisted Markov counts for the named chain.
 func (d *DB) LoadChainCounts(ctx context.Context, chainName string) ([]ChainCountRow, error) {
 	rows, err := d.pool.QueryContext(ctx,
 		`SELECT from_state, to_state, count FROM markov_chain_counts WHERE chain_name=?`,
