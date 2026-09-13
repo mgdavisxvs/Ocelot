@@ -59,6 +59,10 @@ type Config struct {
 	// AlertWebhookURL is an optional HTTP endpoint that receives a POST when a
 	// managed node transitions REACHABLE → FLAPPING (OPP-D). Empty disables alerts.
 	AlertWebhookURL string
+
+	// RedisURL is an optional Redis connection URL for multi-instance shared state.
+	// Empty disables the Redis backend.
+	RedisURL string
 }
 
 func NewServer(config *Config, worker *Worker) *Server {
@@ -512,6 +516,9 @@ type Worker struct {
 
 	// Admission enforces per-swarm passkey allow-lists. nil = all admitted.
 	Admission *SwarmAdmissionPolicy
+
+	// Redis is an optional Redis backend for multi-instance shared state. nil disables it.
+	Redis *RedisBackend
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.

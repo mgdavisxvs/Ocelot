@@ -69,6 +69,17 @@ func main() {
 		Stats:     stats,
 	}
 
+	// ── Redis backend (optional) ──────────────────────────────────────────────
+	if config.RedisURL != "" {
+		rb, err := tracker.NewRedisBackendFromURL(config.RedisURL)
+		if err != nil {
+			log.Printf("Warning: Redis unavailable (%v); continuing without it", err)
+		} else {
+			worker.Redis = rb
+			log.Printf("Redis backend connected: %s", config.RedisURL)
+		}
+	}
+
 	// ── Swarm coordination plane ──────────────────────────────────────────────
 	artifacts := tracker.NewArtifactList()
 	nodes := tracker.NewNodeRegistry()
@@ -77,10 +88,15 @@ func main() {
 	controller := tracker.NewSwarmPolicyController(
 		artifacts, torrents, nodes, replicas, admission, 60*time.Second,
 	)
+	if config.AlertWebhookURL != "" {
+		controller.SetAlertWebhookURL(config.AlertWebhookURL)
+		log.Printf("Flap alert webhook: %s", config.AlertWebhookURL)
+	}
 
 	// S-E4: Proximity-aware peer sort; S-E6: heatmap recording.
 	worker.PeerSorter = tracker.SortPeersByProximity(nodes)
 	worker.Artifacts = artifacts
+	worker.Admission = admission
 
 	// ── Background subsystems ─────────────────────────────────────────────────
 	reaper := tracker.NewReaper(torrents, config.ScheduleInterval, config.PeersTimeout)
@@ -131,6 +147,7 @@ func main() {
 	controlSrv.AttachControllerDeps(nodes, replicas, admission, controller)
 	controlSrv.RegisterAgentRoutes()
 	opsSrv, readyFlag := tracker.NewOpsServer(config, worker)
+	opsSrv.AttachSwarmDeps(nodes, replicas, artifacts)
 
 	shutdownCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)
@@ -156,6 +173,21 @@ func main() {
 	controllerCtx, stopController := context.WithCancel(context.Background())
 	go controller.Run(controllerCtx)
 	defer stopController()
+
+	// Drain controller directives — log JOIN_SWARM and RETIRE_REPLICA actions.
+	go func() {
+		for {
+			select {
+			case <-controllerCtx.Done():
+				return
+			case act, ok := <-controller.Directives():
+				if !ok {
+					return
+				}
+				log.Printf("swarm directive: %s node=%d hash=%s", act.Directive, act.NodeID, act.InfoHash)
+			}
+		}
+	}()
 
 	// Mark ready after all servers are started.
 	readyFlag.SetReady()

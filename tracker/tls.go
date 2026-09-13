@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"crypto/tls"
+	"net"
 	"net/http"
 	"time"
 
@@ -48,17 +49,10 @@ func (s *Server) startManualTLS(certFile, keyFile string) error {
 		PreferServerCipherSuites: true,
 	}
 
-	// Create HTTP handler (stub - would need integration)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/announce", func(w http.ResponseWriter, r *http.Request) {
-		// Stub handler
-		w.WriteHeader(http.StatusOK)
-	})
-
 	server := &http.Server{
-		Addr:         ":34443",
-		Handler:      mux,
-		TLSConfig:    tlsConfig,
+		Addr:      ":34443",
+		Handler:   s.tlsHandler(),
+		TLSConfig: tlsConfig,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -84,23 +78,30 @@ func (s *Server) startAutoTLS(domain string) error {
 		http.ListenAndServe(":80", certManager.HTTPHandler(nil))
 	}()
 
-	// Create HTTP handler (stub - would need integration)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/announce", func(w http.ResponseWriter, r *http.Request) {
-		// Stub handler
-		w.WriteHeader(http.StatusOK)
-	})
-
 	server := &http.Server{
-		Addr:         ":443",
-		Handler:      mux,
-		TLSConfig:    tlsConfig,
+		Addr:      ":443",
+		Handler:   s.tlsHandler(),
+		TLSConfig: tlsConfig,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
 
 	return server.ListenAndServeTLS("", "")
+}
+
+// tlsHandler returns an http.Handler that delegates to the Server's handleRequest,
+// so TLS and plain-TCP paths share identical announce/scrape/update logic.
+func (s *Server) tlsHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		ip := net.ParseIP(host)
+		resp, _ := s.handleRequest(r, ip)
+		w.Write(resp) //nolint:errcheck
+	})
 }
 
 // RedirectHTTPToHTTPS returns middleware to redirect HTTP to HTTPS

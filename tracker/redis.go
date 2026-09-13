@@ -25,6 +25,20 @@ type RedisConfig struct {
 	PoolSize int
 }
 
+// NewRedisBackendFromURL creates a RedisBackend from a connection URL such as
+// "redis://localhost:6379" or "redis://:password@host:port/db".
+func NewRedisBackendFromURL(urlStr string) (*RedisBackend, error) {
+	opts, err := redis.ParseURL(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("redis: invalid URL %q: %w", urlStr, err)
+	}
+	return NewRedisBackend(RedisConfig{
+		Addr:     opts.Addr,
+		Password: opts.Password,
+		DB:       opts.DB,
+	})
+}
+
 // NewRedisBackend creates a new Redis backend
 func NewRedisBackend(config RedisConfig) (*RedisBackend, error) {
 	client := redis.NewClient(&redis.Options{
@@ -204,21 +218,10 @@ func (r *RedisBackend) Ping() error {
 	return r.client.Ping(r.ctx).Err()
 }
 
-// FlushExpiredPeers removes peers that haven't announced recently
+// FlushExpiredPeers is a stub. Peer expiry is handled by Redis key TTLs set in
+// AddPeer; individual peer deletion requires storing the peer_id as a separate
+// hash field key, which the current schema does not do. Left as a no-op so
+// callers compile; implement by keying hashes on peer_id when needed.
 func (r *RedisBackend) FlushExpiredPeers(infoHash string, timeout time.Duration) error {
-	peers, err := r.GetPeers(infoHash)
-	if err != nil {
-		return err
-	}
-
-	now := time.Now()
-	for _, peer := range peers {
-		if now.Sub(peer.LastAnnounced) > timeout {
-			// Note: peerID would need to be tracked separately to delete
-			// This is a stub implementation
-			_ = peer
-		}
-	}
-
 	return nil
 }

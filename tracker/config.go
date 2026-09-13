@@ -47,6 +47,10 @@ type FileConfig struct {
 	// AlertWebhookURL receives a POST when a node transitions REACHABLE → FLAPPING.
 	// Empty string disables flap alerts.
 	AlertWebhookURL string
+
+	// RedisURL is an optional Redis connection URL (e.g. "redis://localhost:6379").
+	// Empty string disables Redis backend.
+	RedisURL string
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -161,6 +165,8 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.ControlSecret = val
 		case "alert_webhook_url":
 			cfg.AlertWebhookURL = val
+		case "redis_url":
+			cfg.RedisURL = val
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -183,6 +189,9 @@ func (fc *FileConfig) ToTrackerConfig() *Config {
 		ReportPassword:   fc.ReportPassword,
 		ReadTimeout:      readTimeout,
 		WriteTimeout:     readTimeout,
+		ScheduleInterval: fc.ScheduleInterval,
+		GazelleURL:       fc.GazelleURL,
+		RedisURL:         fc.RedisURL,
 		ControlAddr:      fmt.Sprintf(":%d", fc.ControlPort),
 		OpsAddr:          fmt.Sprintf(":%d", fc.OpsPort),
 		TLSCertFile:      fc.TLSCertFile,
