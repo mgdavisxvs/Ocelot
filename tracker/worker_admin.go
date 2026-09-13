@@ -10,9 +10,19 @@ import (
 
 // HandleUpdate processes admin update requests from the Gazelle site.
 // Dispatches on the "action" query parameter.
+// In READONLY_ACCOUNTING mode all mutations are rejected; read-only actions (info) still work.
 func (w *Worker) HandleUpdate(req *http.Request) ([]byte, error) {
 	params := req.URL.Query()
 	action := params.Get("action")
+
+	mutations := map[string]bool{
+		"add_torrent": true, "delete_torrent": true, "update_torrent": true,
+		"add_user": true, "remove_user": true, "change_passkey": true,
+		"add_whitelist": true, "remove_whitelist": true,
+	}
+	if w.Config.Readonly && mutations[action] {
+		return nil, fmt.Errorf("tracker is in read-only mode: mutation %q rejected", action)
+	}
 
 	switch action {
 	case "add_torrent":

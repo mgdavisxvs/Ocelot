@@ -222,25 +222,27 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 
 	torrent.mu.Unlock()
 
-	if peerChanged {
-		announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
-		ipStr := ""
-		if !user.ProtectIP.Load() {
-			ipStr = ip.String()
-		}
-		if w.BatchWriter != nil {
-			w.BatchWriter.QueuePeerAnnounce(
-				user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
-				upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
-				ipStr, string(req.PeerID), userAgent)
+	if !w.Config.Readonly {
+		if peerChanged {
+			announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
+			ipStr := ""
+			if !user.ProtectIP.Load() {
+				ipStr = ip.String()
+			}
+			if w.BatchWriter != nil {
+				w.BatchWriter.QueuePeerAnnounce(
+					user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
+					upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
+					ipStr, string(req.PeerID), userAgent)
+			} else {
+				w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
+					upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
+					ipStr, string(req.PeerID), userAgent)
+			}
 		} else {
-			w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
-				upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
-				ipStr, string(req.PeerID), userAgent)
+			announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
+			w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, string(req.PeerID))
 		}
-	} else {
-		announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
-		w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, string(req.PeerID))
 	}
 
 	numwant := req.NumWant
@@ -264,11 +266,13 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		torrent.Completed++
 		torrent.mu.Unlock()
 
-		ipStr := ""
-		if !user.ProtectIP.Load() {
-			ipStr = ip.String()
+		if !w.Config.Readonly {
+			ipStr := ""
+			if !user.ProtectIP.Load() {
+				ipStr = ip.String()
+			}
+			w.DB.RecordSnatch(user.ID, torrent.ID, now, ipStr)
 		}
-		w.DB.RecordSnatch(user.ID, torrent.ID, now, ipStr)
 
 		if !inserted {
 			torrent.mu.Lock()
@@ -282,7 +286,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 			torrent.mu.Unlock()
 		}
 
-		if expireToken {
+		if expireToken && !w.Config.Readonly {
 			w.SiteComm.ExpireToken(torrent.ID, user.ID)
 			torrent.mu.Lock()
 			delete(torrent.TokenedUsers, user.ID)
@@ -371,14 +375,14 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	if inserted {
 		w.publish(Event{
 			Type:    EventPeerJoined,
-			Payload: PeerEventPayload{InfoHash: req.InfoHash, UserID: uint32(user.ID), IP: ip.String(), Port: req.Port, Seeder: req.Left == 0},
+			Payload: PeerEventPayload{InfoHash: req.InfoHash, UserID: uint32(user.ID), IP: protectedIP(user, ip), Port: req.Port, Seeder: req.Left == 0},
 			Time:    now,
 		})
 	}
 	if stoppedTorrent {
 		w.publish(Event{
 			Type:    EventPeerLeft,
-			Payload: PeerEventPayload{InfoHash: req.InfoHash, UserID: uint32(user.ID), IP: ip.String(), Port: req.Port, Seeder: req.Left == 0},
+			Payload: PeerEventPayload{InfoHash: req.InfoHash, UserID: uint32(user.ID), IP: protectedIP(user, ip), Port: req.Port, Seeder: req.Left == 0},
 			Time:    now,
 		})
 	}
@@ -482,6 +486,16 @@ func (w *Worker) findOrCreatePeer(peerList *PeerList, peerKey string, user *User
 
 func (w *Worker) peerIsVisible(user *User, peer *Peer) bool {
 	return (peer.Left == 0 || user.CanLeech.Load()) && !peer.InvalidIP
+}
+
+// protectedIP returns the peer's IP as a string, or empty string when the user
+// has ProtectIP enabled. Used to scrub IPs from event payloads and audit logs;
+// does not affect peer-list responses (peers need addressing to connect).
+func protectedIP(user *User, ip net.IP) string {
+	if user.ProtectIP.Load() {
+		return ""
+	}
+	return ip.String()
 }
 
 // ParseAnnounceParams parses URL query parameters into an AnnounceRequest.

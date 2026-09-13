@@ -145,7 +145,9 @@ type Torrent struct {
 	Seeders            *PeerList
 	Leechers           *PeerList
 	LastSelectedSeeder string
-	TokenedUsers       map[UserID]struct{}
+	// TokenedUsers is a per-torrent download-entitlement set. Presence means the
+	// user holds a freeleech token for this torrent (ENTITLEMENT, not QoS priority).
+	TokenedUsers map[UserID]struct{}
 }
 
 func NewTorrent(id TorrentID) *Torrent {

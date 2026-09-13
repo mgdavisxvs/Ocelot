@@ -45,6 +45,11 @@ type Config struct {
 	WriteTimeout     time.Duration
 	ScheduleInterval int
 	GazelleURL       string
+	// Readonly enables READONLY_ACCOUNTING mode: in-memory swarm state is fully
+	// maintained (peer discovery operates normally) but no writes are sent to the
+	// database, batch writer, or Gazelle callbacks. Admin mutations are rejected.
+	// Use for audit-only or standby deployments.
+	Readonly bool
 }
 
 func NewServer(config *Config, worker *Worker) *Server {

@@ -172,6 +172,7 @@ func (fc *FileConfig) ToTrackerConfig() *Config {
 		ReportPassword:   fc.ReportPassword,
 		ReadTimeout:      readTimeout,
 		WriteTimeout:     readTimeout,
+		Readonly:         fc.Readonly,
 	}
 }
 
