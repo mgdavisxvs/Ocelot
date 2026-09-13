@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -57,9 +58,11 @@ func (w *Worker) adminAddTorrent(params map[string][]string) ([]byte, error) {
 	t := NewTorrent(TorrentID(id))
 	t.FreeType = ft
 	w.Torrents.Set(infoHash, t)
-	if err := w.DB.RecordTorrentHash(TorrentID(id), infoHash); err != nil {
-		return nil, fmt.Errorf("persist torrent hash: %w", err)
+	if dbErr := w.DB.RecordTorrentHash(TorrentID(id), infoHash); dbErr != nil {
+		w.audit(context.Background(), "add_torrent", "torrent", idStr, false, dbErr)
+		return nil, fmt.Errorf("persist torrent hash: %w", dbErr)
 	}
+	w.audit(context.Background(), "add_torrent", "torrent", idStr, true, nil)
 	return jsonOK("torrent added")
 }
 
@@ -69,7 +72,15 @@ func (w *Worker) adminDeleteTorrent(params map[string][]string) ([]byte, error) 
 		return nil, fmt.Errorf("delete_torrent requires info_hash")
 	}
 	w.Torrents.Delete(infoHash)
+	w.audit(context.Background(), "delete_torrent", "torrent", infoHash, true, nil)
 	return jsonOK("torrent deleted")
+}
+
+// audit logs an admin action when AuditLogger is configured.
+func (w *Worker) audit(ctx context.Context, action, resourceType, resourceID string, ok bool, err error) {
+	if w.Audit != nil {
+		w.Audit.Log(ctx, action, resourceType, resourceID, ok, err)
+	}
 }
 
 func (w *Worker) adminUpdateTorrent(params map[string][]string) ([]byte, error) {

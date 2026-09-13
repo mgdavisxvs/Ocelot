@@ -225,3 +225,13 @@ func CreateAuditLogTable(db *sql.DB) error {
 	_, err := db.Exec(query)
 	return err
 }
+
+// NewAuditLoggerWithInit creates the audit_log table (if needed) and returns
+// an AuditLogger backed by db. Accepts *SQLiteShardManager via PrimaryDB().
+func NewAuditLoggerWithInit(db interface{ PrimaryDB() *sql.DB }) (*AuditLogger, error) {
+	raw := db.PrimaryDB()
+	if err := CreateAuditLogTable(raw); err != nil {
+		return nil, err
+	}
+	return NewAuditLogger(raw), nil
+}

@@ -31,6 +31,11 @@ type FileConfig struct {
 	Readonly          bool
 	DBDir             string
 	GazelleURL        string // optional Gazelle callback endpoint
+	MetricsAddr       string // address for Prometheus /metrics (default :6880)
+	TLSCertFile       string // path to TLS certificate file
+	TLSKeyFile        string // path to TLS key file
+	TLSAuto           bool   // use Let's Encrypt autocert
+	TLSDomain         string // domain for autocert
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -131,6 +136,16 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.DBDir = val
 		case "gazelle_url":
 			cfg.GazelleURL = val
+		case "metrics_addr":
+			cfg.MetricsAddr = val
+		case "tls_cert_file":
+			cfg.TLSCertFile = val
+		case "tls_key_file":
+			cfg.TLSKeyFile = val
+		case "tls_auto":
+			cfg.TLSAuto = val == "1" || val == "true"
+		case "tls_domain":
+			cfg.TLSDomain = val
 		}
 	}
 	if err := scanner.Err(); err != nil {

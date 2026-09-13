@@ -224,9 +224,16 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		if !user.ProtectIP.Load() {
 			ipStr = ip.String()
 		}
-		w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
-			upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
-			ipStr, string(req.PeerID), userAgent)
+		if w.BatchWriter != nil {
+			w.BatchWriter.QueuePeerAnnounce(
+				user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
+				upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
+				ipStr, string(req.PeerID), userAgent)
+		} else {
+			w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
+				upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
+				ipStr, string(req.PeerID), userAgent)
+		}
 	} else {
 		announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
 		w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, string(req.PeerID))

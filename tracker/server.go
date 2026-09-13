@@ -20,6 +20,8 @@ type Server struct {
 	listener       net.Listener
 	worker         *Worker
 	config         *Config
+	pool           *WorkerPool // bounded goroutine pool; nil → raw goroutines
+	rateLimiter    *RateLimiter // per-IP rate limiter; nil → no limit
 	mu             sync.Mutex
 	activeConns    map[net.Conn]struct{}
 	shutdownCtx    context.Context
@@ -46,7 +48,7 @@ type Config struct {
 
 func NewServer(config *Config, worker *Worker) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Server{
+	s := &Server{
 		worker:         worker,
 		config:         config,
 		activeConns:    make(map[net.Conn]struct{}),
@@ -54,7 +56,14 @@ func NewServer(config *Config, worker *Worker) *Server {
 		shutdownCancel: cancel,
 		stats:          worker.Stats,
 	}
+	if config.MaxMiddlemen > 0 {
+		s.pool = NewWorkerPool(config.MaxMiddlemen)
+	}
+	return s
 }
+
+// SetRateLimiter attaches a per-IP rate limiter to the server.
+func (s *Server) SetRateLimiter(rl *RateLimiter) { s.rateLimiter = rl }
 
 func (s *Server) ListenAndServe() error {
 	listener, err := net.Listen("tcp", s.config.ListenAddr)
@@ -92,7 +101,14 @@ func (s *Server) ListenAndServe() error {
 		s.stats.OpenedConnections.Add(1)
 
 		s.wg.Add(1)
-		go s.handleConnection(conn)
+		if s.pool != nil {
+			if err := s.pool.Submit(func() { s.handleConnection(conn) }); err != nil {
+				s.wg.Done()
+				conn.Close()
+			}
+		} else {
+			go s.handleConnection(conn)
+		}
 	}
 }
 
@@ -157,6 +173,13 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 			httpClose = true
 		} else {
 			httpClose = strings.ToLower(req.Header.Get("Connection")) == "close"
+		}
+	}
+
+	// Per-IP rate limiting (R-21)
+	if s.rateLimiter != nil && clientIP != nil {
+		if !s.rateLimiter.Allow(clientIP.String()) {
+			return s.errorResponse("rate limit exceeded", httpClose), httpClose
 		}
 	}
 
@@ -463,13 +486,16 @@ func (s *Server) Shutdown() error {
 
 // Worker encapsulates tracker business logic.
 type Worker struct {
-	Config    *Config
-	DB        DatabaseInterface
-	SiteComm  SiteCommInterface
-	Torrents  *TorrentList
-	Users     *UserList
-	Whitelist *Whitelist
-	Stats     *Stats
+	Config      *Config
+	DB          DatabaseInterface
+	BatchWriter *BatchWriter // optional async write queue; nil → synchronous writes
+	SiteComm    SiteCommInterface
+	Torrents    *TorrentList
+	Users       *UserList
+	Whitelist   *Whitelist
+	Stats       *Stats
+	CB          *CircuitBreaker // optional DB circuit-breaker; nil → no protection
+	Audit       *AuditLogger    // optional audit log; nil → no audit
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.
@@ -504,4 +530,13 @@ type DatabaseInterface interface {
 // SiteCommInterface abstracts communication back to the Gazelle web application.
 type SiteCommInterface interface {
 	ExpireToken(torrentID TorrentID, userID UserID)
+}
+
+// dbExec runs fn through the circuit breaker if one is configured.
+// Falls back to direct execution when CB is nil.
+func (w *Worker) dbExec(fn func() error) error {
+	if w.CB != nil {
+		return w.CB.Execute(fn)
+	}
+	return fn()
 }

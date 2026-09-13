@@ -612,3 +612,11 @@ func (sm *SQLiteShardManager) Close() error {
 	fmt.Println("All databases closed.")
 	return nil
 }
+
+// PrimaryDB returns the current active shard's *sql.DB for use by subsystems
+// (e.g. AuditLogger) that require direct SQL access to the primary shard.
+func (sm *SQLiteShardManager) PrimaryDB() *sql.DB {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.currentDB
+}

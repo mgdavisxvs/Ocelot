@@ -1,32 +1,139 @@
 package tracker
 
 import (
-	"database/sql"
 	"sync"
 	"time"
 )
 
-// BatchWriter handles batched database writes for performance
+// BatchWriter decouples the announce hot path from synchronous DB writes.
+// Callers enqueue records; a background goroutine drains the queue and calls
+// DatabaseInterface methods in batches, amortising per-call overhead.
 type BatchWriter struct {
-	db            *sql.DB
-	buffer        chan DBOperation
-	ticker        *time.Ticker
-	batchSize     int
-	flushInterval time.Duration
-	wg            sync.WaitGroup
-	stopChan      chan struct{}
-	logger        *Logger
-	metrics       *MetricsRecorder
+	db        DatabaseInterface
+	queue     chan announceRecord
+	ticker    *time.Ticker
+	batchSize int
+	wg        sync.WaitGroup
+	stopChan  chan struct{}
 }
 
-// DBOperation represents a database operation to be batched
-type DBOperation struct {
-	Type  string      // "peer_announce", "peer_update", "torrent_update"
-	Table string      // table name
-	Data  interface{} // operation data
+type announceRecord struct {
+	userID     UserID
+	torrentID  TorrentID
+	active     int
+	uploaded   int64
+	downloaded int64
+	upSpeed    int64
+	downSpeed  int64
+	left       int64
+	corrupt    int64
+	announceAt uint32
+	announces  uint32
+	ip         string
+	peerID     string
+	userAgent  string
 }
 
-// PeerAnnounceData holds peer announce data
+// NewBatchWriter creates a BatchWriter backed by db.
+// batchSize: max records flushed per transaction cycle.
+// flushInterval: max latency before an under-full batch is flushed.
+func NewBatchWriter(db DatabaseInterface, batchSize int, flushInterval time.Duration) *BatchWriter {
+	bw := &BatchWriter{
+		db:        db,
+		queue:     make(chan announceRecord, batchSize*10),
+		ticker:    time.NewTicker(flushInterval),
+		batchSize: batchSize,
+		stopChan:  make(chan struct{}),
+	}
+	bw.wg.Add(1)
+	go bw.processLoop()
+	return bw
+}
+
+// QueuePeerAnnounce enqueues a peer record for async write.
+// If the queue is full the record is dropped (logged via Logger).
+func (bw *BatchWriter) QueuePeerAnnounce(
+	userID UserID, torrentID TorrentID, active int,
+	uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64,
+	announceAt, announces uint32,
+	ip, peerID, userAgent string,
+) {
+	rec := announceRecord{
+		userID: userID, torrentID: torrentID, active: active,
+		uploaded: uploaded, downloaded: downloaded,
+		upSpeed: upSpeed, downSpeed: downSpeed,
+		left: left, corrupt: corrupt,
+		announceAt: announceAt, announces: announces,
+		ip: ip, peerID: peerID, userAgent: userAgent,
+	}
+	select {
+	case bw.queue <- rec:
+	default:
+		GetDefaultLogger().Warn("batch writer: queue full, dropping peer announce",
+			"torrent_id", torrentID, "user_id", userID)
+	}
+}
+
+func (bw *BatchWriter) processLoop() {
+	defer bw.wg.Done()
+	batch := make([]announceRecord, 0, bw.batchSize)
+	for {
+		select {
+		case rec := <-bw.queue:
+			batch = append(batch, rec)
+			if len(batch) >= bw.batchSize {
+				bw.flush(batch)
+				batch = batch[:0]
+			}
+		case <-bw.ticker.C:
+			if len(batch) > 0 {
+				bw.flush(batch)
+				batch = batch[:0]
+			}
+		case <-bw.stopChan:
+			// Drain remaining queued records before exiting.
+		drain:
+			for {
+				select {
+				case rec := <-bw.queue:
+					batch = append(batch, rec)
+				default:
+					break drain
+				}
+			}
+			if len(batch) > 0 {
+				bw.flush(batch)
+			}
+			return
+		}
+	}
+}
+
+func (bw *BatchWriter) flush(batch []announceRecord) {
+	for i := range batch {
+		r := &batch[i]
+		if err := bw.db.RecordPeer(
+			r.userID, r.torrentID, r.active,
+			r.uploaded, r.downloaded, r.upSpeed, r.downSpeed, r.left, r.corrupt,
+			r.announceAt, r.announces, r.ip, r.peerID, r.userAgent,
+		); err != nil {
+			GetDefaultLogger().Warn("batch writer: RecordPeer failed",
+				"torrent_id", r.torrentID, "error", err.Error())
+		}
+	}
+}
+
+// Stop drains the queue and waits for the goroutine to exit.
+func (bw *BatchWriter) Stop() {
+	close(bw.stopChan)
+	bw.ticker.Stop()
+	bw.wg.Wait()
+}
+
+// Size returns the number of records currently queued.
+func (bw *BatchWriter) Size() int { return len(bw.queue) }
+
+// PeerAnnounceData is kept for compatibility with existing tests.
 type PeerAnnounceData struct {
 	InfoHash   string
 	PeerID     string
@@ -39,181 +146,8 @@ type PeerAnnounceData struct {
 	Timestamp  int64
 }
 
-// NewBatchWriter creates a new batch writer
-func NewBatchWriter(db *sql.DB, batchSize int, flushInterval time.Duration) *BatchWriter {
-	bw := &BatchWriter{
-		db:            db,
-		buffer:        make(chan DBOperation, batchSize*10),
-		ticker:        time.NewTicker(flushInterval),
-		batchSize:     batchSize,
-		flushInterval: flushInterval,
-		stopChan:      make(chan struct{}),
-		logger:        GetDefaultLogger(),
-		metrics:       GetMetricsRecorder(),
-	}
-
-	bw.wg.Add(1)
-	go bw.processLoop()
-
-	return bw
-}
-
-// QueuePeerAnnounce queues a peer announce for batched write
-func (bw *BatchWriter) QueuePeerAnnounce(data *PeerAnnounceData) {
-	select {
-	case bw.buffer <- DBOperation{
-		Type: "peer_announce",
-		Data: data,
-	}:
-	default:
-		// Buffer full, log warning
-		bw.logger.Warn("batch writer buffer full, dropping operation",
-			"type", "peer_announce",
-		)
-	}
-}
-
-// QueueTorrentUpdate queues a torrent update for batched write
-func (bw *BatchWriter) QueueTorrentUpdate(infoHash string, seeders, leechers int32) {
-	select {
-	case bw.buffer <- DBOperation{
-		Type: "torrent_update",
-		Data: map[string]interface{}{
-			"info_hash": infoHash,
-			"seeders":   seeders,
-			"leechers":  leechers,
-		},
-	}:
-	default:
-		bw.logger.Warn("batch writer buffer full, dropping operation",
-			"type", "torrent_update",
-		)
-	}
-}
-
-// processLoop is the main processing loop
-func (bw *BatchWriter) processLoop() {
-	defer bw.wg.Done()
-
-	batch := make([]DBOperation, 0, bw.batchSize)
-
-	for {
-		select {
-		case op := <-bw.buffer:
-			batch = append(batch, op)
-
-			// Flush if batch is full
-			if len(batch) >= bw.batchSize {
-				bw.flush(batch)
-				batch = batch[:0]
-			}
-
-		case <-bw.ticker.C:
-			// Flush on timer
-			if len(batch) > 0 {
-				bw.flush(batch)
-				batch = batch[:0]
-			}
-
-		case <-bw.stopChan:
-			// Flush remaining and exit
-			if len(batch) > 0 {
-				bw.flush(batch)
-			}
-			return
-		}
-	}
-}
-
-// flush writes a batch of operations to the database
-func (bw *BatchWriter) flush(batch []DBOperation) {
-	start := time.Now()
-
-	tx, err := bw.db.Begin()
-	if err != nil {
-		bw.logger.Error("failed to begin transaction", err)
-		bw.metrics.RecordDBQuery("batch_begin", time.Since(start), err)
-		return
-	}
-
-	// Prepare statements
-	peerStmt, err := tx.Prepare(`INSERT OR REPLACE INTO peers
-		(info_hash, peer_id, ip, port, uploaded, downloaded, remaining, last_announce, active)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`)
-	if err != nil {
-		tx.Rollback()
-		bw.logger.Error("failed to prepare peer statement", err)
-		return
-	}
-	defer peerStmt.Close()
-
-	torrentStmt, err := tx.Prepare(`UPDATE torrents
-		SET seeders = ?, leechers = ?, last_action = ?
-		WHERE info_hash = ?`)
-	if err != nil {
-		tx.Rollback()
-		bw.logger.Error("failed to prepare torrent statement", err)
-		return
-	}
-	defer torrentStmt.Close()
-
-	// Execute all operations
-	for _, op := range batch {
-		switch op.Type {
-		case "peer_announce":
-			data := op.Data.(*PeerAnnounceData)
-			_, err := peerStmt.Exec(
-				data.InfoHash,
-				data.PeerID,
-				data.IP,
-				data.Port,
-				data.Uploaded,
-				data.Downloaded,
-				data.Remaining,
-				data.Timestamp,
-			)
-			if err != nil {
-				bw.logger.Error("failed to execute peer statement", err)
-			}
-
-		case "torrent_update":
-			data := op.Data.(map[string]interface{})
-			_, err := torrentStmt.Exec(
-				data["seeders"],
-				data["leechers"],
-				time.Now().Unix(),
-				data["info_hash"],
-			)
-			if err != nil {
-				bw.logger.Error("failed to execute torrent statement", err)
-			}
-		}
-	}
-
-	// Commit transaction
-	if err := tx.Commit(); err != nil {
-		bw.logger.Error("failed to commit batch transaction", err)
-		bw.metrics.RecordDBQuery("batch_commit", time.Since(start), err)
-		return
-	}
-
-	duration := time.Since(start)
-	bw.logger.Debug("flushed batch",
-		"operations", len(batch),
-		"duration_ms", duration.Milliseconds(),
-	)
-	bw.metrics.RecordDBQuery("batch_flush", duration, nil)
-}
-
-// Stop gracefully stops the batch writer
-func (bw *BatchWriter) Stop() {
-	close(bw.stopChan)
-	bw.ticker.Stop()
-	bw.wg.Wait()
-	bw.logger.Info("batch writer stopped")
-}
-
-// Size returns the current buffer size
-func (bw *BatchWriter) Size() int {
-	return len(bw.buffer)
+// DBOperation is kept for compatibility with existing tests.
+type DBOperation struct {
+	Type string
+	Data interface{}
 }

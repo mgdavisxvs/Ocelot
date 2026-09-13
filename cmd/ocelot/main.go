@@ -3,12 +3,14 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/mgdavisxvs/Ocelot/tracker"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -57,15 +59,40 @@ func main() {
 		log.Println("No gazelle_url configured; token expiry callbacks disabled")
 	}
 
+	// ── Circuit Breaker (R-09) ────────────────────────────────────────────────
+	cb := tracker.NewCircuitBreaker(tracker.CircuitBreakerConfig{
+		Name:         "sqlite",
+		MaxFailures:  5,
+		ResetTimeout: 30 * time.Second,
+		HalfOpenMax:  3,
+	})
+
+	// ── Batch Writer (R-08) ───────────────────────────────────────────────────
+	bw := tracker.NewBatchWriter(db, 500, 2*time.Second)
+	defer bw.Stop()
+
+	// ── Rate Limiter (R-21) ───────────────────────────────────────────────────
+	rl := tracker.NewRateLimiter(30, 60) // 30 req/s per IP, burst 60
+
+	// ── Audit Logger (R-12) ───────────────────────────────────────────────────
+	auditLogger, auditErr := tracker.NewAuditLoggerWithInit(db)
+	if auditErr != nil {
+		log.Printf("Warning: audit logger init failed: %v — audit disabled", auditErr)
+		auditLogger = nil
+	}
+
 	// ── Worker ────────────────────────────────────────────────────────────────
 	worker := &tracker.Worker{
-		Config:    config,
-		DB:        db,
-		SiteComm:  siteComm,
-		Torrents:  torrents,
-		Users:     users,
-		Whitelist: whitelist,
-		Stats:     stats,
+		Config:      config,
+		DB:          db,
+		BatchWriter: bw,
+		CB:          cb,
+		SiteComm:    siteComm,
+		Torrents:    torrents,
+		Users:       users,
+		Whitelist:   whitelist,
+		Stats:       stats,
+		Audit:       auditLogger,
 	}
 
 	// ── Background subsystems ─────────────────────────────────────────────────
@@ -79,7 +106,7 @@ func main() {
 
 	// ── Signal handlers ───────────────────────────────────────────────────────
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1)
+	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGUSR1)
 
 	go func() {
 		for sig := range sigCh {
@@ -91,13 +118,16 @@ func main() {
 					continue
 				}
 				newCfg := newFC.ToTrackerConfig()
-				// Update fields that can change without a server restart.
 				config.SitePassword = newCfg.SitePassword
 				config.ReportPassword = newCfg.ReportPassword
 				config.NumWantLimit = newCfg.NumWantLimit
 				config.AnnounceInterval = newCfg.AnnounceInterval
 				config.PeersTimeout = newCfg.PeersTimeout
-				log.Println("SIGHUP: configuration reloaded")
+				config.ScheduleInterval = newCfg.ScheduleInterval
+				reaper.SetTimeout(time.Duration(newCfg.PeersTimeout) * time.Second)
+				scheduler.SetInterval(time.Duration(newCfg.ScheduleInterval) * time.Second)
+				log.Printf("SIGHUP: reloaded — peers_timeout=%ds schedule_interval=%ds",
+					newCfg.PeersTimeout, newCfg.ScheduleInterval)
 
 			case syscall.SIGUSR1:
 				log.Println("SIGUSR1: reloading torrent/user/whitelist state...")
@@ -111,16 +141,49 @@ func main() {
 		}
 	}()
 
+	// ── Prometheus /metrics (R-22) ────────────────────────────────────────────
+	go func() {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, "ok")
+		})
+		metricsAddr := fc.MetricsAddr
+		if metricsAddr == "" {
+			metricsAddr = ":6880"
+		}
+		log.Printf("Metrics/health endpoint on %s", metricsAddr)
+		if err := http.ListenAndServe(metricsAddr, mux); err != nil {
+			log.Printf("Metrics server error: %v", err)
+		}
+	}()
+
 	// ── Server ────────────────────────────────────────────────────────────────
 	server := tracker.NewServer(config, worker)
+	server.SetRateLimiter(rl)
+
+	// ── TLS (R-23) ────────────────────────────────────────────────────────────
+	tlsCfg := tracker.TLSConfig{
+		CertFile: fc.TLSCertFile,
+		KeyFile:  fc.TLSKeyFile,
+		AutoTLS:  fc.TLSAuto,
+		Domain:   fc.TLSDomain,
+	}
 
 	shutdownCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		log.Printf("Listening on %s", config.ListenAddr)
-		if err := server.ListenAndServe(); err != nil {
-			log.Printf("Server error: %v", err)
+		var serveErr error
+		if tlsCfg.CertFile != "" || tlsCfg.AutoTLS {
+			serveErr = server.StartTLS(tlsCfg)
+		} else {
+			serveErr = server.ListenAndServe()
+		}
+		if serveErr != nil {
+			log.Printf("Server error: %v", serveErr)
 		}
 	}()
 
