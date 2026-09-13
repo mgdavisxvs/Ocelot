@@ -1,7 +1,7 @@
 # MASTER PROMPT ARCHITECTURE — Tripartite Filter Expansion
 ### Instrument v1.1 · Gödel Unified Council (GUC) governance discipline
 ### Status: RATIFIED. OBJ-7 AMENDED-AND-RATIFIED · OBJ-8 CALIBRATED
-### Principal rulings of record: OBJ-7 (§9.1) · OBJ-8 (§12)
+### Principal rulings of record: OBJ-7 (§9.1) · OBJ-8 (§11)
 
 ---
 
@@ -263,10 +263,10 @@ correct construct is **maintenance-cost decay under dependency drift**.
 
 ### 5.2 Why the zero-Composer mandate is economically correct
 
-Illustrative model. The Phase II calibration (§12) attempted to replace
+Illustrative model. The Phase II calibration (§11) attempted to replace
 these estimates with measured values and FAILED to derive them — the
 repository carries no usable dependency history. These figures therefore
-remain EXPLICITLY ILLUSTRATIVE and may not be cited as evidence. §12 also
+remain EXPLICITLY ILLUSTRATIVE and may not be cited as evidence. §11 also
 falsifies the continuous-decay form of C_maint used below; see rule B-6.
 
 ```
@@ -307,7 +307,7 @@ falsifies the continuous-decay form of C_maint used below; see rule B-6.
         measured profile is speculative and enters the ledger as S3 waste.
    B-5  Durable > clever. If a construct requires a comment to be read,
         it requires a comment to be maintained. Price that comment.
-   B-6  (added v1.1, from §12) Maintenance is BURSTY, not continuous.
+   B-6  (added v1.1, from §11) Maintenance is BURSTY, not continuous.
         Do not integrate drift over wall-clock time for a system that is
         frozen or unused. Index C_maint by ACTIVE years, and model
         reactivation as a STEP cost, not as accrued decay. A system that
@@ -541,7 +541,7 @@ is pre-existing GUC structure.
  │      │ violation of rule B-3 (proportionality).      │      │          │
  ├──────┼──────────────────────────────────────────────┼──────┼──────────┤
  │ OBJ-8│ Drift rates d in §5.2 are estimates, not      │ S3   │ CALIBRA- │
- │      │ measurements.                                 │      │ TED §12  │
+ │      │ measurements.                                 │      │ TED §11  │
  │      │ RESULT: NOT DERIVABLE. n=0 version-change     │      │ retained │
  │      │ events; manifest lifetime 1 day. §5.2 stands  │      │ as ILLUS-│
  │      │ as illustrative and is barred from citation.  │      │ TRATIVE  │
@@ -555,7 +555,7 @@ is pre-existing GUC structure.
  │OBJ-10│ FV-07 severity UNDERSTATED in v1.0. It was    │ S1   │ RESOLVED │
  │      │ classified S2 (availability). Unpinned third- │      │ FV-07    │
  │      │ party script in an authenticated or           │      │ split;   │
- │      │ credential-entry page is arbitrary code       │      │ see §13  │
+ │      │ credential-entry page is arbitrary code       │      │ see §12  │
  │      │ execution → S0. Self-inflicted defect of the  │      │          │
  │      │ instrument's own taxonomy.                    │      │          │
  └──────┴──────────────────────────────────────────────┴──────┴──────────┘
@@ -582,7 +582,7 @@ defects were found in it, one of them confirmed empirically by §13.
  ────────────────────────────────────────────────────────────────────────
  D4  CONFIRMED BY CALIBRATION: the proposed rule routed <script src="…">
      tags to T1 ([M] only) as "layout". That is the exact file position
-     of the live S0 recorded in §13. The proposed rule would have MISSED
+     of the live S0 recorded in §12. The proposed rule would have MISSED
      the single most severe defect in the repository it governs.
      Correction: third-party script/style URLs are a T3 trigger.
 ```
@@ -665,13 +665,13 @@ the two blindnesses that made the v1.0 draft unsafe.
 
 ---
 
-## 12. PHASE II CALIBRATION REPORT (OBJ-8 ruling of record)
+## 11. PHASE II CALIBRATION REPORT (OBJ-8 ruling of record)
 
 **Authorised and executed against real repository history. Result: the
 requested measurement is NOT DERIVABLE from this repository.** Reported
 as a negative finding rather than substituted with plausible numbers.
 
-### 12.1 What the history actually contains
+### 11.1 What the history actually contains
 
 ```
   OBSERVATION WINDOW      2010-10-27 … 2026-09-13   (15.9 yr, 45 commits)
@@ -693,7 +693,7 @@ as a negative finding rather than substituted with plausible numbers.
   DERIVABLE ANNUAL DRIFT RATE d  : NONE — n = 0
 ```
 
-### 12.2 Ruling
+### 11.2 Ruling
 
 ```
   §5.2 drift table REMAINS EXPLICITLY ILLUSTRATIVE and is BARRED from
@@ -712,7 +712,7 @@ as a negative finding rather than substituted with plausible numbers.
   argument is a HYPOTHESIS, not a finding.
 ```
 
-### 12.3 Unrequested finding — the model is wrong (OBJ-9)
+### 11.3 Unrequested finding — the model is wrong (OBJ-9)
 
 The calibration failed at its stated task and succeeded at an unstated one.
 The 10.8-year dormancy is direct evidence against the instrument's own
@@ -746,9 +746,9 @@ maintenance model:
 
 ---
 
-## 13. LIVE DEFECT LEDGER — Ocelot admin panel
+## 12. LIVE DEFECT LEDGER — Ocelot admin panel
 
-Produced incidentally by the §12 pass. Verified against source, not inferred.
+Produced incidentally by the §11 pass. Verified against source, not inferred.
 
 ```
  ┌──────┬───────────────────────────────────────────────┬──────┬──────────┐
@@ -792,7 +792,7 @@ Produced incidentally by the §12 pass. Verified against source, not inferred.
 
 ---
 
-## 14. NEXT SAFE STEP
+## 13. NEXT SAFE STEP
 
 ```
   ┌────────────────────────────────────────────────────────────────────┐
@@ -801,7 +801,7 @@ Produced incidentally by the §12 pass. Verified against source, not inferred.
   │   OBJ-8  calibrated — d NOT derivable; §5.2 barred from citation   │
   │                                                                    │
   │ RULINGS NOW OPEN                                                   │
-  │   OBJ-9  ratify or reject the activity-indexed C_maint form (§12.3)│
+  │   OBJ-9  ratify or reject the activity-indexed C_maint form (§11.3)│
   │   D-01   S0 in admin/login.php. Under rule L1-1 and the S0 class,  │
   │          this BLOCKS emission for the admin panel. It is live in   │
   │          the repository now. No override exists for S0.            │
