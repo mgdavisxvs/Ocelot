@@ -9,14 +9,15 @@ import (
 	"github.com/mgdavisxvs/ocelot/markov/internal/db"
 )
 
-// Engine is the root coordinator for all three Markov chains.
+// Engine is the root coordinator for all three Markov chains plus the Beta-Binomial scorer.
 // It drives observation, decay, and persistence on configurable schedules.
 type Engine struct {
-	cfg     *config.Config
-	db      *db.DB
-	peers   *PeerEngine
-	users   *UserEngine
+	cfg      *config.Config
+	db       *db.DB
+	peers    *PeerEngine
+	users    *UserEngine
 	torrents *TorrentEngine
+	beta     *BetaEngine
 
 	// snatch watermark: we only fetch snatches newer than this timestamp.
 	snatchWatermark int64
@@ -32,6 +33,7 @@ func New(cfg *config.Config, database *db.DB) (*Engine, error) {
 		peers:    newPeerEngine(cfg.DecayFactor),
 		users:    newUserEngine(cfg.DecayFactor, cfg.PathHistoryLen),
 		torrents: newTorrentEngine(cfg.DecayFactor),
+		beta:     newBetaEngine(),
 	}
 	if err := e.loadPersistedState(context.Background()); err != nil {
 		return nil, err
@@ -85,6 +87,15 @@ func (e *Engine) loadPersistedState(ctx context.Context) error {
 		"peer_records", len(peerStates),
 		"torrent_records", len(torrentStates),
 		"user_records", len(userStates))
+
+	// Beta-Binomial peer quality state
+	qualityRecs, err := e.db.LoadAllPeerQuality(ctx)
+	if err != nil {
+		return err
+	}
+	e.beta.loadFromDB(qualityRecs)
+	slog.Info("peer quality loaded", "records", len(qualityRecs))
+
 	return nil
 }
 
@@ -153,6 +164,12 @@ func (e *Engine) poll(ctx context.Context) {
 	e.peers.observe(peers, snatches, now, int64(e.cfg.PeersTimeoutSec))
 	e.torrents.observe(torrentRows)
 	e.users.observe(userRows, freeleechUIDs)
+
+	leechersByTorrent := make(map[int64]int, len(torrentRows))
+	for _, t := range torrentRows {
+		leechersByTorrent[t.ID] = int(t.Leechers)
+	}
+	e.beta.observe(peers, leechersByTorrent, int64(e.cfg.SuccessThresholdBytes))
 
 	e.pollCount++
 	if e.pollCount%e.cfg.DecayEveryNPolls == 0 {
@@ -240,6 +257,16 @@ func (e *Engine) persist(ctx context.Context) {
 	}
 	if err := e.db.UpsertFreeleechCandidates(ctx, candidateRecs); err != nil {
 		slog.Error("UpsertFreeleechCandidates", "err", err)
+	}
+
+	// Beta-Binomial peer quality
+	if err := e.beta.persist(ctx, e.db); err != nil {
+		slog.Error("beta persist", "err", err)
+	}
+
+	// FR-008: expire dead peer state rows older than 7 days
+	if err := e.db.ExpireDeadPeerStates(ctx, now-7*86400); err != nil {
+		slog.Error("ExpireDeadPeerStates", "err", err)
 	}
 
 	slog.Info("persist complete",
@@ -345,4 +372,14 @@ func (e *Engine) UserChainP() [][]float64 {
 // TorrentChainP returns the current torrent health transition matrix.
 func (e *Engine) TorrentChainP() [][]float64 {
 	return e.torrents.globalChain.P()
+}
+
+// BetaUserReliability returns E[p] = Σα/Σ(α+β) and total obs for a user across all their torrents.
+func (e *Engine) BetaUserReliability(uid int64) (globalP float64, obsCount int) {
+	return e.beta.UserGlobalReliability(uid)
+}
+
+// BetaPeerQuality returns the Beta parameters for a specific (uid, torrentID) pair.
+func (e *Engine) BetaPeerQuality(uid, torrentID int64) (alpha, betaV float64, obsCount int, ok bool) {
+	return e.beta.PeerQuality(uid, torrentID)
 }

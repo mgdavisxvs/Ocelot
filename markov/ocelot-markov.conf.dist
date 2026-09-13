@@ -19,6 +19,8 @@
   "fraud_threshold_sigma": 3.0,
   "fraud_path_min_len": 4,
 
+  "success_threshold_bytes": 1024,
+
   "freeleech_top_n": 20,
 
   "listen_addr": ":9090"

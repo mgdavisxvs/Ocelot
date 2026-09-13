@@ -28,6 +28,9 @@ type Config struct {
 	FraudThresholdSigma float64 `json:"fraud_threshold_sigma"` // anomaly z-score cutoff (default 3.0)
 	FraudPathMinLen     int     `json:"fraud_path_min_len"`    // minimum path length before scoring
 
+	// Beta-Binomial peer quality scorer
+	SuccessThresholdBytes int `json:"success_threshold_bytes"` // min uploaded bytes to count as a seeding success (default 1024)
+
 	// Freeleech
 	FreeleechTopN int `json:"freeleech_top_n"` // max candidates to write to DB
 
@@ -84,6 +87,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.FraudPathMinLen == 0 {
 		c.FraudPathMinLen = 4
+	}
+	if c.SuccessThresholdBytes == 0 {
+		c.SuccessThresholdBytes = 1024
 	}
 	if c.FreeleechTopN == 0 {
 		c.FreeleechTopN = 20

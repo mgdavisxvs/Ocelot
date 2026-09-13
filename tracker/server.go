@@ -475,7 +475,7 @@ type Worker struct {
 // DatabaseInterface abstracts all database operations used by the tracker.
 type DatabaseInterface interface {
 	// Announce-path writes
-	RecordPeer(userID UserID, torrentID TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string) error
+	RecordPeer(userID UserID, torrentID TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string, invalidIP bool) error
 	RecordPeerLight(userID UserID, torrentID TorrentID, announceTime, announces uint32, peerID string) error
 	RecordUserStats(userID UserID, uploaded, downloaded int64) error
 	RecordTorrent(torrentID TorrentID, seeders, leechers uint32, snatched int, balance int64) error
@@ -493,6 +493,9 @@ type DatabaseInterface interface {
 	LoadUsers() ([]userLoadRow, error)
 	LoadWhitelist() ([]string, error)
 	LoadTokens() (map[string][]UserID, error)
+
+	// Markov integration
+	LoadRecommendedInterval(torrentID TorrentID) (int, bool)
 
 	// Maintenance
 	CheckpointWAL() error

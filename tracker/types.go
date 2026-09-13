@@ -201,6 +201,40 @@ func (tl *TorrentList) ForEach(fn func(hash string, t *Torrent) bool) {
 	}
 }
 
+// ForEachBatch iterates torrents in batches, releasing the read lock between each batch.
+// This bounds the lock-hold duration to O(batchSize) rather than O(n) on large lists.
+func (tl *TorrentList) ForEachBatch(batchSize int, fn func(hash string, t *Torrent) bool) {
+	tl.mu.RLock()
+	keys := make([]string, 0, len(tl.torrents))
+	for k := range tl.torrents {
+		keys = append(keys, k)
+	}
+	tl.mu.RUnlock()
+
+	for i := 0; i < len(keys); i += batchSize {
+		end := i + batchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		tl.mu.RLock()
+		cont := true
+		for _, k := range keys[i:end] {
+			t, ok := tl.torrents[k]
+			if !ok {
+				continue
+			}
+			if !fn(k, t) {
+				cont = false
+				break
+			}
+		}
+		tl.mu.RUnlock()
+		if !cont {
+			break
+		}
+	}
+}
+
 // Reset clears all torrents. Used during full list reloads.
 func (tl *TorrentList) Reset() {
 	tl.mu.Lock()

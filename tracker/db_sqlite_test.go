@@ -29,7 +29,7 @@ func TestNewSQLiteShardManager_Opens(t *testing.T) {
 
 func TestRecordPeer_Insert(t *testing.T) {
 	sm := newTestDB(t)
-	err := sm.RecordPeer(1, 1, 1, 1024, 512, 10, 5, 0, 0, 60, 3, "1.2.3.4", "-qB4xxx", "TestUA")
+	err := sm.RecordPeer(1, 1, 1, 1024, 512, 10, 5, 0, 0, 60, 3, "1.2.3.4", "-qB4xxx", "TestUA", false)
 	if err != nil {
 		t.Fatalf("RecordPeer: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestRecordPeer_Insert(t *testing.T) {
 func TestRecordPeer_Upsert(t *testing.T) {
 	sm := newTestDB(t)
 	for i := 0; i < 3; i++ {
-		err := sm.RecordPeer(1, 1, 1, int64(i*100), int64(i*50), 10, 5, 0, 0, 60, uint32(i+1), "1.2.3.4", "-qB4xxx", "UA")
+		err := sm.RecordPeer(1, 1, 1, int64(i*100), int64(i*50), 10, 5, 0, 0, 60, uint32(i+1), "1.2.3.4", "-qB4xxx", "UA", false)
 		if err != nil {
 			t.Fatalf("RecordPeer iter %d: %v", i, err)
 		}
@@ -48,7 +48,7 @@ func TestRecordPeer_Upsert(t *testing.T) {
 func TestRecordPeerLight_Update(t *testing.T) {
 	sm := newTestDB(t)
 	// Insert first
-	sm.RecordPeer(2, 2, 1, 0, 0, 0, 0, 0, 0, 10, 1, "", "-XX-xxx", "UA")
+	sm.RecordPeer(2, 2, 1, 0, 0, 0, 0, 0, 0, 10, 1, "", "-XX-xxx", "UA", false)
 	// Light update
 	err := sm.RecordPeerLight(2, 2, 20, 2, "-XX-xxx")
 	if err != nil {

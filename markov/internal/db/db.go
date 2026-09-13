@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -39,6 +40,14 @@ func Open(cfg *config.Config) (*DB, error) {
 }
 
 func (d *DB) Close() error { return d.pool.Close() }
+
+// ExpireDeadPeerStates removes peer state rows in TorrentDead state (4) older than olderThanUnix.
+// Called once per persist cycle to bound table growth (FR-008).
+func (d *DB) ExpireDeadPeerStates(ctx context.Context, olderThanUnix int64) error {
+	_, err := d.pool.ExecContext(ctx,
+		`DELETE FROM markov_peer_states WHERE state=4 AND observed_at<?`, olderThanUnix)
+	return err
+}
 
 func (d *DB) createSchema() error {
 	stmts := []string{
@@ -99,6 +108,16 @@ func (d *DB) createSchema() error {
 			dead_prob_72h  REAL    NOT NULL,
 			recommended    INTEGER NOT NULL DEFAULT 0,
 			updated_at     INTEGER NOT NULL
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS peer_quality (
+			uid        INTEGER NOT NULL,
+			torrent_id INTEGER NOT NULL,
+			alpha      REAL    NOT NULL DEFAULT 1.0,
+			beta       REAL    NOT NULL DEFAULT 1.0,
+			obs_count  INTEGER NOT NULL DEFAULT 0,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (uid, torrent_id)
 		)`,
 	}
 	for _, s := range stmts {

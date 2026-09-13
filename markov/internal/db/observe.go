@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // PeerRow is one row from the peers table.
@@ -11,7 +12,9 @@ type PeerRow struct {
 	FID       int64 // torrent_id
 	Active    bool
 	Remaining int64
+	Uploaded  int64
 	Mtime     int64 // last_announce Unix timestamp
+	InvalidIP bool  // true when peer IP is IPv6 (unsupported) — FR-010
 }
 
 // TorrentRow is one row from the torrents table.
@@ -65,7 +68,7 @@ type StoredUserState struct {
 // LoadPeers fetches all rows from the peers table.
 func (d *DB) LoadPeers(ctx context.Context) ([]PeerRow, error) {
 	rows, err := d.pool.QueryContext(ctx,
-		`SELECT user_id, torrent_id, active, remaining, last_announce FROM peers`)
+		`SELECT user_id, torrent_id, active, remaining, last_announce, uploaded, COALESCE(ip,'') FROM peers`)
 	if err != nil {
 		return nil, fmt.Errorf("LoadPeers: %w", err)
 	}
@@ -74,10 +77,12 @@ func (d *DB) LoadPeers(ctx context.Context) ([]PeerRow, error) {
 	for rows.Next() {
 		var r PeerRow
 		var active int64
-		if err := rows.Scan(&r.UID, &r.FID, &active, &r.Remaining, &r.Mtime); err != nil {
+		var ipStr string
+		if err := rows.Scan(&r.UID, &r.FID, &active, &r.Remaining, &r.Mtime, &r.Uploaded, &ipStr); err != nil {
 			return nil, err
 		}
 		r.Active = active != 0
+		r.InvalidIP = strings.Contains(ipStr, ":") // IPv6 addresses contain colons
 		out = append(out, r)
 	}
 	return out, rows.Err()

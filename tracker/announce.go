@@ -226,7 +226,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		}
 		w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
 			upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
-			ipStr, string(req.PeerID), userAgent)
+			ipStr, string(req.PeerID), userAgent, invalidIP)
 	} else {
 		announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
 		w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, string(req.PeerID))
@@ -325,9 +325,13 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		return nil, fmt.Errorf("access denied, leeching forbidden")
 	}
 
+	interval := w.Config.AnnounceInterval
+	if recInterval, ok := w.DB.LoadRecommendedInterval(torrent.ID); ok && recInterval > 0 {
+		interval = recInterval
+	}
 	response := &AnnounceResponse{
-		Interval:    int32(w.Config.AnnounceInterval + minInt(600, seederCount)),
-		MinInterval: int32(w.Config.AnnounceInterval),
+		Interval:    int32(interval + minInt(600, seederCount)),
+		MinInterval: int32(interval),
 		Complete:    int32(seederCount),
 		Incomplete:  int32(leecherCount),
 		Peers:       peers,

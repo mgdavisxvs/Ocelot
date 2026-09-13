@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ func New(addr string, eng *engine.Engine) *Server {
 	mux.HandleFunc("/chain/torrent", s.handleChainTorrent)
 	mux.HandleFunc("/torrent/", s.handleTorrent)
 	mux.HandleFunc("/user/", s.handleUser)
+	mux.HandleFunc("/peer/quality/", s.handlePeerQuality)
 	mux.HandleFunc("/freeleech", s.handleFreeleech)
 	s.server = &http.Server{
 		Addr:         addr,
@@ -126,13 +128,12 @@ func (s *Server) handleTorrent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /user/{id}/anomaly
-// Returns the fraud anomaly score for a user.
+// GET /user/{id}/anomaly  — fraud anomaly score
+// GET /user/{id}/cheat    — FR-011: decomposed cheat confidence
 func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
-	// Expect path: /user/{id}/anomaly
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if len(parts) < 3 || parts[2] != "anomaly" {
-		http.Error(w, "use /user/{id}/anomaly", http.StatusBadRequest)
+	if len(parts) < 3 {
+		http.Error(w, "use /user/{id}/anomaly or /user/{id}/cheat", http.StatusBadRequest)
 		return
 	}
 	uid, err := strconv.ParseInt(parts[1], 10, 64)
@@ -140,6 +141,17 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid user id", http.StatusBadRequest)
 		return
 	}
+	switch parts[2] {
+	case "anomaly":
+		s.handleUserAnomaly(w, uid)
+	case "cheat":
+		s.handleUserCheat(w, uid)
+	default:
+		http.Error(w, "use /user/{id}/anomaly or /user/{id}/cheat", http.StatusBadRequest)
+	}
+}
+
+func (s *Server) handleUserAnomaly(w http.ResponseWriter, uid int64) {
 	result := s.eng.UserAnomalyForID(uid)
 	if result == nil {
 		http.Error(w, "user not tracked", http.StatusNotFound)
@@ -152,6 +164,65 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		"path_log_likelihood": result.PathLogLikelihood,
 		"anomaly_score":       result.AnomalyScore,
 		"flagged":             result.Flagged,
+	})
+}
+
+// handleUserCheat implements FR-011: decomposed cheat_confidence.
+// Formula: cheat_confidence = 0.6×(1−global_p) + 0.4×clamp(nll_zscore/3, 0, 1)
+func (s *Server) handleUserCheat(w http.ResponseWriter, uid int64) {
+	result := s.eng.UserAnomalyForID(uid)
+	if result == nil {
+		http.Error(w, "user not tracked", http.StatusNotFound)
+		return
+	}
+	globalP, obsCount := s.eng.BetaUserReliability(uid)
+	nllZscore := result.AnomalyScore
+	clampedZ := math.Min(1, math.Max(0, nllZscore/3))
+	cheatConf := 0.6*(1-globalP) + 0.4*clampedZ
+	jsonOK(w, map[string]any{
+		"uid":              uid,
+		"cheat_confidence": cheatConf,
+		"nll_zscore":       nllZscore,
+		"global_p":         globalP,
+		"obs_count":        obsCount,
+		"flagged":          cheatConf > 0.6,
+	})
+}
+
+// GET /peer/quality/{uid}/{torrent_id} — FR-009: Beta-Binomial peer quality
+func (s *Server) handlePeerQuality(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	// path: ["peer", "quality", uid, torrent_id]
+	if len(parts) < 4 {
+		http.Error(w, "use /peer/quality/{uid}/{torrent_id}", http.StatusBadRequest)
+		return
+	}
+	uid, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		http.Error(w, "invalid uid", http.StatusBadRequest)
+		return
+	}
+	tid, err := strconv.ParseInt(parts[3], 10, 64)
+	if err != nil {
+		http.Error(w, "invalid torrent_id", http.StatusBadRequest)
+		return
+	}
+	alpha, betaV, obsCount, ok := s.eng.BetaPeerQuality(uid, tid)
+	if !ok {
+		http.Error(w, "peer not tracked", http.StatusNotFound)
+		return
+	}
+	globalP, _ := s.eng.BetaUserReliability(uid)
+	lo, hi := engine.BetaCI95(alpha, betaV)
+	jsonOK(w, map[string]any{
+		"uid":        uid,
+		"torrent_id": tid,
+		"alpha":      alpha,
+		"beta":       betaV,
+		"obs_count":  obsCount,
+		"global_p":   globalP,
+		"ci_low":     lo,
+		"ci_high":    hi,
 	})
 }
 
