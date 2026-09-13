@@ -141,6 +141,7 @@ type Torrent struct {
 	Completed          uint32
 	Balance            int64
 	FreeType           FreeType
+	MinReplicas        uint32 // minimum required seeders; 0 = no floor enforced
 	LastFlushed        time.Time
 	Seeders            *PeerList
 	Leechers           *PeerList

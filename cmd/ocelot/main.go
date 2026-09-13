@@ -108,6 +108,10 @@ func main() {
 	scheduler.Start()
 	defer scheduler.Stop()
 
+	healthDaemon := tracker.NewSwarmHealthDaemon(worker, 5*time.Minute)
+	healthDaemon.Start()
+	defer healthDaemon.Stop()
+
 	// ── Signal handlers ───────────────────────────────────────────────────────
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGUSR1)
@@ -153,6 +157,7 @@ func main() {
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintln(w, "ok")
 		})
+		mux.Handle("/health/swarms", tracker.SwarmHealthHandler(healthDaemon))
 		mux.Handle("/events", tracker.SSEHandler(bus, config.SitePassword))
 		metricsAddr := fc.MetricsAddr
 		if metricsAddr == "" {

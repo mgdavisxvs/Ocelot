@@ -21,8 +21,9 @@ const (
 	EventUserAdded       EventType = "user_added"
 	EventUserRemoved     EventType = "user_removed"
 	EventPasskeyChanged  EventType = "passkey_changed"
-	EventWhitelistAdded  EventType = "whitelist_added"
+	EventWhitelistAdded   EventType = "whitelist_added"
 	EventWhitelistRemoved EventType = "whitelist_removed"
+	EventTorrentHealth   EventType = "torrent_health"
 )
 
 // Event is a single tracker event emitted to the bus.

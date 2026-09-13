@@ -104,12 +104,16 @@ func (w *Worker) adminUpdateTorrent(params map[string][]string) ([]byte, error) 
 	if !ok {
 		return nil, fmt.Errorf("torrent not found")
 	}
+	t.mu.Lock()
 	if ftStr := getParam(params, "free_type"); ftStr != "" {
 		v, _ := parseUint32(ftStr)
-		t.mu.Lock()
 		t.FreeType = FreeType(v)
-		t.mu.Unlock()
 	}
+	if mrStr := getParam(params, "min_replicas"); mrStr != "" {
+		v, _ := parseUint32(mrStr)
+		t.MinReplicas = v
+	}
+	t.mu.Unlock()
 	w.publish(Event{Type: EventTorrentUpdated, Payload: TorrentEventPayload{InfoHash: infoHash, ID: uint32(t.ID)}, Time: time.Now()})
 	return jsonOK("torrent updated")
 }
