@@ -48,7 +48,13 @@ func NewControlServer(config *Config, worker *Worker) *ControlServer {
 	return cs
 }
 
+// ListenAndServe starts the control server. When TLSCertFile and TLSKeyFile
+// are both non-empty in the config it uses TLS (S-03); otherwise plain HTTP.
 func (cs *ControlServer) ListenAndServe() error {
+	if cs.config.TLSCertFile != "" && cs.config.TLSKeyFile != "" {
+		fmt.Printf("Control API listening on %s (TLS)\n", cs.config.ControlAddr)
+		return cs.httpSrv.ListenAndServeTLS(cs.config.TLSCertFile, cs.config.TLSKeyFile)
+	}
 	fmt.Printf("Control API listening on %s\n", cs.config.ControlAddr)
 	return cs.httpSrv.ListenAndServe()
 }
