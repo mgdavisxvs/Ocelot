@@ -1,6 +1,7 @@
 #ifndef OCELOT_CONFIG_H
 #define OCELOT_CONFIG_H
 
+#include <cstdint>
 #include <string>
 #include <map>
 

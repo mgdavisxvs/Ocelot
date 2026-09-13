@@ -6,10 +6,11 @@
 #include <mutex>
 
 #include "config.h"
+#include "site_comm_interface.h"
 
 using boost::asio::ip::tcp;
 
-class site_comm {
+class site_comm : public site_comm_interface {
 	private:
 		std::string site_host;
 		std::string site_path;
@@ -26,9 +27,9 @@ class site_comm {
 		bool verbose_flush;
 		site_comm(config * conf);
 		void reload_config(config * conf);
-		bool all_clear();
-		void expire_token(int torrent, int user);
-		void flush_tokens();
+		bool all_clear() override;
+		void expire_token(int torrent, int user) override;
+		void flush_tokens() override;
 		~site_comm();
 };
 #endif

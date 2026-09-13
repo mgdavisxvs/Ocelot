@@ -11,16 +11,16 @@
 
 #include "ocelot.h"
 #include "config.h"
-#include "db.h"
+#include "db_interface.h"
 #include "worker.h"
 #include "misc_functions.h"
-#include "site_comm.h"
+#include "site_comm_interface.h"
 #include "response.h"
 #include "report.h"
 #include "user.h"
 
 //---------- Worker - does stuff with input
-worker::worker(config * conf_obj, torrent_list &torrents, user_list &users, std::vector<std::string> &_whitelist, mysql * db_obj, site_comm * sc) :
+worker::worker(config * conf_obj, torrent_list &torrents, user_list &users, std::vector<std::string> &_whitelist, db_interface * db_obj, site_comm_interface * sc) :
 	conf(conf_obj), db(db_obj), s_comm(sc), torrents_list(torrents), users_list(users), whitelist(_whitelist), status(OPEN), reaper_active(false)
 {
 	load_config(conf);

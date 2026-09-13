@@ -7,8 +7,9 @@
 #include <queue>
 #include <mutex>
 #include "config.h"
+#include "db_interface.h"
 
-class mysql {
+class mysql : public db_interface {
 	private:
 		mysqlpp::Connection conn;
 		std::string update_user_buffer;
@@ -59,24 +60,20 @@ class mysql {
 		mysql(config * conf);
 		void reload_config(config * conf);
 		bool connected();
-		void load_torrents(torrent_list &torrents);
-		void load_users(user_list &users);
-		void load_whitelist(std::vector<std::string> &whitelist);
+		void load_torrents(torrent_list &torrents) override;
+		void load_users(user_list &users) override;
+		void load_whitelist(std::vector<std::string> &whitelist) override;
 
-		void record_user(const std::string &record); // (id,uploaded_change,downloaded_change)
-		void record_torrent(const std::string &record); // (id,seeders,leechers,snatched_change,balance)
-		void record_snatch(const std::string &record, const std::string &ip); // (uid,fid,tstamp)
-		void record_peer(const std::string &record, const std::string &ip, const std::string &peer_id, const std::string &useragent); // (uid,fid,active,peerid,useragent,ip,uploaded,downloaded,upspeed,downspeed,left,timespent,announces,tstamp)
-		void record_peer(const std::string &record, const std::string &peer_id); // (fid,peerid,timespent,announces,tstamp)
-		void record_token(const std::string &record);
+		void record_user(const std::string &record) override; // (id,uploaded_change,downloaded_change)
+		void record_torrent(const std::string &record) override; // (id,seeders,leechers,snatched_change,balance)
+		void record_snatch(const std::string &record, const std::string &ip) override; // (uid,fid,tstamp)
+		void record_peer(const std::string &record, const std::string &ip, const std::string &peer_id, const std::string &useragent) override; // (uid,fid,active,peerid,useragent,ip,uploaded,downloaded,upspeed,downspeed,left,timespent,announces,tstamp)
+		void record_peer(const std::string &record, const std::string &peer_id) override; // (fid,peerid,timespent,announces,tstamp)
+		void record_token(const std::string &record) override;
 
-		void flush();
+		void flush() override;
 
-		bool all_clear();
-
-		std::mutex torrent_list_mutex;
-		std::mutex user_list_mutex;
-		std::mutex whitelist_mutex;
+		bool all_clear() override;
 };
 
 #pragma GCC visibility pop
