@@ -147,6 +147,11 @@ func (sm *SQLiteShardManager) openCurrentDB() error {
 		return fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
+	if err := sm.migrateSchema(db); err != nil {
+		db.Close()
+		return fmt.Errorf("failed to migrate schema: %w", err)
+	}
+
 	sm.mu.Lock()
 	sm.currentDB = db
 	sm.currentPath = path
@@ -234,6 +239,7 @@ func (sm *SQLiteShardManager) initSchema(db *sql.DB) error {
 	-- Torrents table
 	CREATE TABLE IF NOT EXISTS torrents (
 		id INTEGER PRIMARY KEY,
+		info_hash TEXT DEFAULT '',
 		seeders INTEGER DEFAULT 0,
 		leechers INTEGER DEFAULT 0,
 		snatched INTEGER DEFAULT 0,
@@ -242,9 +248,17 @@ func (sm *SQLiteShardManager) initSchema(db *sql.DB) error {
 		last_action INTEGER DEFAULT 0
 	) WITHOUT ROWID;
 
+
 	-- Users table (upload/download statistics)
+	-- One users table serving both identity and stats. These were previously
+	-- two conflicting CREATE TABLE IF NOT EXISTS definitions under the same
+	-- name, so whichever ran first won and passkeys were never persisted.
 	CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY,
+		passkey TEXT DEFAULT '',
+		can_leech INTEGER DEFAULT 1,
+		protect_ip INTEGER DEFAULT 0,
+		deleted INTEGER DEFAULT 0,
 		uploaded INTEGER DEFAULT 0,
 		downloaded INTEGER DEFAULT 0
 	) WITHOUT ROWID;
@@ -478,6 +492,127 @@ func (sm *SQLiteShardManager) RecordToken(userID UserID, torrentID TorrentID, do
 
 	return RetryWithBackoff(func() error {
 		_, err := stmt.Exec(userID, torrentID, downloaded)
+		return err
+	}, sqliteWriteRetry)
+}
+
+// hasColumn reports whether a table already has a column.
+func hasColumn(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, fmt.Errorf("failed to inspect %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			dflt       sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+
+	return false, rows.Err()
+}
+
+// migrateSchema adds columns introduced after a database was first created.
+// The tracker looks torrents up by info_hash and users up by passkey, so a
+// database missing either column loses all of that state on restart. SQLite
+// has no ADD COLUMN IF NOT EXISTS, hence the explicit check.
+func (sm *SQLiteShardManager) migrateSchema(db *sql.DB) error {
+	columns := []struct {
+		table  string
+		column string
+		def    string
+	}{
+		{"torrents", "info_hash", "TEXT DEFAULT ''"},
+		{"users", "passkey", "TEXT DEFAULT ''"},
+		{"users", "can_leech", "INTEGER DEFAULT 1"},
+		{"users", "protect_ip", "INTEGER DEFAULT 0"},
+		{"users", "deleted", "INTEGER DEFAULT 0"},
+	}
+
+	for _, c := range columns {
+		present, err := hasColumn(db, c.table, c.column)
+		if err != nil {
+			return err
+		}
+		if present {
+			continue
+		}
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", c.table, c.column, c.def)); err != nil {
+			return fmt.Errorf("failed to add %s.%s: %w", c.table, c.column, err)
+		}
+	}
+
+	// Created after the columns exist, so a legacy database can be migrated.
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_torrents_info_hash ON torrents(info_hash) WHERE info_hash != ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_passkey ON users(passkey) WHERE passkey != ''`,
+	}
+	for _, stmt := range indexes {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to create index: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// RecordUserPasskey persists the identity an announce authenticates against.
+// Without it a user cannot log in after a restart.
+func (sm *SQLiteShardManager) RecordUserPasskey(userID UserID, passkey string, canLeech, protectIP bool) error {
+	sm.mu.RLock()
+	db := sm.currentDB
+	sm.mu.RUnlock()
+
+	return RetryWithBackoff(func() error {
+		_, err := db.Exec(`INSERT INTO users (id, passkey, can_leech, protect_ip, deleted)
+			VALUES (?, ?, ?, ?, 0)
+			ON CONFLICT(id) DO UPDATE SET
+				passkey = excluded.passkey,
+				can_leech = excluded.can_leech,
+				protect_ip = excluded.protect_ip,
+				deleted = 0`,
+			userID, passkey, canLeech, protectIP)
+		return err
+	}, sqliteWriteRetry)
+}
+
+// MarkUserDeleted stops a user authenticating after a restart while leaving
+// their transfer history in place.
+func (sm *SQLiteShardManager) MarkUserDeleted(userID UserID) error {
+	sm.mu.RLock()
+	db := sm.currentDB
+	sm.mu.RUnlock()
+
+	return RetryWithBackoff(func() error {
+		_, err := db.Exec(`UPDATE users SET deleted = 1 WHERE id = ?`, userID)
+		return err
+	}, sqliteWriteRetry)
+}
+
+// RecordTorrentInfoHash stores the mapping an announce needs to find a
+// torrent. It is separate from RecordTorrent, which runs on the hot path and
+// only carries swarm counts.
+func (sm *SQLiteShardManager) RecordTorrentInfoHash(torrentID TorrentID, infoHash string) error {
+	sm.mu.RLock()
+	db := sm.currentDB
+	sm.mu.RUnlock()
+
+	return RetryWithBackoff(func() error {
+		_, err := db.Exec(`INSERT INTO torrents (id, info_hash) VALUES (?, ?)
+			ON CONFLICT(id) DO UPDATE SET info_hash = excluded.info_hash`,
+			torrentID, infoHash)
 		return err
 	}, sqliteWriteRetry)
 }

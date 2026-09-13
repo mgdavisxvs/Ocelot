@@ -32,7 +32,8 @@ type AnnounceResponse struct {
 	MinInterval int32
 	Complete    int32  // Number of seeders
 	Incomplete  int32  // Number of leechers
-	Peers       []byte // Compact format: 6 bytes per peer
+	Peers       []byte // BEP 23 compact IPv4: 6 bytes per peer
+	Peers6      []byte // BEP 7 compact IPv6: 18 bytes per peer
 	Warning     string
 }
 
@@ -53,6 +54,12 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	// Validation: peer_id must be exactly 20 bytes (BitTorrent spec)
 	if len(req.PeerID) != 20 {
 		return nil, fmt.Errorf("invalid peer ID")
+	}
+
+	// A user deleted through /update keeps their entry so peer history stays
+	// intact, so the deleted flag has to be checked explicitly here.
+	if user.Deleted.Load() {
+		return nil, fmt.Errorf("your account has been disabled")
 	}
 
 	// Check whitelist (if enabled)
@@ -323,7 +330,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	}
 
 	// Select peers to return (matches C++ worker.cpp:574-643)
-	peers := w.selectPeers(torrent, peer, user.ID, numwant, req.Left > 0)
+	peers, peers6 := w.selectPeers(torrent, peer, user.ID, numwant, req.Left > 0)
 
 	// Update global statistics (using atomics - no mutex needed!)
 	w.Stats.SuccAnnouncements.Add(1)
@@ -381,26 +388,49 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		Complete:    int32(seederCount),
 		Incomplete:  int32(leecherCount),
 		Peers:       peers,
+		Peers6:      peers6,
 	}
 
 	if invalidIP {
-		response.Warning = "Illegal character found in IP address. IPv6 is not supported"
+		response.Warning = "Your IP address could not be represented in compact form"
 	}
 
 	return response, nil
+}
+
+// compactPeers routes selected peers into BEP 7's separate IPv4 and IPv6
+// lists, keyed off the length of the compact encoding.
+type compactPeers struct {
+	v4    []byte
+	v6    []byte
+	count int
+}
+
+// add appends a peer to the matching list and reports whether it was usable.
+func (c *compactPeers) add(peer *Peer) bool {
+	switch len(peer.IPPort) {
+	case CompactIPv4Len:
+		c.v4 = append(c.v4, peer.IPPort...)
+	case CompactIPv6Len:
+		c.v6 = append(c.v6, peer.IPPort...)
+	default:
+		return false
+	}
+
+	c.count++
+	return true
 }
 
 // selectPeers implements the peer selection algorithm
 // For leechers: return seeders first (round-robin), then other leechers
 // For seeders: return only leechers
 // Matches C++ worker.cpp:574-643
-func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool) []byte {
+func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool) ([]byte, []byte) {
 	if numwant <= 0 {
-		return []byte{}
+		return []byte{}, []byte{}
 	}
 
-	// Pre-allocate buffer (6 bytes per peer in compact format)
-	peers := make([]byte, 0, numwant*6)
+	selected := compactPeers{v4: make([]byte, 0, numwant*CompactIPv4Len)}
 	foundPeers := 0
 
 	torrent.mu.RLock()
@@ -445,9 +475,8 @@ func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwan
 					continue
 				}
 
-				if len(peer.IPPort) == 6 {
-					peers = append(peers, peer.IPPort...)
-					foundPeers++
+				if selected.add(peer) {
+					foundPeers = selected.count
 					torrent.LastSelectedSeeder = key
 				}
 			}
@@ -463,9 +492,8 @@ func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwan
 				if peer.UserID == userID || !peer.Visible {
 					return true
 				}
-				if len(peer.IPPort) == 6 {
-					peers = append(peers, peer.IPPort...)
-					foundPeers++
+				if selected.add(peer) {
+					foundPeers = selected.count
 				}
 				return true
 			})
@@ -480,15 +508,14 @@ func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwan
 			if peer.UserID == userID || !peer.Visible {
 				return true
 			}
-			if len(peer.IPPort) == 6 {
-				peers = append(peers, peer.IPPort...)
-				foundPeers++
+			if selected.add(peer) {
+				foundPeers = selected.count
 			}
 			return true
 		})
 	}
 
-	return peers
+	return selected.v4, selected.v6
 }
 
 // findOrCreatePeer finds an existing peer or creates a new one

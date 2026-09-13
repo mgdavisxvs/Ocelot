@@ -620,23 +620,6 @@ func TestAnnounceReturnsPositiveIntervals(t *testing.T) {
 	}
 }
 
-func TestAnnounceWarnsOnUnsupportedIP(t *testing.T) {
-	h := newTestHarness(t)
-	user, _ := h.addUser(t, 1, true)
-
-	req := announceParams(h.infoHash, testPeerID("peer0001"), 6881, 1<<30, "started")
-	req.IP = net.ParseIP("2001:db8::1") // IPv6 has no compact representation
-
-	resp, err := h.worker.Announce(req, user, net.ParseIP("2001:db8::1"), "qB")
-	if err != nil {
-		t.Fatalf("announce failed: %v", err)
-	}
-
-	if resp.Warning == "" {
-		t.Error("expected a warning for an address with no compact form")
-	}
-}
-
 func TestAnnounceConcurrentPeers(t *testing.T) {
 	h := newTestHarness(t)
 

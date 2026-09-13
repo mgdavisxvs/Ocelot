@@ -32,8 +32,8 @@ type Peer struct {
 	FirstAnnounced time.Time
 	Announces      uint32
 	Port           uint16
-	IP             net.IP      // Go's native IP type (safer than manual parsing)
-	IPPort         []byte      // Compact 6-byte format: 4-byte IPv4 + 2-byte port
+	IP             net.IP // Go's native IP type (safer than manual parsing)
+	IPPort         []byte // Compact 6-byte format: 4-byte IPv4 + 2-byte port
 	Visible        bool
 	InvalidIP      bool
 }
@@ -57,20 +57,34 @@ func PeerKey(peerID []byte, userID UserID, torrentID TorrentID) string {
 	return string(key)
 }
 
-// CompactIPPort creates the 6-byte compact peer format
+// Compact peer encoding lengths. IPv4 uses BEP 23's 6-byte form, IPv6 uses
+// BEP 7's 18-byte form, and the length distinguishes them.
+const (
+	CompactIPv4Len = 6
+	CompactIPv6Len = 18
+)
+
+// CompactIPPort creates the compact peer format
 // Format: 4 bytes IP (big-endian) + 2 bytes port (big-endian)
 func CompactIPPort(ip net.IP, port uint16) []byte {
-	// Get IPv4 representation (4 bytes)
-	ipv4 := ip.To4()
-	if ipv4 == nil {
-		return nil // IPv6 not supported in compact format
+	if ipv4 := ip.To4(); ipv4 != nil {
+		compact := make([]byte, CompactIPv4Len)
+		copy(compact[0:4], ipv4)
+		compact[4] = byte(port >> 8)
+		compact[5] = byte(port & 0xFF)
+		return compact
 	}
 
-	compact := make([]byte, 6)
-	copy(compact[0:4], ipv4)
-	compact[4] = byte(port >> 8)
-	compact[5] = byte(port & 0xFF)
-	return compact
+	// IPv6 uses BEP 7's 18-byte form, returned in the separate peers6 key.
+	if ipv6 := ip.To16(); ipv6 != nil {
+		compact := make([]byte, CompactIPv6Len)
+		copy(compact[0:16], ipv6)
+		compact[16] = byte(port >> 8)
+		compact[17] = byte(port & 0xFF)
+		return compact
+	}
+
+	return nil
 }
 
 // PeerList is a concurrent-safe map of peers
@@ -148,12 +162,12 @@ func NewTorrent(id TorrentID) *Torrent {
 
 // User represents a tracker user
 type User struct {
-	ID         UserID
-	Deleted    atomic.Bool
-	CanLeech   atomic.Bool
-	ProtectIP  atomic.Bool
-	Leeching   atomic.Uint32
-	Seeding    atomic.Uint32
+	ID        UserID
+	Deleted   atomic.Bool
+	CanLeech  atomic.Bool
+	ProtectIP atomic.Bool
+	Leeching  atomic.Uint32
+	Seeding   atomic.Uint32
 }
 
 func NewUser(id UserID, canLeech, protectIP bool) *User {

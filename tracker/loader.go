@@ -4,8 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"net"
-	"time"
 )
 
 // LoaderInterface defines methods for loading initial tracker state from database
@@ -70,15 +68,16 @@ func (l *Loader) LoadTorrents() error {
 		return fmt.Errorf("database not initialized")
 	}
 
-	// Query distinct torrents
+	// Query distinct torrents. Only rows carrying an info_hash are usable:
+	// clients announce by hash, so a torrent without one can never be matched.
 	rows, err := db.Query(`
-		SELECT DISTINCT torrent_id, seeders, leechers, snatched, balance, free_type
+		SELECT id, info_hash, seeders, leechers, snatched, balance, free_type
 		FROM torrents
-		ORDER BY torrent_id
+		WHERE info_hash != ''
+		ORDER BY id
 	`)
 	if err != nil {
-		// Table might not exist yet - not an error
-		return nil
+		return fmt.Errorf("failed to query torrents: %w", err)
 	}
 	defer rows.Close()
 
@@ -86,6 +85,7 @@ func (l *Loader) LoadTorrents() error {
 	for rows.Next() {
 		var (
 			torrentID TorrentID
+			infoHash  string
 			seeders   uint32
 			leechers  uint32
 			snatched  int
@@ -93,12 +93,12 @@ func (l *Loader) LoadTorrents() error {
 			freeType  int
 		)
 
-		if err := rows.Scan(&torrentID, &seeders, &leechers, &snatched, &balance, &freeType); err != nil {
+		if err := rows.Scan(&torrentID, &infoHash, &seeders, &leechers, &snatched, &balance, &freeType); err != nil {
 			log.Printf("Warning: Failed to scan torrent row: %v", err)
 			continue
 		}
 
-		// Create torrent (info_hash will be filled from peers table)
+		// Keyed by info_hash, which is how announces look torrents up.
 		torrent := NewTorrent(torrentID)
 		torrent.Completed = uint32(snatched)
 		torrent.Balance = balance
@@ -106,9 +106,7 @@ func (l *Loader) LoadTorrents() error {
 			torrent.FreeType = FreeType(freeType)
 		}
 
-		// Store with temporary key (will be updated when loading peers)
-		tempKey := fmt.Sprintf("__temp_%d", torrentID)
-		l.torrents.Set(tempKey, torrent)
+		l.torrents.Set(infoHash, torrent)
 		count++
 	}
 
@@ -127,181 +125,59 @@ func (l *Loader) LoadUsers() error {
 		return fmt.Errorf("database not initialized")
 	}
 
-	// Query distinct user IDs from peers and transfers
+	// Only users with a stored passkey can authenticate. Rows without one
+	// were written before passkeys were persisted and are unusable.
 	rows, err := db.Query(`
-		SELECT DISTINCT user_id FROM peers
-		UNION
-		SELECT DISTINCT user_id FROM transfers
-		ORDER BY user_id
+		SELECT id, passkey, can_leech, protect_ip
+		FROM users
+		WHERE passkey != '' AND deleted = 0
+		ORDER BY id
 	`)
 	if err != nil {
-		// Tables might not exist yet - not an error
-		return nil
+		return fmt.Errorf("failed to query users: %w", err)
 	}
 	defer rows.Close()
 
 	count := 0
 	for rows.Next() {
-		var userID UserID
-		if err := rows.Scan(&userID); err != nil {
-			log.Printf("Warning: Failed to scan user row: %v", err)
-			continue
+		var (
+			userID    UserID
+			passkey   string
+			canLeech  bool
+			protectIP bool
+		)
+
+		if err := rows.Scan(&userID, &passkey, &canLeech, &protectIP); err != nil {
+			return fmt.Errorf("failed to scan user row: %w", err)
 		}
 
-		// Create user with default privileges (passkey will be set via admin panel)
-		user := NewUser(userID, true, false)
-
-		// Generate a temporary passkey (format: temp_<user_id>_<timestamp>)
-		tempPasskey := fmt.Sprintf("temp_%010d_%016x", userID, time.Now().UnixNano())
-		l.users.Set(tempPasskey, user)
+		l.users.Set(passkey, NewUser(userID, canLeech, protectIP))
 		count++
 	}
 
-	log.Printf("  Loaded %d users (temporary passkeys - update via admin panel)", count)
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("failed to read users: %w", err)
+	}
+
+	log.Printf("  Loaded %d users", count)
 	return nil
 }
 
-// LoadPeers loads recent peers from database (last 2 hours)
-// This rebuilds the in-memory peer lists for active torrents
-// Complexity: O(n) where n = active peers
+// LoadPeers is intentionally a no-op.
+//
+// Peers are not restored across a restart. The peers table has no port
+// column, so a compact IP:port cannot be reconstructed from it, and every
+// live client re-announces within announce_interval anyway. Restoring stale
+// rows would hand out addresses that no longer serve, which is the very
+// problem the reaper exists to prevent.
+//
+// This previously issued a query naming four columns that do not exist
+// (torrent_left, torrent_corrupt, port, timestamp) and discarded the error,
+// so it had never loaded a peer.
 func (l *Loader) LoadPeers() error {
-	l.db.mu.RLock()
-	db := l.db.currentDB
-	l.db.mu.RUnlock()
-
-	if db == nil {
-		return fmt.Errorf("database not initialized")
-	}
-
-	// Query recent peers (last 2 hours = 7200 seconds)
-	cutoff := time.Now().Add(-2 * time.Hour).Unix()
-	rows, err := db.Query(`
-		SELECT
-			user_id,
-			torrent_id,
-			uploaded,
-			downloaded,
-			torrent_left,
-			torrent_corrupt,
-			ip,
-			port,
-			peer_id,
-			announces,
-			timestamp
-		FROM peers
-		WHERE timestamp > ?
-		ORDER BY torrent_id, user_id
-	`, cutoff)
-	if err != nil {
-		// Table might not exist yet - not an error
-		return nil
-	}
-	defer rows.Close()
-
-	type peerData struct {
-		userID     UserID
-		torrentID  TorrentID
-		uploaded   int64
-		downloaded int64
-		left       int64
-		corrupt    int64
-		ip         string
-		port       uint16
-		peerID     string
-		announces  uint32
-		timestamp  int64
-	}
-
-	peers := make(map[TorrentID][]peerData)
-	for rows.Next() {
-		var pd peerData
-
-		if err := rows.Scan(
-			&pd.userID,
-			&pd.torrentID,
-			&pd.uploaded,
-			&pd.downloaded,
-			&pd.left,
-			&pd.corrupt,
-			&pd.ip,
-			&pd.port,
-			&pd.peerID,
-			&pd.announces,
-			&pd.timestamp,
-		); err != nil {
-			log.Printf("Warning: Failed to scan peer row: %v", err)
-			continue
-		}
-
-		peers[pd.torrentID] = append(peers[pd.torrentID], pd)
-	}
-
-	// Rebuild peer lists for each torrent
-	totalPeers := 0
-	for torrentID, peerList := range peers {
-		// Find torrent by ID
-		var torrent *Torrent
-		l.torrents.mu.RLock()
-		for _, t := range l.torrents.torrents {
-			if t.ID == torrentID {
-				torrent = t
-				break
-			}
-		}
-		l.torrents.mu.RUnlock()
-
-		if torrent == nil {
-			// Torrent not loaded - skip
-			continue
-		}
-
-		// Add each peer to appropriate list (seeders or leechers)
-		for _, pd := range peerList {
-			peer := &Peer{
-				UserID:        pd.userID,
-				Uploaded:      pd.uploaded,
-				Downloaded:    pd.downloaded,
-				Left:          pd.left,
-				Corrupt:       pd.corrupt,
-				Port:          pd.port,
-				Announces:     pd.announces,
-				LastAnnounced: time.Unix(pd.timestamp, 0),
-				Visible:       true,
-				InvalidIP:     false,
-			}
-
-			// Parse IP
-			if pd.ip != "" {
-				peer.IP = net.ParseIP(pd.ip)
-				peer.IPPort = CompactIPPort(peer.IP, pd.port)
-				if peer.IPPort == nil {
-					peer.InvalidIP = true
-				}
-			}
-
-			// Generate peer key
-			peerKey := PeerKey([]byte(pd.peerID), pd.userID, torrentID)
-
-			// Add to appropriate list
-			torrent.mu.Lock()
-			if pd.left > 0 {
-				torrent.Leechers.Set(peerKey, peer)
-			} else {
-				torrent.Seeders.Set(peerKey, peer)
-			}
-			torrent.mu.Unlock()
-
-			totalPeers++
-		}
-	}
-
-	log.Printf("  Loaded %d active peers across %d torrents", totalPeers, len(peers))
 	return nil
 }
 
-// LoadWhitelist loads allowed peer_id prefixes from database or config
-// For now, returns empty whitelist (allow all)
-// TODO: Add whitelist table to database schema
 func (l *Loader) LoadWhitelist() error {
 	// Placeholder: Load from whitelist table when implemented
 	// For now, empty whitelist = allow all clients
@@ -387,22 +263,12 @@ func (l *Loader) CreateSchemaIfNeeded() error {
 		return fmt.Errorf("database not initialized")
 	}
 
-	// Create users table (for passkey storage)
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS users (
-			user_id INTEGER PRIMARY KEY,
-			passkey TEXT UNIQUE NOT NULL,
-			can_leech BOOLEAN DEFAULT 1,
-			protect_ip BOOLEAN DEFAULT 0,
-			created_at INTEGER DEFAULT (strftime('%s', 'now'))
-		)
-	`)
-	if err != nil {
-		return fmt.Errorf("failed to create users table: %w", err)
-	}
+	// The users table is created by the shard manager's schema, which owns
+	// both identity and stats columns. Defining it here too produced two
+	// conflicting CREATE TABLE IF NOT EXISTS statements for one name.
 
 	// Create whitelist table
-	_, err = db.Exec(`
+	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS whitelist (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			prefix TEXT UNIQUE NOT NULL,

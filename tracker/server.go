@@ -660,6 +660,15 @@ func (s *Server) bencodedAnnounceResponse(resp *AnnounceResponse, httpClose bool
 		b.Write(resp.Peers)
 	}
 
+	// BEP 7 puts IPv6 peers in a separate key. Bencode dictionaries are
+	// ordered by key, and "peers" sorts before "peers6" before "warning
+	// message", so this belongs here. Omitted when empty, as BEP 7 allows.
+	if len(resp.Peers6) > 0 {
+		b.WriteString("6:peers6")
+		b.WriteString(fmt.Sprintf("%d:", len(resp.Peers6)))
+		b.Write(resp.Peers6)
+	}
+
 	if resp.Warning != "" {
 		// Add warning message
 		b.WriteString("15:warning message")

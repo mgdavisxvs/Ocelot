@@ -164,6 +164,19 @@ func (r *Reaper) ReapOnce() ReapResult {
 	return result
 }
 
+// TorrentInfoHashRecorder persists the info_hash a torrent is announced under.
+// It is optional so an in-memory database can skip it.
+type TorrentInfoHashRecorder interface {
+	RecordTorrentInfoHash(torrentID TorrentID, infoHash string) error
+}
+
+// UserIdentityRecorder persists the passkey an announce authenticates
+// against, and its removal. Optional, like the other storage hooks.
+type UserIdentityRecorder interface {
+	RecordUserPasskey(userID UserID, passkey string, canLeech, protectIP bool) error
+	MarkUserDeleted(userID UserID) error
+}
+
 // PeerDeactivator marks reaped peers inactive in storage. It is optional: a
 // database that does not implement it is reaped in memory only.
 type PeerDeactivator interface {

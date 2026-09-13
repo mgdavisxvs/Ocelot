@@ -17,11 +17,11 @@ type UpdateRequest struct {
 	Reason    string `json:"reason,omitempty"`
 	FreeType  int    `json:"free_type,omitempty"`
 	// User-related fields
-	UserID      int    `json:"user_id,omitempty"`
-	Passkey     string `json:"passkey,omitempty"`
-	CanLeech    *bool  `json:"can_leech,omitempty"`
-	ProtectIP   *bool  `json:"protect_ip,omitempty"`
-	NewPasskey  string `json:"new_passkey,omitempty"`
+	UserID     int    `json:"user_id,omitempty"`
+	Passkey    string `json:"passkey,omitempty"`
+	CanLeech   *bool  `json:"can_leech,omitempty"`
+	ProtectIP  *bool  `json:"protect_ip,omitempty"`
+	NewPasskey string `json:"new_passkey,omitempty"`
 	// Token-related fields
 	Downloaded int64 `json:"downloaded,omitempty"`
 	// Whitelist-related fields
@@ -96,6 +96,15 @@ func (w *Worker) addTorrent(req UpdateRequest) ([]byte, error) {
 	// Create new torrent
 	torrent := NewTorrent(TorrentID(req.TorrentID))
 	w.Torrents.Set(req.InfoHash, torrent)
+
+	// Persist the hash, or the torrent becomes unreachable after a restart:
+	// announces look torrents up by info_hash, not by id.
+	if recorder, ok := w.DB.(TorrentInfoHashRecorder); ok {
+		if err := recorder.RecordTorrentInfoHash(torrent.ID, req.InfoHash); err != nil {
+			GetDefaultLogger().Error("failed to persist torrent info_hash", err,
+				"torrent_id", req.TorrentID)
+		}
+	}
 
 	return w.updateSuccess(fmt.Sprintf("Added torrent %d", req.TorrentID))
 }
@@ -207,6 +216,13 @@ func (w *Worker) addUser(req UpdateRequest) ([]byte, error) {
 	user := NewUser(UserID(req.UserID), canLeech, protectIP)
 	w.Users.Set(req.Passkey, user)
 
+	// Persist the passkey, or the user cannot authenticate after a restart.
+	if recorder, ok := w.DB.(UserIdentityRecorder); ok {
+		if err := recorder.RecordUserPasskey(user.ID, req.Passkey, canLeech, protectIP); err != nil {
+			GetDefaultLogger().Error("failed to persist user passkey", err, "user_id", req.UserID)
+		}
+	}
+
 	return w.updateSuccess(fmt.Sprintf("Added user %d", req.UserID))
 }
 
@@ -245,6 +261,12 @@ func (w *Worker) deleteUser(req UpdateRequest) ([]byte, error) {
 
 	// Mark as deleted (don't actually remove to preserve peer history)
 	user.Deleted.Store(true)
+
+	if recorder, ok := w.DB.(UserIdentityRecorder); ok {
+		if err := recorder.MarkUserDeleted(user.ID); err != nil {
+			GetDefaultLogger().Error("failed to persist user deletion", err, "user_id", user.ID)
+		}
+	}
 
 	return w.updateSuccess(fmt.Sprintf("Deleted user %d", user.ID))
 }
@@ -362,17 +384,17 @@ func (w *Worker) updateError(errMsg string) ([]byte, error) {
 
 // StatsResponse contains live tracker statistics for JSON API
 type StatsResponse struct {
-	Uptime       string `json:"uptime"`
-	Torrents     int    `json:"torrents"`
-	Users        int    `json:"users"`
-	Seeders      uint32 `json:"seeders"`
-	Leechers     uint32 `json:"leechers"`
-	Connections  uint32 `json:"connections"`
-	Announces    uint64 `json:"announces"`
+	Uptime        string `json:"uptime"`
+	Torrents      int    `json:"torrents"`
+	Users         int    `json:"users"`
+	Seeders       uint32 `json:"seeders"`
+	Leechers      uint32 `json:"leechers"`
+	Connections   uint32 `json:"connections"`
+	Announces     uint64 `json:"announces"`
 	SuccAnnounces uint64 `json:"successful_announces"`
-	Scrapes      uint64 `json:"scrapes"`
-	BytesRead    uint64 `json:"bytes_read"`
-	BytesWritten uint64 `json:"bytes_written"`
+	Scrapes       uint64 `json:"scrapes"`
+	BytesRead     uint64 `json:"bytes_read"`
+	BytesWritten  uint64 `json:"bytes_written"`
 }
 
 // GetStats returns current tracker statistics as JSON

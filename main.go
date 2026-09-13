@@ -91,20 +91,20 @@ func main() {
 		log.Printf("Warning: Failed to create schema: %v", err)
 	}
 
-	// Load initial data from database
+	// Load initial data from database. A failure here is fatal: serving with
+	// partial state silently rejects real users and hands out wrong peer
+	// lists, which is worse than not starting.
 	log.Println("Loading initial state from database...")
 	if err := loader.LoadAll(); err != nil {
-		log.Printf("Warning: Failed to load initial state: %v", err)
-		log.Println("Starting with empty state - add torrents and users via admin panel")
-	} else {
-		log.Println("✅ Initial state loaded from database")
+		log.Fatalf("Failed to load initial state: %v", err)
 	}
+	log.Printf("✅ Loaded %d torrents and %d users", torrents.Size(), users.Size())
 
-	// Fallback: Load sample data if database is empty
-	torrentCount := torrents.Size()
-	userCount := users.Size()
-	if torrentCount == 0 || userCount == 0 {
-		log.Println("Database is empty, loading sample data...")
+	// An empty database is normal for a fresh install; the site pushes data in
+	// over /update. Sample data is opt-in because it creates a user whose
+	// passkey is published in this source file.
+	if os.Getenv("OCELOT_DEV_SAMPLE_DATA") == "1" {
+		log.Println("⚠️  INSECURE: OCELOT_DEV_SAMPLE_DATA is set, loading a well-known demo passkey")
 		loadSampleData(torrents, users, whitelist)
 	}
 
