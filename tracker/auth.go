@@ -80,7 +80,14 @@ func CreateAPIKey(db *sql.DB, userID int, permissions []string, expiresAt *time.
 		VALUES (?, ?, ?, ?, ?, 0)`
 
 	permJSON := strings.Join(permissions, ",")
-	_, err := db.Exec(query, keyHash, userID, permJSON, time.Now().Unix(), expiresAt)
+
+	// Convert expiresAt to Unix timestamp if provided
+	var expiresUnix interface{}
+	if expiresAt != nil {
+		expiresUnix = expiresAt.Unix()
+	}
+
+	_, err := db.Exec(query, keyHash, userID, permJSON, time.Now().Unix(), expiresUnix)
 	if err != nil {
 		return "", ErrDatabaseQuery.WithError(err)
 	}
@@ -97,11 +104,12 @@ func ValidateAPIKey(db *sql.DB, apiKey string) (*APIKey, error) {
 
 	var ak APIKey
 	var permStr string
-	var expiresUnix, lastUsedUnix *int64
+	var createdUnix int64
+	var expiresUnix, lastUsedUnix sql.NullInt64
 
 	err := db.QueryRow(query, keyHash).Scan(
 		&ak.ID, &ak.UserID, &permStr,
-		&ak.CreatedAt, &expiresUnix, &lastUsedUnix, &ak.Revoked,
+		&createdUnix, &expiresUnix, &lastUsedUnix, &ak.Revoked,
 	)
 
 	if err == sql.ErrNoRows {
@@ -111,15 +119,23 @@ func ValidateAPIKey(db *sql.DB, apiKey string) (*APIKey, error) {
 		return nil, ErrDatabaseQuery.WithError(err)
 	}
 
+	// Convert Unix timestamps to time.Time
+	ak.CreatedAt = time.Unix(createdUnix, 0)
+	if expiresUnix.Valid {
+		t := time.Unix(expiresUnix.Int64, 0)
+		ak.ExpiresAt = &t
+	}
+	if lastUsedUnix.Valid {
+		t := time.Unix(lastUsedUnix.Int64, 0)
+		ak.LastUsedAt = &t
+	}
+
 	if ak.Revoked {
 		return nil, ErrUnauthorized.WithDetail("API key has been revoked")
 	}
 
-	if expiresUnix != nil {
-		expiresAt := time.Unix(*expiresUnix, 0)
-		if time.Now().After(expiresAt) {
-			return nil, ErrUnauthorized.WithDetail("API key has expired")
-		}
+	if ak.ExpiresAt != nil && time.Now().After(*ak.ExpiresAt) {
+		return nil, ErrUnauthorized.WithDetail("API key has expired")
 	}
 
 	ak.Permissions = strings.Split(permStr, ",")
