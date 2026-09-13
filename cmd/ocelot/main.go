@@ -78,6 +78,10 @@ func main() {
 		artifacts, torrents, nodes, replicas, admission, 60*time.Second,
 	)
 
+	// S-E4: Proximity-aware peer sort; S-E6: heatmap recording.
+	worker.PeerSorter = tracker.SortPeersByProximity(nodes)
+	worker.Artifacts = artifacts
+
 	// ── Background subsystems ─────────────────────────────────────────────────
 	reaper := tracker.NewReaper(torrents, config.ScheduleInterval, config.PeersTimeout)
 	reaper.Start()

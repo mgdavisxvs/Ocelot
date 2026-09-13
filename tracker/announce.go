@@ -281,7 +281,19 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		numwant = 0
 	}
 
-	peers := w.selectPeers(torrent, peer, user.ID, numwant, req.Left > 0)
+	// S-E6: Record demand on this artifact's heatmap (off hot path).
+	if w.Artifacts != nil {
+		if a, ok := w.Artifacts.Get(req.InfoHash); ok && a != nil && a.Heatmap != nil {
+			ipBytes := ip.To4()
+			if ipBytes == nil {
+				ipBytes = ip.To16()
+			}
+			hm := a.Heatmap
+			go hm.Record(ipBytes)
+		}
+	}
+
+	peers := w.selectPeers(torrent, peer, user.ID, numwant, req.Left > 0, ip)
 
 	w.Stats.SuccAnnouncements.Add(1)
 	if incLeechers {
@@ -341,16 +353,16 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 
 // selectPeers picks up to numwant peers to return. Leechers receive seeders
 // first (round-robin), then other leechers. Seeders receive only leechers.
-func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool) []byte {
+// clientIP is used by the optional PeerSorter (S-E4) to prioritize nearby peers.
+func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool, clientIP net.IP) []byte {
 	if numwant <= 0 {
 		return []byte{}
 	}
 
-	peers := make([]byte, 0, numwant*6)
-	found := 0
+	// Collect eligible peers as PeerEntry before encoding, to allow optional sorting.
+	collected := make([]PeerEntry, 0, int(numwant)*2)
 
 	torrent.mu.RLock()
-	defer torrent.mu.RUnlock()
 
 	if isLeecher {
 		seederCount := torrent.Seeders.Size()
@@ -373,7 +385,7 @@ func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwan
 				}
 			}
 
-			for i := 0; i < len(seederKeys) && found < int(numwant); i++ {
+			for i := 0; i < len(seederKeys) && len(collected) < int(numwant)*2; i++ {
 				idx := (startIdx + i) % len(seederKeys)
 				key := seederKeys[idx]
 				peer := seederMap[key]
@@ -381,44 +393,57 @@ func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwan
 					continue
 				}
 				if len(peer.IPPort) == 6 {
-					peers = append(peers, peer.IPPort...)
-					found++
+					collected = append(collected, PeerEntry{IP: peer.IP, Port: peer.Port, Bytes: peer.IPPort})
 					torrent.LastSelectedSeeder = key
 				}
 			}
 		}
 
-		if found < int(numwant) && torrent.Leechers.Size() > 1 {
+		if torrent.Leechers.Size() > 1 {
 			torrent.Leechers.ForEach(func(_ string, peer *Peer) bool {
-				if found >= int(numwant) {
+				if len(collected) >= int(numwant)*2 {
 					return false
 				}
 				if peer.UserID == userID || !peer.Visible {
 					return true
 				}
 				if len(peer.IPPort) == 6 {
-					peers = append(peers, peer.IPPort...)
-					found++
+					collected = append(collected, PeerEntry{IP: peer.IP, Port: peer.Port, Bytes: peer.IPPort})
 				}
 				return true
 			})
 		}
 	} else {
 		torrent.Leechers.ForEach(func(_ string, peer *Peer) bool {
-			if found >= int(numwant) {
+			if len(collected) >= int(numwant)*2 {
 				return false
 			}
 			if peer.UserID == userID || !peer.Visible {
 				return true
 			}
 			if len(peer.IPPort) == 6 {
-				peers = append(peers, peer.IPPort...)
-				found++
+				collected = append(collected, PeerEntry{IP: peer.IP, Port: peer.Port, Bytes: peer.IPPort})
 			}
 			return true
 		})
 	}
 
+	torrent.mu.RUnlock()
+
+	// S-E4: Sort by proximity to the announcing client if a sorter is configured.
+	if w.PeerSorter != nil && len(collected) > 1 {
+		w.PeerSorter(clientIP, collected)
+	}
+
+	// Build compact bytes from (possibly reordered) entries up to numwant.
+	limit := int(numwant)
+	if len(collected) < limit {
+		limit = len(collected)
+	}
+	peers := make([]byte, 0, limit*6)
+	for i := 0; i < limit; i++ {
+		peers = append(peers, collected[i].Bytes...)
+	}
 	return peers
 }
 

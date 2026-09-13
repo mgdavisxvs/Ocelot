@@ -82,6 +82,9 @@ type Artifact struct {
 	// Must be populated before the eviction engine is built.
 	AccessCount    int64
 	LastAccessedAt time.Time
+
+	// S-E6: demand heatmap for proximity-aware placement.
+	Heatmap *DemandHeatmap
 }
 
 // Health returns the current replication health given a live replica count.
@@ -99,6 +102,15 @@ func (a *Artifact) RecordAccess() {
 	a.AccessCount++
 	a.LastAccessedAt = time.Now()
 	a.mu.Unlock()
+}
+
+// NewArtifact creates an Artifact with defaults including an initialized heatmap.
+func NewArtifact(infoHash string) *Artifact {
+	return &Artifact{
+		InfoHash:  infoHash,
+		CreatedAt: time.Now(),
+		Heatmap:   NewDemandHeatmap(1000),
+	}
 }
 
 // ArtifactList is a concurrent-safe registry of artifacts keyed by info_hash.
@@ -121,6 +133,9 @@ func (al *ArtifactList) Get(infoHash string) (*Artifact, bool) {
 func (al *ArtifactList) Set(infoHash string, a *Artifact) {
 	al.mu.Lock()
 	defer al.mu.Unlock()
+	if a.Heatmap == nil {
+		a.Heatmap = NewDemandHeatmap(1000)
+	}
 	al.artifacts[infoHash] = a
 }
 

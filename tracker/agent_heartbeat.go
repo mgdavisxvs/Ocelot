@@ -44,13 +44,22 @@ func (cs *ControlServer) handleAgentHeartbeat(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	node.Heartbeat(clientIP(r), NodeCapabilities{
+	caps := NodeCapabilities{
 		StorageFreeBytes:  payload.StorageFree,
 		StorageTotalBytes: payload.StorageTotal,
 		CPUCount:          payload.CPUCount,
 		MemoryBytes:       payload.MemoryBytes,
 		BTClientVersion:   payload.BTClientVersion,
-	})
+	}
+	geo := GeoCoord{Lat: payload.Latitude, Lon: payload.Longitude}
+	node.HeartbeatWithGeo(clientIP(r), caps, geo, payload.ASN)
+
+	// S-E3: Record WAN upload delta toward daily budget.
+	if payload.UploadDeltaBytes > 0 {
+		node.mu.Lock()
+		node.WAN.RecordUpload(payload.UploadDeltaBytes)
+		node.mu.Unlock()
+	}
 
 	// Reconcile reported inventory against replica state map.
 	if cs.ext.replicas != nil {

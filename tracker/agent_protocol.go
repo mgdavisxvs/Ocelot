@@ -32,16 +32,25 @@ type DirectiveResponse struct {
 
 // HeartbeatPayload is sent by the agent to POST /api/v1/agent/heartbeat.
 type HeartbeatPayload struct {
-	NodeID          uint64              `json:"node_id"`
-	Passkey         string              `json:"passkey"`
-	Hostname        string              `json:"hostname"`
-	StorageFree     int64               `json:"storage_free_bytes"`
-	StorageTotal    int64               `json:"storage_total_bytes"`
-	CPUCount        int                 `json:"cpu_count"`
-	MemoryBytes     int64               `json:"memory_bytes"`
-	BTClientVersion string              `json:"bt_client_version"`
-	Inventory       []ReplicaInventory  `json:"inventory"` // per-torrent replica status
-	SentAt          time.Time           `json:"sent_at"`
+	NodeID          uint64             `json:"node_id"`
+	Passkey         string             `json:"passkey"`
+	Hostname        string             `json:"hostname"`
+	StorageFree     int64              `json:"storage_free_bytes"`
+	StorageTotal    int64              `json:"storage_total_bytes"`
+	CPUCount        int                `json:"cpu_count"`
+	MemoryBytes     int64              `json:"memory_bytes"`
+	BTClientVersion string             `json:"bt_client_version"`
+	Inventory       []ReplicaInventory `json:"inventory"`
+
+	// S-E2: optional geographic position and ASN for proximity scoring.
+	Latitude  float64 `json:"latitude,omitempty"`
+	Longitude float64 `json:"longitude,omitempty"`
+	ASN       uint32  `json:"asn,omitempty"` // autonomous system number (0 = unknown)
+
+	// S-E3: upload bytes delta since last heartbeat (for WAN budget tracking).
+	UploadDeltaBytes int64 `json:"upload_delta_bytes,omitempty"`
+
+	SentAt time.Time `json:"sent_at"`
 }
 
 // ReplicaInventory is one entry in a heartbeat's artifact inventory.

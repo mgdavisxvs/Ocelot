@@ -69,40 +69,55 @@ func (cs *ControlServer) handleNodesList(w http.ResponseWriter, r *http.Request)
 		Hostname    string `json:"hostname"`
 		LastIP      string `json:"last_ip"`
 		Kind        string `json:"kind"`
-		Unreachable bool   `json:"unreachable"`
+		Tier        string `json:"tier"`
+		ReachState  string `json:"reach_state"`
+		FlapCount   int    `json:"flap_count,omitempty"`
 		StorageFree int64  `json:"storage_free_bytes"`
+		WANUsed     int64  `json:"wan_used_bytes,omitempty"`
+		WANLimit    int64  `json:"wan_limit_bytes_day,omitempty"`
+		ASN         uint32 `json:"asn,omitempty"`
 		Rack        string `json:"rack,omitempty"`
 		Site        string `json:"site,omitempty"`
 	}
-	nodes := cs.ext.nodes.ReachableNodes()
-	resp := make([]nodeJSON, 0, len(nodes))
-	for _, n := range nodes {
+	resp := make([]nodeJSON, 0)
+	cs.ext.nodes.ForEach(func(n *NodeIdentity) bool {
 		n.mu.RLock()
 		resp = append(resp, nodeJSON{
 			NodeID:      n.NodeID,
 			Hostname:    n.Hostname,
 			LastIP:      n.LastIP,
 			Kind:        n.Kind.String(),
-			Unreachable: n.Unreachable,
+			Tier:        n.Tier.String(),
+			ReachState:  n.ReachState.String(),
+			FlapCount:   n.FlapCount,
 			StorageFree: n.Caps.StorageFreeBytes,
+			WANUsed:     n.WAN.UsedBytesThisDay,
+			WANLimit:    n.WAN.LimitBytesPerDay,
+			ASN:         n.ASN,
 			Rack:        n.Domains.Rack,
 			Site:        n.Domains.Site,
 		})
 		n.mu.RUnlock()
-	}
+		return true
+	})
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func (cs *ControlServer) handleNodeRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		NodeID   uint64 `json:"node_id"`
-		Hostname string `json:"hostname"`
-		Passkey  string `json:"passkey"`
-		Rack     string `json:"rack"`
-		Site     string `json:"site"`
-		Host     string `json:"host"`
-		Network  string `json:"network"`
-		Power    string `json:"power"`
+		NodeID           uint64  `json:"node_id"`
+		Hostname         string  `json:"hostname"`
+		Passkey          string  `json:"passkey"`
+		Rack             string  `json:"rack"`
+		Site             string  `json:"site"`
+		Host             string  `json:"host"`
+		Network          string  `json:"network"`
+		Power            string  `json:"power"`
+		Tier             string  `json:"tier"`              // S-E1: "edge"|"regional"|"core"
+		WANLimitBytesDay int64   `json:"wan_limit_bytes_day"` // S-E3: 0 = unlimited
+		ASN              uint32  `json:"asn"`               // S-E2
+		Latitude         float64 `json:"latitude"`          // S-E2
+		Longitude        float64 `json:"longitude"`         // S-E2
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body")
@@ -119,12 +134,29 @@ func (cs *ControlServer) handleNodeRegister(w http.ResponseWriter, r *http.Reque
 		Network: req.Network,
 		Power:   req.Power,
 	})
+	n.Tier = parseTier(req.Tier)
+	n.WAN.LimitBytesPerDay = req.WANLimitBytesDay
+	n.ASN = req.ASN
+	n.Geo = GeoCoord{Lat: req.Latitude, Lon: req.Longitude}
 	cs.ext.nodes.Register(n)
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"status":  "ok",
 		"node_id": req.NodeID,
+		"tier":    n.Tier.String(),
 		"message": "node registered",
 	})
+}
+
+// parseTier converts a string to NodeTier. Defaults to Core when empty/unknown.
+func parseTier(s string) NodeTier {
+	switch s {
+	case "edge", "EDGE":
+		return NodeTierEdge
+	case "regional", "REGIONAL":
+		return NodeTierRegional
+	default:
+		return NodeTierCore
+	}
 }
 
 func (cs *ControlServer) handleNodeUnregister(w http.ResponseWriter, r *http.Request) {

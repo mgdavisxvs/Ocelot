@@ -133,7 +133,7 @@ func BenchmarkSelectPeers(b *testing.B) {
 			b.ResetTimer()
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				_ = w.selectPeers(tor, self, 9999, 50, true)
+				_ = w.selectPeers(tor, self, 9999, 50, true, nil)
 			}
 		})
 	}

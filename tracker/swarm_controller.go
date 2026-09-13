@@ -38,32 +38,37 @@ type ControllerAction struct {
 	Class     ReplicaClass
 }
 
-// PlacementWeights extends LocalityWeights with an anti-affinity penalty term.
-// P(n,a) = w_s·S + w_r·R + w_b·B + w_l·L + w_c·C − w_p·P
+// PlacementWeights extends LocalityWeights with anti-affinity and proximity terms.
+// P(n,a) = w_s·S + w_r·R + w_b·B + w_l·L + w_c·C + w_g·G + w_t·T − w_p·P
 //
 //	S = storage headroom score ∈ [0,1]
 //	R = reliability/uptime ratio ∈ [0,1]
 //	B = bandwidth availability ∈ [0,1]
 //	L = local artifact presence ∈ {0,1}
 //	C = compute availability ∈ [0,1]
-//	P = anti-affinity penalty ∈ [0,1] (shared failure domain → 1)
+//	G = proximity/ASN affinity ∈ [0,1]    (S-E2)
+//	T = tier placement bonus ∈ [0,0.15]   (S-E1)
+//	P = anti-affinity penalty ∈ [0,1]     (subtracted)
 type PlacementWeights struct {
-	Storage     float64 `yaml:"storage"`
-	Reliability float64 `yaml:"reliability"`
-	Bandwidth   float64 `yaml:"bandwidth"`
+	Storage       float64 `yaml:"storage"`
+	Reliability   float64 `yaml:"reliability"`
+	Bandwidth     float64 `yaml:"bandwidth"`
 	LocalArtifact float64 `yaml:"local_artifact"`
-	Compute     float64 `yaml:"compute"`
-	AntiAffinity float64 `yaml:"anti_affinity"` // subtracted
+	Compute       float64 `yaml:"compute"`
+	Proximity     float64 `yaml:"proximity"`   // S-E2: geo/ASN affinity
+	AntiAffinity  float64 `yaml:"anti_affinity"` // subtracted
 }
 
 // DefaultPlacementWeights are the baseline weights for artifact placement.
+// Weights sum to 1.0 (excluding AntiAffinity which is subtracted, not added).
 var DefaultPlacementWeights = PlacementWeights{
-	Storage:      0.25,
-	Reliability:  0.20,
-	Bandwidth:    0.20,
-	LocalArtifact: 0.15,
-	Compute:      0.10,
-	AntiAffinity: 0.10,
+	Storage:       0.22,
+	Reliability:   0.18,
+	Bandwidth:     0.18,
+	LocalArtifact: 0.12,
+	Compute:       0.08,
+	Proximity:     0.15,
+	AntiAffinity:  0.07,
 }
 
 // PlacementInput holds per-node inputs for the placement scoring function.
@@ -73,16 +78,20 @@ type PlacementInput struct {
 	BandwidthScore  float64 // normalized upload capacity
 	HasArtifact     float64 // 1.0 if artifact already on node, else 0
 	ComputeScore    float64 // 1.0 = fully available
+	ProximityScore  float64 // S-E2: ASN/geo affinity to demand modal network ∈ [0,1]
+	TierBonus       float64 // S-E1: tier placement bonus (Core > Regional > Edge)
 	AffinityPenalty float64 // 1.0 = shares domain with an existing replica
 }
 
-// Score computes P(n,a) = w_s·S + w_r·R + w_b·B + w_l·L + w_c·C − w_p·P
+// Score computes P(n,a) = w_s·S + w_r·R + w_b·B + w_l·L + w_c·C + w_g·G + T − w_p·P
 func (w PlacementWeights) Score(in PlacementInput) float64 {
 	return w.Storage*in.StorageScore +
 		w.Reliability*in.Reliability +
 		w.Bandwidth*in.BandwidthScore +
 		w.LocalArtifact*in.HasArtifact +
-		w.Compute*in.ComputeScore -
+		w.Compute*in.ComputeScore +
+		w.Proximity*in.ProximityScore +
+		in.TierBonus -
 		w.AntiAffinity*in.AffinityPenalty
 }
 
@@ -204,10 +213,10 @@ func (c *SwarmPolicyController) reconcileArtifact(infoHash string, artifact *Art
 	}
 
 	// ── Decide + Signal ───────────────────────────────────────────────────────
-	// Find eligible reachable nodes that do not already hold this artifact.
-	reachable := c.nodes.ReachableNodes()
+	// Only REACHABLE (not FLAPPING) nodes receive directives.
+	reachable := c.nodes.DirectableNodes()
 	existing := c.existingNodeSet(infoHash)
-	candidates := c.scoreCandidates(infoHash, reachable, existing, desired)
+	candidates := c.scoreCandidates(infoHash, artifact, reachable, existing, desired)
 
 	emitted := 0
 	for _, cand := range candidates {
@@ -260,14 +269,25 @@ type scoredCandidate struct {
 	score  float64
 }
 
-// scoreCandidates computes P(n,a) for each eligible node, applies anti-affinity,
-// and returns candidates sorted descending by score.
+// scoreCandidates computes P(n,a) for each eligible node, applies WAN cap filter,
+// anti-affinity, tier bonus, and proximity scoring; returns candidates sorted descending.
 func (c *SwarmPolicyController) scoreCandidates(
 	infoHash string,
+	artifact *Artifact,
 	reachable []*NodeIdentity,
 	existing map[uint64]struct{},
 	desired int,
 ) []scoredCandidate {
+	// S-E1: Enforce Core-before-Edge — if no Core replica verified yet, skip Edge candidates.
+	hasCore := c.nodes.HasVerifiedCoreReplica(infoHash, c.replicas)
+
+	// S-E6: Get modal demand network for proximity scoring.
+	var modalNet uint16
+	var haveModalNet bool
+	if artifact != nil && artifact.Heatmap != nil {
+		modalNet, haveModalNet = artifact.Heatmap.ModalNet()
+	}
+
 	// Build the failure-domain set of nodes already holding the artifact.
 	existingDomains := make([]*FailureDomainLabels, 0, len(existing))
 	for id := range existing {
@@ -286,22 +306,44 @@ func (c *SwarmPolicyController) scoreCandidates(
 		n.mu.RLock()
 		caps := n.Caps
 		domains := n.Domains
+		tier := n.Tier
+		nodeASN := n.ASN
+		wan := n.WAN
 		n.mu.RUnlock()
+
+		// S-E3: Skip nodes at or near WAN cap.
+		if wan.IsNearCap() {
+			continue
+		}
+
+		// S-E1: Skip Edge nodes until at least one Core replica is verified.
+		if tier == NodeTierEdge && !hasCore {
+			continue
+		}
 
 		var storageScore float64
 		if caps.StorageTotalBytes > 0 {
 			storageScore = float64(caps.StorageFreeBytes) / float64(caps.StorageTotalBytes)
 		}
 
-		// Anti-affinity penalty: fraction of existing replicas sharing a failure domain.
+		// S-E2: Proximity score — ASN/network affinity to demand modal network.
+		var proxScore float64
+		if haveModalNet && nodeASN != 0 {
+			nodeNet := uint16(nodeASN & 0xFFFF)
+			proxScore = NetAffinity(nodeNet, modalNet)
+		}
+
+		// Anti-affinity penalty.
 		penalty := c.antiAffinityPenalty(domains, existingDomains)
 
 		in := PlacementInput{
 			StorageScore:    clamp01(storageScore),
-			Reliability:     0.9, // placeholder; replace with historical uptime from DB
-			BandwidthScore:  0.5, // placeholder; replace with agent-reported bandwidth
+			Reliability:     0.9,
+			BandwidthScore:  0.5,
 			HasArtifact:     0,
 			ComputeScore:    0.5,
+			ProximityScore:  proxScore,
+			TierBonus:       tier.placementBonus(),
 			AffinityPenalty: penalty,
 		}
 		candidates = append(candidates, scoredCandidate{
@@ -310,7 +352,7 @@ func (c *SwarmPolicyController) scoreCandidates(
 		})
 	}
 
-	// Insertion sort descending (candidate sets are small).
+	// Insertion sort descending (candidate sets are small, ≤ 100 nodes typical).
 	for i := 1; i < len(candidates); i++ {
 		for j := i; j > 0 && candidates[j].score > candidates[j-1].score; j-- {
 			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]

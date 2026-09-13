@@ -183,9 +183,24 @@ func TestNodeRegistryMarkStale(t *testing.T) {
 	n.LastSeen = time.Now().Add(-5 * time.Minute)
 	r.Register(n)
 
+	// First MarkStale call: REACHABLE → FLAPPING (still IsReachable, not IsDirectable).
 	r.MarkStale(2 * time.Minute)
+	if n.GetReachState() != NodeFlapping {
+		t.Errorf("first missed HB should set FLAPPING, got %s", n.GetReachState())
+	}
+	if !n.IsReachable() {
+		t.Error("FLAPPING node should still be IsReachable (replicas counted)")
+	}
+	if n.IsDirectable() {
+		t.Error("FLAPPING node should not be IsDirectable (directives suppressed)")
+	}
+
+	// Subsequent misses advance FlapCount until UNREACHABLE.
+	for i := 0; i < FlapThreshold; i++ {
+		r.MarkStale(2 * time.Minute)
+	}
 	if n.IsReachable() {
-		t.Error("node silent for 5min with 2min cutoff should be marked unreachable")
+		t.Error("node should be UNREACHABLE after FlapThreshold missed HBs")
 	}
 }
 
@@ -238,5 +253,158 @@ func TestPlacementScoreArtifactPresenceBoostsScore(t *testing.T) {
 
 	if w.Score(with) <= w.Score(without) {
 		t.Error("artifact presence should boost placement score")
+	}
+}
+
+// ── S-E1: NodeTier tests ──────────────────────────────────────────────────────
+
+func TestNodeTierDefaultClass(t *testing.T) {
+	cases := []struct {
+		tier  NodeTier
+		class ReplicaClass
+	}{
+		{NodeTierEdge, ReplicaEphemeral},
+		{NodeTierRegional, ReplicaCache},
+		{NodeTierCore, ReplicaStandard},
+	}
+	for _, tc := range cases {
+		if got := tc.tier.DefaultClass(); got != tc.class {
+			t.Errorf("tier %s DefaultClass() = %v, want %v", tc.tier, got, tc.class)
+		}
+	}
+}
+
+func TestNodeTierPlacementBonusOrdering(t *testing.T) {
+	w := DefaultPlacementWeights
+	base := PlacementInput{StorageScore: 0.5, Reliability: 0.5, BandwidthScore: 0.5, ComputeScore: 0.5}
+
+	core := base
+	core.TierBonus = NodeTierCore.placementBonus()
+	regional := base
+	regional.TierBonus = NodeTierRegional.placementBonus()
+	edge := base
+	edge.TierBonus = NodeTierEdge.placementBonus()
+
+	if w.Score(core) <= w.Score(regional) {
+		t.Error("CORE should score higher than REGIONAL")
+	}
+	if w.Score(regional) <= w.Score(edge) {
+		t.Error("REGIONAL should score higher than EDGE")
+	}
+}
+
+// ── S-E2: Proximity scoring tests ────────────────────────────────────────────
+
+func TestProximityScoreBoostsScore(t *testing.T) {
+	w := DefaultPlacementWeights
+	base := PlacementInput{StorageScore: 0.5, Reliability: 0.5, BandwidthScore: 0.5, ComputeScore: 0.5}
+	withProx := base
+	withProx.ProximityScore = 1.0
+
+	if w.Score(withProx) <= w.Score(base) {
+		t.Error("proximity score = 1.0 should boost total score")
+	}
+}
+
+// ── S-E5: ReachState / FLAPPING tests ────────────────────────────────────────
+
+func TestNodeReachStateFlapProgression(t *testing.T) {
+	n := NewNodeIdentity(1, "node.test", "passkey", FailureDomainLabels{})
+	if n.GetReachState() != NodeReachable {
+		t.Fatal("new node should start REACHABLE")
+	}
+
+	// Manually advance: REACHABLE → FLAPPING
+	n.mu.Lock()
+	n.ReachState = NodeFlapping
+	n.FlapCount = 1
+	n.mu.Unlock()
+
+	if !n.IsReachable() {
+		t.Error("FLAPPING should still be IsReachable")
+	}
+	if n.IsDirectable() {
+		t.Error("FLAPPING should not be IsDirectable")
+	}
+
+	// Heartbeat resets to REACHABLE
+	n.Heartbeat("10.0.0.1", NodeCapabilities{})
+	if n.GetReachState() != NodeReachable {
+		t.Error("Heartbeat should reset FLAPPING → REACHABLE")
+	}
+	if !n.IsDirectable() {
+		t.Error("after Heartbeat, node should be REACHABLE and IsDirectable")
+	}
+}
+
+// ── S-E3: WANBudget tests ─────────────────────────────────────────────────────
+
+func TestWANBudgetIsNearCap(t *testing.T) {
+	b := &WANBudget{LimitBytesPerDay: 1000, LastReset: time.Now()}
+	b.RecordUpload(899)
+	if b.IsNearCap() {
+		t.Error("899/1000 = 89.9%% should not be near cap")
+	}
+	b.RecordUpload(1) // 900 = exactly 90%
+	if !b.IsNearCap() {
+		t.Error("900/1000 = 90%% should be near cap")
+	}
+}
+
+func TestWANBudgetUnlimitedNeverNearCap(t *testing.T) {
+	b := &WANBudget{LimitBytesPerDay: 0}
+	b.RecordUpload(1 << 40)
+	if b.IsNearCap() {
+		t.Error("unlimited budget should never be near cap")
+	}
+	if b.Available() != 1.0 {
+		t.Error("unlimited Available() should return 1.0")
+	}
+}
+
+// ── S-E6: DemandHeatmap tests ─────────────────────────────────────────────────
+
+func TestDemandHeatmapModalNet(t *testing.T) {
+	h := NewDemandHeatmap(100)
+	// Record 7 announces from 10.0.x.x and 3 from 192.168.x.x
+	for i := 0; i < 7; i++ {
+		h.Record([]byte{10, 0, byte(i), 1})
+	}
+	for i := 0; i < 3; i++ {
+		h.Record([]byte{192, 168, byte(i), 1})
+	}
+	modal, ok := h.ModalNet()
+	if !ok {
+		t.Fatal("ModalNet should return true when records exist")
+	}
+	want := uint16(10)<<8 | uint16(0)
+	if modal != want {
+		t.Errorf("ModalNet() = %d, want %d (10.0/16)", modal, want)
+	}
+}
+
+func TestDemandHeatmapRingEviction(t *testing.T) {
+	h := NewDemandHeatmap(5) // tiny ring
+	for i := 0; i < 10; i++ {
+		h.Record([]byte{byte(i), 0, 0, 0})
+	}
+	if h.TotalCount() != 5 {
+		t.Errorf("TotalCount() = %d after 10 records with cap 5, want 5", h.TotalCount())
+	}
+}
+
+func TestNetAffinity(t *testing.T) {
+	sameNet := uint16(10)<<8 | 0
+	diffSameOctet := uint16(10)<<8 | 1
+	different := uint16(192)<<8 | 168
+
+	if NetAffinity(sameNet, sameNet) != 1.0 {
+		t.Error("same /16 should return 1.0")
+	}
+	if NetAffinity(sameNet, diffSameOctet) != 0.5 {
+		t.Error("same first octet should return 0.5")
+	}
+	if NetAffinity(sameNet, different) != 0.0 {
+		t.Error("different /8 should return 0.0")
 	}
 }

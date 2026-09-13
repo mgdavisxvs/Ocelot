@@ -472,6 +472,20 @@ func (s *Server) Shutdown() error {
 // ── Worker ────────────────────────────────────────────────────────────────────
 
 // Worker encapsulates tracker business logic.
+// PeerEntry is one peer in a compact-format peer list, held before encoding
+// so that an optional PeerSorter can reorder them by proximity before the
+// compact bytes are built.
+type PeerEntry struct {
+	IP     net.IP
+	Port   uint16
+	Bytes  []byte // 6-byte compact IPPort (pre-computed by Peer)
+}
+
+// PeerSorterFn is an optional hook that reorders announce peer candidates
+// by proximity to the announcing client (S-E4). The slice is sorted in-place.
+// nil = no sorting (original round-robin order preserved).
+type PeerSorterFn func(clientIP net.IP, peers []PeerEntry)
+
 type Worker struct {
 	Config    *Config
 	DB        DatabaseInterface
@@ -480,6 +494,12 @@ type Worker struct {
 	Users     *UserList
 	Whitelist *Whitelist
 	Stats     *Stats
+
+	// S-E4: optional peer proximity sort. Set by main after NodeRegistry is ready.
+	PeerSorter PeerSorterFn
+
+	// S-E6: optional artifact list for demand heatmap recording. Set by main.
+	Artifacts *ArtifactList
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.

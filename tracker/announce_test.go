@@ -501,7 +501,7 @@ func TestSelectPeers_NumWantLimit(t *testing.T) {
 	}
 
 	self := &Peer{UserID: 999}
-	got := w.selectPeers(tor, self, 999, 5, true)
+	got := w.selectPeers(tor, self, 999, 5, true, nil)
 	if len(got) != 30 { // 5 peers × 6 bytes
 		t.Errorf("selectPeers returned %d bytes, want 30 (5 peers)", len(got))
 	}
@@ -522,7 +522,7 @@ func TestSelectPeers_ExcludesSelf(t *testing.T) {
 	p.IPPort = CompactIPPort(p.IP, p.Port)
 	tor.Seeders.Set(selfKey, p)
 
-	got := w.selectPeers(tor, self, 42, 50, true)
+	got := w.selectPeers(tor, self, 42, 50, true, nil)
 	if len(got) != 0 {
 		t.Errorf("selectPeers returned %d bytes including self, want 0", len(got))
 	}
