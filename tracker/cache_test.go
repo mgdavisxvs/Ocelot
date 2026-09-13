@@ -64,16 +64,12 @@ func TestCacheClear(t *testing.T) {
 func TestTorrentCache(t *testing.T) {
 	cache := NewTorrentCache(5 * time.Second)
 
-	torrent := &Torrent{
-		ID:       1,
-		InfoHash: "test123",
-		Seeders:  10,
-		Leechers: 5,
-	}
+	torrent := NewTorrent(1)
 
-	cache.Set(torrent.InfoHash, torrent)
+	infoHash := "test123"
+	cache.Set(infoHash, torrent)
 
-	retrieved, found := cache.Get(torrent.InfoHash)
+	retrieved, found := cache.Get(infoHash)
 	if !found {
 		t.Error("Expected to find torrent in cache")
 	}

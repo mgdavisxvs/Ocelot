@@ -98,25 +98,11 @@ type PeerInfo struct {
 
 // Helper functions
 
-func normalize(value, min, max float64) float64 {
-	if max-min == 0 {
+func normalize(value, minVal, maxVal float64) float64 {
+	if maxVal-minVal == 0 {
 		return 0
 	}
-	return (value - min) / (max - min)
-}
-
-func min(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func max(a, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
+	return (value - minVal) / (maxVal - minVal)
 }
 
 // ipDistance calculates network distance between two IPs

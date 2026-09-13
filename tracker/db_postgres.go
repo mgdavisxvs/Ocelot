@@ -153,7 +153,7 @@ func (p *PostgresDB) CreateSchema() error {
 }
 
 // StorePeer stores a peer announce in PostgreSQL
-func (p *PostgresDB) StorePeer(peer *Peer) error {
+func (p *PostgresDB) StorePeer(infoHash string, peerID string, peer *Peer) error {
 	query := `INSERT INTO peers
 		(info_hash, peer_id, user_id, ip, port, uploaded, downloaded, remaining, last_announce, active)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
@@ -167,14 +167,14 @@ func (p *PostgresDB) StorePeer(peer *Peer) error {
 
 	start := time.Now()
 	_, err := p.db.Exec(query,
-		peer.InfoHash,
-		string(peer.PeerID),
+		infoHash,
+		peerID,
 		peer.UserID,
 		peer.IP.String(),
 		peer.Port,
-		peer.Uploaded.Load(),
-		peer.Downloaded.Load(),
-		peer.Left.Load(),
+		peer.Uploaded,
+		peer.Downloaded,
+		peer.Left,
 		time.Now().Unix(),
 	)
 
@@ -201,21 +201,23 @@ func (p *PostgresDB) LoadTorrents() ([]*Torrent, error) {
 
 	torrents := []*Torrent{}
 	for rows.Next() {
-		var t Torrent
 		var infoHash string
 		var torrentID sql.NullInt64
+		var freeType int
+		var seeders, leechers, snatched int
 
-		err := rows.Scan(&infoHash, &torrentID, &t.FreeType, &t.Seeders, &t.Leechers, &t.Snatched)
+		err := rows.Scan(&infoHash, &torrentID, &freeType, &seeders, &leechers, &snatched)
 		if err != nil {
 			continue
 		}
 
-		t.InfoHash = infoHash
+		t := NewTorrent(TorrentID(0))
 		if torrentID.Valid {
 			t.ID = TorrentID(torrentID.Int64)
 		}
+		t.FreeType = FreeType(freeType)
 
-		torrents = append(torrents, &t)
+		torrents = append(torrents, t)
 	}
 
 	p.metrics.RecordDBQuery("load_torrents", time.Since(start), nil)

@@ -9,23 +9,24 @@ func TestFisherYatesShuffle(t *testing.T) {
 	peers := make([]*Peer, 10)
 	for i := range peers {
 		peers[i] = &Peer{
-			PeerID: []byte{byte(i)},
+			UserID: UserID(i),
+			Port:   uint16(6881 + i),
 		}
 	}
 
 	// Shuffle multiple times and verify randomness
-	originalOrder := make([]byte, len(peers))
+	originalOrder := make([]UserID, len(peers))
 	for i := range peers {
-		originalOrder[i] = peers[i].PeerID[0]
+		originalOrder[i] = peers[i].UserID
 	}
 
 	// Shuffle
 	FisherYatesShuffle(peers)
 
 	// Verify all peers still present
-	found := make(map[byte]bool)
+	found := make(map[UserID]bool)
 	for _, p := range peers {
-		found[p.PeerID[0]] = true
+		found[p.UserID] = true
 	}
 
 	if len(found) != 10 {
@@ -35,7 +36,7 @@ func TestFisherYatesShuffle(t *testing.T) {
 	// Verify order changed (with 99.9% probability)
 	changed := false
 	for i := range peers {
-		if peers[i].PeerID[0] != originalOrder[i] {
+		if peers[i].UserID != originalOrder[i] {
 			changed = true
 			break
 		}
@@ -51,7 +52,8 @@ func TestReservoirSample(t *testing.T) {
 	peers := make([]*Peer, 100)
 	for i := range peers {
 		peers[i] = &Peer{
-			PeerID: []byte{byte(i)},
+			UserID: UserID(i),
+			Port:   uint16(6881 + (i % 256)),
 		}
 	}
 
@@ -63,12 +65,12 @@ func TestReservoirSample(t *testing.T) {
 	}
 
 	// Verify all sampled peers are unique
-	seen := make(map[byte]bool)
+	seen := make(map[UserID]bool)
 	for _, p := range sample {
-		if seen[p.PeerID[0]] {
+		if seen[p.UserID] {
 			t.Error("Duplicate peer in reservoir sample")
 		}
-		seen[p.PeerID[0]] = true
+		seen[p.UserID] = true
 	}
 
 	// Test edge cases
@@ -89,36 +91,46 @@ func TestReservoirSample(t *testing.T) {
 
 func TestAdaptiveInterval(t *testing.T) {
 	tests := []struct {
-		name       string
-		seeders    int
-		leechers   int
-		baseInt    int
-		expectMin  int32
-		expectMax  int32
+		name     string
+		seeders  int
+		leechers int
+		baseInt  int
+		expected int32
 	}{
 		{
-			name:      "Small swarm",
-			seeders:   5,
-			leechers:  5,
-			baseInt:   1800,
-			expectMin: 600,
-			expectMax: 900,
+			name:     "Very small swarm",
+			seeders:  2,
+			leechers: 3,
+			baseInt:  1800,
+			expected: 600, // < 10 peers
 		},
 		{
-			name:      "Medium swarm",
-			seeders:   50,
-			leechers:  50,
-			baseInt:   1800,
-			expectMin: 1000,
-			expectMax: 1500,
+			name:     "Small swarm",
+			seeders:  5,
+			leechers: 5,
+			baseInt:  1800,
+			expected: 1200, // 10 peers, not < 10, so second tier
 		},
 		{
-			name:      "Large swarm",
-			seeders:   200,
-			leechers:  100,
-			baseInt:   1800,
-			expectMin: 1800,
-			expectMax: 3000,
+			name:     "Medium swarm",
+			seeders:  30,
+			leechers: 40,
+			baseInt:  1800,
+			expected: 1200, // 70 peers, < 100
+		},
+		{
+			name:     "Large swarm",
+			seeders:  60,
+			leechers: 40,
+			baseInt:  1800,
+			expected: 2400, // 100 peers, not < 100, so third tier
+		},
+		{
+			name:     "Huge swarm",
+			seeders:  200,
+			leechers: 100,
+			baseInt:  1800,
+			expected: 2400, // 300 peers, >= 100
 		},
 	}
 
@@ -126,9 +138,9 @@ func TestAdaptiveInterval(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			interval := AdaptiveInterval(tt.seeders, tt.leechers, tt.baseInt)
 
-			if interval < tt.expectMin || interval > tt.expectMax {
-				t.Errorf("Interval %d out of expected range [%d, %d]",
-					interval, tt.expectMin, tt.expectMax)
+			if interval != tt.expected {
+				t.Errorf("Expected interval %d, got %d",
+					tt.expected, interval)
 			}
 		})
 	}
@@ -172,7 +184,7 @@ func TestWhitelistTrie(t *testing.T) {
 func BenchmarkFisherYatesShuffle(b *testing.B) {
 	peers := make([]*Peer, 100)
 	for i := range peers {
-		peers[i] = &Peer{PeerID: []byte{byte(i)}}
+		peers[i] = &Peer{UserID: UserID(i), Port: 6881}
 	}
 
 	b.ResetTimer()
@@ -184,7 +196,7 @@ func BenchmarkFisherYatesShuffle(b *testing.B) {
 func BenchmarkReservoirSample(b *testing.B) {
 	peers := make([]*Peer, 1000)
 	for i := range peers {
-		peers[i] = &Peer{PeerID: []byte{byte(i % 256)}}
+		peers[i] = &Peer{UserID: UserID(i % 256), Port: 6881}
 	}
 
 	b.ResetTimer()

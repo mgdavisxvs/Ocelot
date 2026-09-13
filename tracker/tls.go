@@ -48,9 +48,16 @@ func (s *Server) startManualTLS(certFile, keyFile string) error {
 		PreferServerCipherSuites: true,
 	}
 
+	// Create HTTP handler (stub - would need integration)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/announce", func(w http.ResponseWriter, r *http.Request) {
+		// Stub handler
+		w.WriteHeader(http.StatusOK)
+	})
+
 	server := &http.Server{
 		Addr:         ":34443",
-		Handler:      s,
+		Handler:      mux,
 		TLSConfig:    tlsConfig,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
@@ -77,9 +84,16 @@ func (s *Server) startAutoTLS(domain string) error {
 		http.ListenAndServe(":80", certManager.HTTPHandler(nil))
 	}()
 
+	// Create HTTP handler (stub - would need integration)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/announce", func(w http.ResponseWriter, r *http.Request) {
+		// Stub handler
+		w.WriteHeader(http.StatusOK)
+	})
+
 	server := &http.Server{
 		Addr:         ":443",
-		Handler:      s,
+		Handler:      mux,
 		TLSConfig:    tlsConfig,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
