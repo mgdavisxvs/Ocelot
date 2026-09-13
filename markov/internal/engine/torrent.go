@@ -285,6 +285,16 @@ func (te *TorrentEngine) currentState(torrentID int64) int {
 	return te.lastState[torrentID]
 }
 
+// currentStateOk returns the last health state and whether the torrent is tracked.
+// Needed for calibration evaluation: a zero state from an untracked torrent is
+// indistinguishable from TorrentThriving without the second return value.
+func (te *TorrentEngine) currentStateOk(torrentID int64) (int, bool) {
+	te.mu.RLock()
+	defer te.mu.RUnlock()
+	s, ok := te.lastState[torrentID]
+	return s, ok
+}
+
 // predictionToDB converts a TorrentPrediction to a DB record.
 func predictionToDB(p TorrentPrediction, nowUnix int64) db.TorrentPredictionRecord {
 	piJSON, _ := json.Marshal(p.Pi)

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mgdavisxvs/ocelot/markov/internal/chain"
 	"github.com/mgdavisxvs/ocelot/markov/internal/config"
 	"github.com/mgdavisxvs/ocelot/markov/internal/db"
 )
@@ -41,6 +42,7 @@ type Engine struct {
 	pollCount      int // incremented on each data fetch
 	modelClockTick int // incremented on each model-clock fire
 	matrixVersion  int // bumped on each decay cycle
+	persistCount   int // incremented on each persist() call; governs forecast sampling
 }
 
 // New creates and initializes an Engine, loading persisted state from the DB.
@@ -236,6 +238,7 @@ func (e *Engine) emitObservations(ctx context.Context) {
 // persist flushes all in-memory state and predictions to the DB.
 func (e *Engine) persist(ctx context.Context) {
 	now := time.Now().Unix()
+	e.persistCount++
 
 	// Chain counts
 	if err := e.db.UpsertChainCounts(ctx, "peer", e.peers.counts()); err != nil {
@@ -278,6 +281,12 @@ func (e *Engine) persist(ctx context.Context) {
 	if err := e.db.UpsertPredictions(ctx, predRecs); err != nil {
 		slog.Error("UpsertPredictions", "err", err)
 	}
+
+	// Forecast calibration: snapshot periodically, evaluate elapsed rows every cycle.
+	if e.cfg.ForecastSampleEveryN > 0 && e.persistCount%e.cfg.ForecastSampleEveryN == 0 {
+		e.storeForecastEvals(ctx, predictions, now)
+	}
+	e.evaluateForecastEvals(ctx, now)
 
 	// User anomalies
 	anomalies := e.users.computeAnomalies(e.cfg.FraudThresholdSigma, e.cfg.FraudPathMinLen)
@@ -417,6 +426,81 @@ func (e *Engine) GetDeploymentStage(ctx context.Context, chainName string) (stri
 // persists the requested stage. Never call this from automated code paths.
 func (e *Engine) SetDeploymentStage(ctx context.Context, chainName, stage string) error {
 	return e.db.SetDeploymentStage(ctx, chainName, db.DeploymentStage(stage))
+}
+
+// storeForecastEvals snapshots the current 24h and 72h torrent predictions into
+// the calibration log for later scoring when the horizon elapses.
+// Only the torrent chain is sampled here; peer and user chain forecasts are
+// not yet stored (extend by adding horizons to this loop).
+func (e *Engine) storeForecastEvals(ctx context.Context, predictions []TorrentPrediction, now int64) {
+	type horizon struct {
+		steps int
+		dist  []float64
+	}
+	for _, p := range predictions {
+		for _, h := range []horizon{
+			{e.cfg.ForecastSteps24h, p.Pi24h},
+			{e.cfg.ForecastSteps72h, p.Pi72h},
+		} {
+			b, err := json.Marshal(h.dist)
+			if err != nil {
+				continue
+			}
+			rec := db.ForecastEvalRecord{
+				ChainName:    "torrent",
+				EntityID:     p.TorrentID,
+				HorizonSteps: h.steps,
+				ForecastJSON: string(b),
+				OutcomeState: -1,
+				CreatedAt:    now,
+			}
+			if err := e.db.InsertForecastEval(ctx, rec); err != nil {
+				slog.Error("InsertForecastEval", "torrent_id", p.TorrentID, "err", err)
+			}
+		}
+	}
+}
+
+// evaluateForecastEvals resolves calibration rows whose horizon has elapsed.
+// For each row, if the torrent is still tracked, the current health state is
+// used as the ground-truth outcome and Brier/log-loss scores are recorded.
+// Rows for torrents no longer in the active set are skipped (unresolvable outcome).
+func (e *Engine) evaluateForecastEvals(ctx context.Context, now int64) {
+	// Load all rows older than the minimum horizon (24h). Rows for longer
+	// horizons that aren't ready yet are filtered below by per-row elapsed check.
+	minHorizonSec := int64(e.cfg.ForecastSteps24h) * int64(e.cfg.ModelClockSec)
+	pending, err := e.db.LoadPendingForecastEvals(ctx, now-minHorizonSec, 500)
+	if err != nil {
+		slog.Error("LoadPendingForecastEvals", "err", err)
+		return
+	}
+	var evaluated, skipped int
+	for _, row := range pending {
+		horizonSec := int64(row.HorizonSteps) * int64(e.cfg.ModelClockSec)
+		if now-row.CreatedAt < horizonSec {
+			continue // this row's specific horizon hasn't elapsed yet
+		}
+		actualState, ok := e.torrents.currentStateOk(row.EntityID)
+		if !ok {
+			skipped++
+			continue // torrent no longer tracked; outcome unresolvable
+		}
+		var forecast []float64
+		if err := json.Unmarshal([]byte(row.ForecastJSON), &forecast); err != nil {
+			slog.Warn("ForecastEval unmarshal", "id", row.ID, "err", err)
+			continue
+		}
+		brier := chain.BrierScore(forecast, actualState)
+		logLoss := chain.LogLoss(forecast, actualState)
+		if err := e.db.UpdateForecastOutcome(ctx, row.ID, actualState, brier, logLoss, now); err != nil {
+			slog.Error("UpdateForecastOutcome", "id", row.ID, "err", err)
+		} else {
+			evaluated++
+		}
+	}
+	if evaluated > 0 || skipped > 0 {
+		slog.Debug("forecast calibration evaluated", "evaluated", evaluated, "skipped_untracked", skipped)
+	}
 }
 
 func countFlagged(a []AnomalyResult) int {

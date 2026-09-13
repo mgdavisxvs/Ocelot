@@ -66,6 +66,12 @@ type Config struct {
 	// Freeleech
 	FreeleechTopN int `json:"freeleech_top_n"` // max candidates to write to DB
 
+	// ForecastSampleEveryN controls how often torrent forecasts are snapshotted
+	// into markov_forecast_evaluation for calibration scoring. A value of 12 at
+	// PersistIntervalSec=300 yields roughly one snapshot per hour per torrent.
+	// Higher values reduce table growth; 0 disables snapshot storage entirely.
+	ForecastSampleEveryN int `json:"forecast_sample_every_n"`
+
 	// Shadow mode (Req 8) — when true, forecasts and recommendations are
 	// recorded in the audit log but do NOT affect tracker behavior.
 	ShadowMode bool `json:"shadow_mode"`
@@ -170,6 +176,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.FreeleechTopN == 0 {
 		c.FreeleechTopN = 20
+	}
+	if c.ForecastSampleEveryN == 0 {
+		c.ForecastSampleEveryN = 12 // ~hourly at 5-min persist interval
 	}
 	if c.ModelSchemaVersion == 0 {
 		c.ModelSchemaVersion = 1
