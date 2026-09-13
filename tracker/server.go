@@ -242,14 +242,19 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 }
 
 func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.IP, httpClose bool) []byte {
+	start := time.Now()
+	metrics := GetMetricsRecorder()
+
 	user, ok := s.worker.Users.Get(passkey)
 	if !ok {
+		metrics.RecordAnnounce("", "error", time.Since(start))
 		return s.errorResponse("Passkey not found", httpClose)
 	}
 
 	params := req.URL.Query()
 	announceReq, err := ParseAnnounceParams(params, clientIP)
 	if err != nil {
+		metrics.RecordAnnounce("", "error", time.Since(start))
 		return s.errorResponse(err.Error(), httpClose)
 	}
 
@@ -266,15 +271,22 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 	userAgent := req.Header.Get("User-Agent")
 	announceResp, err := s.worker.Announce(announceReq, user, clientIP, userAgent)
 	if err != nil {
+		metrics.RecordAnnounce(announceReq.Event, "error", time.Since(start))
 		return s.errorResponse(err.Error(), httpClose)
 	}
 
+	metrics.RecordAnnounce(announceReq.Event, "success", time.Since(start))
+	metrics.UpdatePeerCounts(int(s.worker.Stats.Seeders.Load()), int(s.worker.Stats.Leechers.Load()))
 	return s.bencodedAnnounceResponse(announceResp, httpClose)
 }
 
 func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool) []byte {
+	start := time.Now()
+	metrics := GetMetricsRecorder()
+
 	_, ok := s.worker.Users.Get(passkey)
 	if !ok {
+		metrics.RecordScrape("error", time.Since(start))
 		return s.errorResponse("Passkey not found", httpClose)
 	}
 
@@ -298,6 +310,7 @@ func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool)
 			seeders, leechers, completed))
 	}
 	b.WriteString("ee")
+	metrics.RecordScrape("success", time.Since(start))
 	return s.response(b.String(), httpClose, false)
 }
 
@@ -386,6 +399,13 @@ func (s *Server) bencodedAnnounceResponse(resp *AnnounceResponse, httpClose bool
 		b.WriteString(strconv.Itoa(len(resp.Peers)))
 		b.WriteString(":")
 		b.Write(resp.Peers)
+	}
+
+	if len(resp.Peers6) > 0 {
+		b.WriteString("6:peers6")
+		b.WriteString(strconv.Itoa(len(resp.Peers6)))
+		b.WriteString(":")
+		b.Write(resp.Peers6)
 	}
 
 	if resp.Warning != "" {

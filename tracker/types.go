@@ -33,7 +33,8 @@ type Peer struct {
 	Announces      uint32
 	Port           uint16
 	IP             net.IP // Go's native IP type (safer than manual parsing)
-	IPPort         []byte // Compact 6-byte format: 4-byte IPv4 + 2-byte port
+	IPPort         []byte // Compact 6-byte format: 4-byte IPv4 + 2-byte port (BEP-23)
+	IPPort6        []byte // Compact 18-byte format: 16-byte IPv6 + 2-byte port (BEP-7)
 	Visible        bool
 	InvalidIP      bool
 }
@@ -53,8 +54,8 @@ func PeerKey(peerID []byte, userID UserID, torrentID TorrentID) string {
 	return string(key)
 }
 
-// CompactIPPort creates the 6-byte compact peer format (BEP 23).
-// Returns nil for non-IPv4 addresses (IPv6 not supported).
+// CompactIPPort creates the 6-byte compact peer format (BEP-23, IPv4 only).
+// Returns nil for non-IPv4 addresses.
 func CompactIPPort(ip net.IP, port uint16) []byte {
 	ipv4 := ip.To4()
 	if ipv4 == nil {
@@ -64,6 +65,24 @@ func CompactIPPort(ip net.IP, port uint16) []byte {
 	copy(compact[0:4], ipv4)
 	compact[4] = byte(port >> 8)
 	compact[5] = byte(port & 0xFF)
+	return compact
+}
+
+// CompactIPPort6 creates the 18-byte compact peer format (BEP-7, IPv6 only).
+// Returns nil for non-IPv6 addresses (including IPv4 addresses).
+func CompactIPPort6(ip net.IP, port uint16) []byte {
+	// Reject addresses that have an IPv4 representation.
+	if ip.To4() != nil {
+		return nil
+	}
+	ipv6 := ip.To16()
+	if ipv6 == nil {
+		return nil
+	}
+	compact := make([]byte, 18)
+	copy(compact[0:16], ipv6)
+	compact[16] = byte(port >> 8)
+	compact[17] = byte(port & 0xFF)
 	return compact
 }
 

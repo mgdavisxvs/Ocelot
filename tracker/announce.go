@@ -32,7 +32,8 @@ type AnnounceResponse struct {
 	MinInterval int32
 	Complete    int32  // number of seeders
 	Incomplete  int32  // number of leechers
-	Peers       []byte // compact format: 6 bytes per peer
+	Peers       []byte // BEP-23 compact: 6 bytes per IPv4 peer
+	Peers6      []byte // BEP-7 compact: 18 bytes per IPv6 peer
 	Warning     string
 }
 
@@ -205,9 +206,12 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		peer.Port = req.Port
 		peer.IP = ip
 		peer.IPPort = CompactIPPort(ip, req.Port)
-		if peer.IPPort == nil {
+		peer.IPPort6 = CompactIPPort6(ip, req.Port)
+		if peer.IPPort == nil && peer.IPPort6 == nil {
 			invalidIP = true
 			peer.InvalidIP = true
+		} else {
+			peer.InvalidIP = false
 		}
 	} else {
 		invalidIP = peer.InvalidIP
@@ -288,7 +292,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		numwant = 0
 	}
 
-	peers := w.selectPeers(torrent, peer, user.ID, numwant, req.Left > 0)
+	peers, peers6 := w.selectPeers(torrent, peer, user.ID, numwant, req.Left > 0)
 
 	w.Stats.SuccAnnouncements.Add(1)
 	if incLeechers {
@@ -338,9 +342,10 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		Complete:    int32(seederCount),
 		Incomplete:  int32(leecherCount),
 		Peers:       peers,
+		Peers6:      peers6,
 	}
 	if invalidIP {
-		response.Warning = "Illegal character found in IP address. IPv6 is not supported"
+		response.Warning = "Illegal character found in IP address"
 	}
 
 	return response, nil
@@ -348,13 +353,28 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 
 // selectPeers picks up to numwant peers to return. Leechers receive seeders
 // first (round-robin), then other leechers. Seeders receive only leechers.
-func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool) []byte {
+// Returns compact IPv4 peers (BEP-23) and compact IPv6 peers (BEP-7) separately.
+func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool) (peers []byte, peers6 []byte) {
 	if numwant <= 0 {
-		return []byte{}
+		return []byte{}, []byte{}
 	}
 
-	peers := make([]byte, 0, numwant*6)
+	peers = make([]byte, 0, numwant*6)
+	peers6 = make([]byte, 0, numwant*18)
 	found := 0
+
+	addPeer := func(peer *Peer, key string) {
+		if peer.UserID == userID || !peer.Visible {
+			return
+		}
+		if len(peer.IPPort) == 6 {
+			peers = append(peers, peer.IPPort...)
+			found++
+		} else if len(peer.IPPort6) == 18 {
+			peers6 = append(peers6, peer.IPPort6...)
+			found++
+		}
+	}
 
 	torrent.mu.RLock()
 	defer torrent.mu.RUnlock()
@@ -383,50 +403,33 @@ func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwan
 			for i := 0; i < len(seederKeys) && found < int(numwant); i++ {
 				idx := (startIdx + i) % len(seederKeys)
 				key := seederKeys[idx]
-				peer := seederMap[key]
-				if peer.UserID == userID || !peer.Visible {
-					continue
-				}
-				if len(peer.IPPort) == 6 {
-					peers = append(peers, peer.IPPort...)
-					found++
+				addPeer(seederMap[key], key)
+				if found > 0 {
 					torrent.LastSelectedSeeder = key
 				}
 			}
 		}
 
 		if found < int(numwant) && torrent.Leechers.Size() > 1 {
-			torrent.Leechers.ForEach(func(_ string, peer *Peer) bool {
+			torrent.Leechers.ForEach(func(key string, peer *Peer) bool {
 				if found >= int(numwant) {
 					return false
 				}
-				if peer.UserID == userID || !peer.Visible {
-					return true
-				}
-				if len(peer.IPPort) == 6 {
-					peers = append(peers, peer.IPPort...)
-					found++
-				}
+				addPeer(peer, key)
 				return true
 			})
 		}
 	} else {
-		torrent.Leechers.ForEach(func(_ string, peer *Peer) bool {
+		torrent.Leechers.ForEach(func(key string, peer *Peer) bool {
 			if found >= int(numwant) {
 				return false
 			}
-			if peer.UserID == userID || !peer.Visible {
-				return true
-			}
-			if len(peer.IPPort) == 6 {
-				peers = append(peers, peer.IPPort...)
-				found++
-			}
+			addPeer(peer, key)
 			return true
 		})
 	}
 
-	return peers
+	return peers, peers6
 }
 
 func (w *Worker) findOrCreatePeer(peerList *PeerList, peerKey string, user *User) (*Peer, bool) {
