@@ -1,0 +1,40 @@
+[Unit]
+Description=Ocelot BitTorrent Tracker
+Documentation=https://github.com/mgdavisxvs/Ocelot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ocelot
+Group=ocelot
+WorkingDirectory=/var/lib/ocelot
+ExecStart=/usr/local/bin/ocelot -c /etc/ocelot/ocelot.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+
+# Reload torrent/user/whitelist state on SIGUSR1
+KillMode=mixed
+SendSIGKILL=yes
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/ocelot /var/log/ocelot
+PrivateDevices=yes
+CapabilityBoundingSet=
+
+# Logging — redirect stdout/stderr to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ocelot
+
+[Install]
+WantedBy=multi-user.target

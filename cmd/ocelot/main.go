@@ -164,6 +164,18 @@ func main() {
 		}
 	}()
 
+	// ── UDP Tracker (BEP-15) ─────────────────────────────────────────────────
+	if fc.UDPListenPort > 0 {
+		udpAddr := fmt.Sprintf(":%d", fc.UDPListenPort)
+		udpServer, err := tracker.NewUDPServer(udpAddr, worker)
+		if err != nil {
+			log.Fatalf("Failed to start UDP tracker on %s: %v", udpAddr, err)
+		}
+		go udpServer.Serve()
+		defer udpServer.Stop()
+		log.Printf("UDP tracker (BEP-15) listening on %s", udpAddr)
+	}
+
 	// ── Server ────────────────────────────────────────────────────────────────
 	server := tracker.NewServer(config, worker)
 	server.SetRateLimiter(rl)

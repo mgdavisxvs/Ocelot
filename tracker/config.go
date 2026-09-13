@@ -36,6 +36,7 @@ type FileConfig struct {
 	TLSKeyFile        string // path to TLS key file
 	TLSAuto           bool   // use Let's Encrypt autocert
 	TLSDomain         string // domain for autocert
+	UDPListenPort     int    // BEP-15 UDP tracker port; 0 = disabled
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -146,6 +147,8 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.TLSAuto = val == "1" || val == "true"
 		case "tls_domain":
 			cfg.TLSDomain = val
+		case "udp_listen_port":
+			cfg.UDPListenPort = parseIntVal(val, cfg.UDPListenPort)
 		}
 	}
 	if err := scanner.Err(); err != nil {

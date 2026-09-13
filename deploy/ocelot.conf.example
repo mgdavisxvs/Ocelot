@@ -1,0 +1,92 @@
+# Ocelot BitTorrent Tracker — configuration file
+# Copy to /etc/ocelot/ocelot.conf and edit before starting the service.
+# Lines beginning with # are comments.
+
+# ── Network ──────────────────────────────────────────────────────────────────
+
+# TCP port for HTTP announce/scrape and admin API.
+listen_port         = 34000
+
+# BEP-15 UDP tracker port. Set to 0 to disable.
+udp_listen_port     = 34000
+
+# Maximum simultaneous TCP connections accepted by the listener.
+# This is a hard cap; connections beyond this are dropped.
+max_connections     = 128
+
+# Maximum goroutines (or worker-pool slots) handling requests concurrently.
+max_middlemen       = 20000
+
+# Per-connection read buffer size in bytes.
+max_read_buffer     = 4096
+
+# Seconds before an idle connection is closed.
+connection_timeout  = 10
+
+# Keep-alive timeout in seconds.  0 = disabled.
+# Enable if the tracker runs behind a reverse proxy that reuses connections.
+keepalive_timeout   = 0
+
+# Maximum HTTP request body size in bytes.
+max_request_size    = 4096
+
+# ── Tracker behaviour ─────────────────────────────────────────────────────────
+
+# Seconds between announces clients should respect.
+announce_interval   = 1800
+
+# Maximum peers returned per announce.
+numwant_limit       = 50
+
+# Seconds of inactivity before a peer is evicted from the swarm.
+peers_timeout       = 7200
+
+# How often (seconds) the reaper scans for stale peers.
+reap_peers_interval = 1800
+
+# How often (seconds) the scheduler runs background DB maintenance.
+schedule_interval   = 3
+
+# ── Passwords ────────────────────────────────────────────────────────────────
+# Both must be exactly 32 characters and match the values in Gazelle's config.
+
+site_password       = CHANGE_ME_32_CHARS__________________
+report_password     = CHANGE_ME_32_CHARS__________________
+
+# ── Database ─────────────────────────────────────────────────────────────────
+
+# Directory where SQLite shard files are stored.
+# The ocelot user must have read/write access to this directory.
+db_dir              = /var/lib/ocelot/db
+
+# ── Gazelle integration ───────────────────────────────────────────────────────
+
+# Base URL of the Gazelle site for token-expiry callbacks.
+# Leave empty to disable (NoOpSiteComm is used instead).
+# gazelle_url       = https://example.com
+
+# ── Observability ─────────────────────────────────────────────────────────────
+
+# Address for the Prometheus /metrics, /health, and /events endpoints.
+# Bind to 127.0.0.1 when using a reverse proxy; 0.0.0.0 to expose directly.
+metrics_addr        = 127.0.0.1:6880
+
+# ── TLS ───────────────────────────────────────────────────────────────────────
+# Option A: provide your own certificate files.
+# tls_cert_file     = /etc/ocelot/tls/cert.pem
+# tls_key_file      = /etc/ocelot/tls/key.pem
+
+# Option B: automatic Let's Encrypt (requires publicly routable domain + port 443).
+# tls_auto          = true
+# tls_domain        = tracker.example.com
+
+# ── Misc ─────────────────────────────────────────────────────────────────────
+
+# Number of request log entries kept in memory (for the /stats endpoint).
+request_log_size    = 500
+
+# Seconds a deletion reason is retained.
+del_reason_lifetime = 86400
+
+# Run in read-only mode (no DB writes).  Useful for a hot standby.
+readonly            = false

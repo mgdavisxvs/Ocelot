@@ -1,0 +1,112 @@
+# Nginx reverse proxy for Ocelot BitTorrent Tracker
+# Place in /etc/nginx/sites-available/ocelot and symlink to sites-enabled/.
+#
+# This configuration:
+#   - Terminates TLS at nginx (recommended for production)
+#   - Proxies /announce, /scrape, and admin paths to Ocelot on :34000
+#   - Exposes Prometheus metrics only on the internal interface
+#   - Proxies /events (SSE) with correct buffering settings
+
+upstream ocelot_http {
+    server 127.0.0.1:34000;
+    keepalive 64;
+}
+
+upstream ocelot_metrics {
+    server 127.0.0.1:6880;
+    keepalive 4;
+}
+
+# ── HTTP → HTTPS redirect ─────────────────────────────────────────────────────
+server {
+    listen 80;
+    listen [::]:80;
+    server_name tracker.example.com;
+    return 301 https://$host$request_uri;
+}
+
+# ── HTTPS tracker ─────────────────────────────────────────────────────────────
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name tracker.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/tracker.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/tracker.example.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # Increase timeouts for long-lived SSE connections
+    proxy_read_timeout  3600s;
+    proxy_send_timeout  3600s;
+
+    # Real client IP (set this to your load-balancer/CDN CIDR if applicable)
+    real_ip_header      X-Forwarded-For;
+    set_real_ip_from    127.0.0.1;
+    real_ip_recursive   on;
+
+    # ── Announce / scrape (standard tracker paths) ───────────────────────────
+    location ~ ^/[a-f0-9]{32}/(announce|scrape)$ {
+        proxy_pass          http://ocelot_http;
+        proxy_http_version  1.1;
+        proxy_set_header    Connection "";
+        proxy_set_header    Host            $host;
+        proxy_set_header    X-Real-IP       $remote_addr;
+        proxy_set_header    X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering     off;
+    }
+
+    # ── Admin / stats API ────────────────────────────────────────────────────
+    location ~ ^/[a-f0-9]{32}/(update|stats|torrents|peers|whitelist)$ {
+        allow 127.0.0.1;        # adjust to your management IP range
+        deny  all;
+        proxy_pass         http://ocelot_http;
+        proxy_http_version 1.1;
+        proxy_set_header   Connection "";
+        proxy_set_header   Host            $host;
+        proxy_set_header   X-Real-IP       $remote_addr;
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # ── SSE event stream ─────────────────────────────────────────────────────
+    location /events {
+        allow 127.0.0.1;        # restrict to trusted consumers
+        deny  all;
+        proxy_pass          http://ocelot_metrics/events;
+        proxy_http_version  1.1;
+        proxy_set_header    Connection "";
+        proxy_set_header    Host $host;
+        proxy_buffering     off;
+        proxy_cache         off;
+        proxy_read_timeout  3600s;
+        # Prevent nginx from buffering the SSE stream
+        proxy_set_header    X-Accel-Buffering no;
+    }
+
+    # ── Health check ─────────────────────────────────────────────────────────
+    location /health {
+        proxy_pass http://ocelot_metrics/health;
+    }
+
+    # Block everything else
+    location / {
+        return 404;
+    }
+}
+
+# ── Metrics (internal only — do NOT expose to the internet) ───────────────────
+server {
+    listen 127.0.0.1:9090;
+    server_name _;
+
+    location /metrics {
+        proxy_pass http://ocelot_metrics/metrics;
+    }
+
+    location /health {
+        proxy_pass http://ocelot_metrics/health;
+    }
+}
