@@ -44,9 +44,10 @@ USER ocelot
 # Expose ports
 EXPOSE 34000 9090
 
-# Health check
+# Health check against the admin listener. The tracker port only routes
+# /{passkey}/{action} and cannot serve probes.
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
-    CMD wget --quiet --tries=1 --spider http://localhost:34000/health || exit 1
+    CMD wget --quiet --tries=1 --spider http://localhost:9090/ready || exit 1
 
 # Run tracker
 CMD ["./ocelot-tracker"]

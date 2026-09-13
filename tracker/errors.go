@@ -158,20 +158,13 @@ var (
 		Type:    "internal",
 		Message: "Internal server error",
 	}
-
-	ErrCircuitOpen = &TrackerError{
-		Code:    http.StatusServiceUnavailable,
-		Type:    "circuit_breaker",
-		Message: "Service temporarily unavailable",
-		Detail:  "Circuit breaker is open, service degraded",
-	}
 )
 
 // IsRetryable returns true if the error should be retried
 func IsRetryable(err error) bool {
 	if trackerErr, ok := err.(*TrackerError); ok {
-		// Retry on database errors and circuit breaker
-		return trackerErr.Type == "database" || trackerErr.Type == "circuit_breaker"
+		// Only transient database errors are worth retrying.
+		return trackerErr.Type == "database"
 	}
 	return false
 }

@@ -188,8 +188,8 @@ func TestRetryRetryableErrorPatterns(t *testing.T) {
 			retryable: true,
 		},
 		{
-			name:      "Circuit breaker",
-			errorMsg:  "circuit breaker is open",
+			name:      "Temporarily unavailable",
+			errorMsg:  "service temporarily unavailable",
 			retryable: true,
 		},
 		{

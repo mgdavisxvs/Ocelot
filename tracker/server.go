@@ -3,6 +3,7 @@ package tracker
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -31,11 +32,17 @@ type Server struct {
 	config   *Config
 
 	// Connection management
-	mu              sync.Mutex
-	activeConns     map[net.Conn]struct{}
-	shutdownCtx     context.Context
-	shutdownCancel  context.CancelFunc
-	wg              sync.WaitGroup
+	mu             sync.Mutex
+	activeConns    map[net.Conn]struct{}
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
+	wg             sync.WaitGroup
+
+	// Per-IP admission control. Nil when rate limiting is disabled.
+	limiter *RateLimiter
+
+	// Audit trail for security-relevant events. Nil when unconfigured.
+	audit *AuditLogger
 
 	// Statistics
 	stats *Stats
@@ -53,19 +60,72 @@ type Config struct {
 	ReportPassword   string
 	ReadTimeout      time.Duration
 	WriteTimeout     time.Duration
+
+	// MetricsAddr is the admin listener serving /metrics and the health
+	// probes. It must not be the tracker port, which only routes
+	// /{passkey}/{action}. Empty disables the admin listener.
+	MetricsAddr string
+
+	// RateLimitRPS and RateLimitBurst bound per-IP request rate. A real
+	// client announces roughly twice an hour, so these are generous.
+	// Zero RPS disables rate limiting.
+	RateLimitRPS   int
+	RateLimitBurst int
+
+	// AuditRetentionDays bounds how long audit rows are kept. Zero keeps
+	// them forever, which will eventually make it the largest table.
+	AuditRetentionDays int
 }
+
+// Sentinel reasons recorded in the audit trail.
+var (
+	errInvalidPasskeyLength = errors.New("passkey is not 32 characters")
+	errAdminAuthFailure     = errors.New("site password mismatch")
+	errUnknownPasskey       = errors.New("passkey not found")
+)
 
 // NewServer creates a new tracker server
 func NewServer(config *Config, worker *Worker) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &Server{
+	s := &Server{
 		worker:         worker,
 		config:         config,
 		activeConns:    make(map[net.Conn]struct{}),
 		shutdownCtx:    ctx,
 		shutdownCancel: cancel,
 		stats:          worker.Stats,
+	}
+
+	if config.RateLimitRPS > 0 {
+		s.limiter = NewRateLimiter(config.RateLimitRPS, config.RateLimitBurst)
+		s.limiter.Cleanup()
+	}
+
+	return s
+}
+
+// SetAuditLogger attaches an audit trail for security-relevant events.
+func (s *Server) SetAuditLogger(audit *AuditLogger) {
+	s.audit = audit
+}
+
+// auditFailure records a rejected request. Only authentication and
+// authorization failures are audited, never successful announces, which would
+// dominate write volume. Rate limiting runs before this, so the write rate an
+// attacker can provoke is already bounded per IP.
+func (s *Server) auditFailure(clientIP net.IP, action, resourceType, resourceID string, reason error) {
+	if s.audit == nil {
+		return
+	}
+
+	ctx := context.Background()
+	if clientIP != nil {
+		ctx = context.WithValue(ctx, "ip", clientIP.String())
+	}
+
+	if err := s.audit.LogFailure(ctx, action, resourceType, resourceID, reason); err != nil {
+		GetDefaultLogger().Error("failed to write audit entry", err, "action", action)
 	}
 }
 
@@ -161,8 +221,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	// Set TCP options (matches C++ events.cpp:200-208)
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetNoDelay(true)              // Disable Nagle's algorithm
-		tcpConn.SetKeepAlive(true)            // Enable TCP keepalive
+		tcpConn.SetNoDelay(true)   // Disable Nagle's algorithm
+		tcpConn.SetKeepAlive(true) // Enable TCP keepalive
 		tcpConn.SetKeepAlivePeriod(2 * time.Minute)
 	}
 
@@ -195,8 +255,17 @@ func (s *Server) handleConnection(conn net.Conn) {
 		// Get client IP (handle X-Forwarded-For)
 		clientIP := s.getClientIP(conn, request)
 
-		// Process request and generate response
-		response, httpClose := s.handleRequest(request, clientIP)
+		// Admission control before any routing or database work.
+		var response []byte
+		var httpClose bool
+		if s.limiter != nil && !s.limiter.Allow(clientIP.String()) {
+			GetMetricsRecorder().RecordRateLimitExceeded()
+			response = s.responseWithStatus(http.StatusTooManyRequests,
+				"Rate limit exceeded", true, false)
+			httpClose = true
+		} else {
+			response, httpClose = s.handleRequest(request, clientIP)
+		}
 
 		// Set write deadline (replaces C++ ev::timer)
 		if s.config.WriteTimeout > 0 {
@@ -239,8 +308,10 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 	path := strings.TrimPrefix(req.URL.Path, "/")
 	parts := strings.Split(path, "/")
 
+	// Fewer than two segments is not a tracker request at all (a stray probe
+	// or a browser hit), so answer 404 rather than a 200 bencode error.
 	if len(parts) < 2 {
-		return s.errorResponse("Malformed announce", httpClose), httpClose
+		return s.responseWithStatus(http.StatusNotFound, "Not found", httpClose, false), httpClose
 	}
 
 	passkey := parts[0]
@@ -248,6 +319,7 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 
 	// Validate passkey length (32 characters)
 	if len(passkey) != 32 {
+		s.auditFailure(clientIP, "auth_failure", "passkey", "", errInvalidPasskeyLength)
 		return s.errorResponse("Malformed announce", httpClose), httpClose
 	}
 
@@ -259,40 +331,45 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 
 	case "scrape":
 		s.stats.Scrapes.Add(1)
-		return s.handleScrape(req, passkey, httpClose), httpClose
+		return s.handleScrape(req, passkey, clientIP, httpClose), httpClose
 
 	case "update":
 		if passkey == s.config.SitePassword {
 			return s.handleUpdate(req, httpClose), httpClose
 		}
+		s.auditFailure(clientIP, "admin_auth_failure", "endpoint", action, errAdminAuthFailure)
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
 	case "stats":
 		if passkey == s.config.SitePassword {
 			return s.handleStatsAPI(httpClose), httpClose
 		}
+		s.auditFailure(clientIP, "admin_auth_failure", "endpoint", action, errAdminAuthFailure)
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
 	case "torrents":
 		if passkey == s.config.SitePassword {
 			return s.handleTorrentsAPI(req, httpClose), httpClose
 		}
+		s.auditFailure(clientIP, "admin_auth_failure", "endpoint", action, errAdminAuthFailure)
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
 	case "peers":
 		if passkey == s.config.SitePassword {
 			return s.handlePeersAPI(req, httpClose), httpClose
 		}
+		s.auditFailure(clientIP, "admin_auth_failure", "endpoint", action, errAdminAuthFailure)
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
 	case "whitelist":
 		if passkey == s.config.SitePassword {
 			return s.handleWhitelistAPI(httpClose), httpClose
 		}
+		s.auditFailure(clientIP, "admin_auth_failure", "endpoint", action, errAdminAuthFailure)
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
 	default:
-		return s.response("Nothing to see here", httpClose, false), httpClose
+		return s.responseWithStatus(http.StatusNotFound, "Not found", httpClose, false), httpClose
 	}
 }
 
@@ -301,6 +378,7 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 	// Look up user by passkey
 	user, ok := s.worker.Users.Get(passkey)
 	if !ok {
+		s.auditFailure(clientIP, "auth_failure", "passkey", "", errUnknownPasskey)
 		return s.errorResponse("Passkey not found", httpClose)
 	}
 
@@ -345,9 +423,10 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 }
 
 // handleScrape processes a BitTorrent scrape request
-func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool) []byte {
+func (s *Server) handleScrape(req *http.Request, passkey string, clientIP net.IP, httpClose bool) []byte {
 	user, ok := s.worker.Users.Get(passkey)
 	if !ok {
+		s.auditFailure(clientIP, "auth_failure", "passkey", "", errUnknownPasskey)
 		return s.errorResponse("Passkey not found", httpClose)
 	}
 	_ = user // User validated, scrape doesn't need user object
@@ -495,11 +574,18 @@ func (s *Server) errorResponse(msg string, httpClose bool) []byte {
 	return s.response(response, httpClose, false)
 }
 
-// response wraps content in HTTP response
+// response wraps content in a 200 HTTP response
 func (s *Server) response(content string, httpClose bool, html bool) []byte {
+	return s.responseWithStatus(http.StatusOK, content, httpClose, html)
+}
+
+// responseWithStatus wraps content in an HTTP response carrying the given
+// status. Non-protocol paths must not answer 200, or an external health probe
+// pointed at this port passes while the tracker is unhealthy.
+func (s *Server) responseWithStatus(status int, content string, httpClose bool, html bool) []byte {
 	var b strings.Builder
 
-	b.WriteString("HTTP/1.1 200 OK\r\n")
+	fmt.Fprintf(&b, "HTTP/1.1 %d %s\r\n", status, http.StatusText(status))
 
 	if html {
 		b.WriteString("Content-Type: text/html; charset=utf-8\r\n")

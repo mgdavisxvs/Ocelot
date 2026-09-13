@@ -84,7 +84,6 @@ func isRetryableError(err error) bool {
 		"connection reset",
 		"timeout",
 		"deadline exceeded",
-		"circuit breaker",
 		"temporarily unavailable",
 	}
 

@@ -1,31 +1,24 @@
 version: '3.8'
 
 services:
-  # Ocelot Tracker (3 replicas for HA)
+  # Ocelot Tracker (single instance: SQLite has one writer)
   tracker:
     build: .
     image: ocelot-tracker:latest
     ports:
-      - "34000-34002:34000"
-      - "9090-9092:9090"
+      - "34000:34000"
+      - "9090:9090"
     environment:
       - DB_PATH=/data/db
       - LOG_LEVEL=info
-      - REDIS_ADDR=redis:6379
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=tracker
-      - POSTGRES_PASSWORD=changeme
-      - POSTGRES_DB=ocelot
       - METRICS_PORT=9090
     volumes:
       - tracker-data:/data
-    depends_on:
-      - redis
-      - postgres
     restart: unless-stopped
     deploy:
-      replicas: 3
+      # SQLite has a single writer and the data volume is not shared, so more
+      # than one replica means divergent databases, not more capacity.
+      replicas: 1
       resources:
         limits:
           cpus: '2'
@@ -33,40 +26,6 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
-
-  # Redis for shared state
-  redis:
-    image: redis:7-alpine
-    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy allkeys-lru
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-
-  # PostgreSQL for persistent storage
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: ocelot
-      POSTGRES_USER: tracker
-      POSTGRES_PASSWORD: changeme
-      POSTGRES_INITDB_ARGS: "-E UTF8"
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tracker"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
 
   # Nginx load balancer
   nginx:
@@ -114,8 +73,6 @@ services:
 
 volumes:
   tracker-data:
-  redis-data:
-  postgres-data:
   prometheus-data:
   grafana-data:
 

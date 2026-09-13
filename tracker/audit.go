@@ -225,3 +225,50 @@ func CreateAuditLogTable(db *sql.DB) error {
 	_, err := db.Exec(query)
 	return err
 }
+
+// Prune deletes audit entries older than retentionDays and reports how many
+// rows were removed. A non-positive retention keeps everything, which will
+// eventually make audit_log the largest table in the database.
+func (al *AuditLogger) Prune(retentionDays int) (int64, error) {
+	if retentionDays <= 0 {
+		return 0, nil
+	}
+
+	cutoff := time.Now().AddDate(0, 0, -retentionDays).Unix()
+
+	result, err := al.db.Exec("DELETE FROM audit_log WHERE timestamp < ?", cutoff)
+	if err != nil {
+		return 0, err
+	}
+
+	return result.RowsAffected()
+}
+
+// StartPruning prunes on a daily tick until ctx is cancelled.
+func (al *AuditLogger) StartPruning(ctx context.Context, retentionDays int) {
+	if retentionDays <= 0 {
+		return
+	}
+
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				removed, err := al.Prune(retentionDays)
+				if err != nil {
+					GetDefaultLogger().Error("audit prune failed", err)
+					continue
+				}
+				if removed > 0 {
+					GetDefaultLogger().Info("pruned audit entries",
+						"removed", removed, "retention_days", retentionDays)
+				}
+			}
+		}
+	}()
+}

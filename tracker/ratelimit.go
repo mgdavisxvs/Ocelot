@@ -71,26 +71,6 @@ func (rl *RateLimiter) Cleanup() {
 	}()
 }
 
-// RateLimitMiddleware returns HTTP middleware for rate limiting
-func RateLimitMiddleware(limiter *RateLimiter) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := GetClientIP(r)
-
-			if !limiter.Allow(ip) {
-				limiter.logger.Warn("rate limit exceeded",
-					"ip", ip,
-					"path", r.URL.Path,
-				)
-				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
-				return
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
 // GetClientIP extracts the client IP from the request
 func GetClientIP(r *http.Request) string {
 	// Check X-Forwarded-For header first (for proxies/load balancers)

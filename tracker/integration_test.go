@@ -697,7 +697,7 @@ func TestScrapeReturnsTorrentCounts(t *testing.T) {
 	}
 
 	server := newTestServer(t, h)
-	body := string(server.handleScrape(scrapeRequest(t, h.infoHash), passkey, true))
+	body := string(server.handleScrape(scrapeRequest(t, h.infoHash), passkey, net.ParseIP("10.0.0.1"), true))
 
 	if !strings.Contains(body, "d5:filesd") {
 		t.Errorf("scrape body is missing the files dictionary: %q", body)
@@ -726,7 +726,7 @@ func TestScrapeReflectsSeederAndLeecherCounts(t *testing.T) {
 	}
 
 	server := newTestServer(t, h)
-	body := string(server.handleScrape(scrapeRequest(t, h.infoHash), passkey, true))
+	body := string(server.handleScrape(scrapeRequest(t, h.infoHash), passkey, net.ParseIP("10.0.0.1"), true))
 
 	if !strings.Contains(body, "8:completei1e") {
 		t.Errorf("scrape should report 1 seeder: %q", body)
@@ -752,7 +752,7 @@ func TestScrapeReportsSnatchCount(t *testing.T) {
 	}
 
 	server := newTestServer(t, h)
-	body := string(server.handleScrape(scrapeRequest(t, h.infoHash), passkey, true))
+	body := string(server.handleScrape(scrapeRequest(t, h.infoHash), passkey, net.ParseIP("10.0.0.1"), true))
 
 	if !strings.Contains(body, "10:downloadedi1e") {
 		t.Errorf("scrape should report 1 completed download: %q", body)
@@ -767,7 +767,7 @@ func TestScrapeMultipleTorrents(t *testing.T) {
 	h.worker.Torrents.Set(secondHash, NewTorrent(TorrentID(2)))
 
 	server := newTestServer(t, h)
-	body := string(server.handleScrape(scrapeRequest(t, h.infoHash, secondHash), passkey, true))
+	body := string(server.handleScrape(scrapeRequest(t, h.infoHash, secondHash), passkey, net.ParseIP("10.0.0.1"), true))
 
 	if !strings.Contains(body, h.infoHash) {
 		t.Error("scrape body is missing the first torrent")
@@ -787,7 +787,7 @@ func TestScrapeSkipsUnknownTorrent(t *testing.T) {
 	unknown := testInfoHash(0xDD)
 
 	server := newTestServer(t, h)
-	body := string(server.handleScrape(scrapeRequest(t, h.infoHash, unknown), passkey, true))
+	body := string(server.handleScrape(scrapeRequest(t, h.infoHash, unknown), passkey, net.ParseIP("10.0.0.1"), true))
 
 	if strings.Contains(body, unknown) {
 		t.Error("scrape body should omit torrents the tracker does not know")
@@ -801,7 +801,7 @@ func TestScrapeRejectsUnknownPasskey(t *testing.T) {
 	h := newTestHarness(t)
 
 	server := newTestServer(t, h)
-	body := string(server.handleScrape(scrapeRequest(t, h.infoHash), strings.Repeat("f", 32), true))
+	body := string(server.handleScrape(scrapeRequest(t, h.infoHash), strings.Repeat("f", 32), net.ParseIP("10.0.0.1"), true))
 
 	if !strings.Contains(body, "failure reason") {
 		t.Errorf("expected a bencoded failure for an unknown passkey: %q", body)
@@ -813,7 +813,7 @@ func TestScrapeWithNoInfoHashesReturnsEmptyFiles(t *testing.T) {
 	_, passkey := h.addUser(t, 1, true)
 
 	server := newTestServer(t, h)
-	body := string(server.handleScrape(scrapeRequest(t), passkey, true))
+	body := string(server.handleScrape(scrapeRequest(t), passkey, net.ParseIP("10.0.0.1"), true))
 
 	if !strings.Contains(body, "d5:filesdee") {
 		t.Errorf("expected an empty files dictionary: %q", body)
@@ -832,7 +832,7 @@ func TestScrapeTracksPeerDeparture(t *testing.T) {
 
 	server := newTestServer(t, h)
 
-	body := string(server.handleScrape(scrapeRequest(t, h.infoHash), passkey, true))
+	body := string(server.handleScrape(scrapeRequest(t, h.infoHash), passkey, net.ParseIP("10.0.0.1"), true))
 	if !strings.Contains(body, "10:incompletei1e") {
 		t.Fatalf("precondition failed, expected 1 leecher: %q", body)
 	}
@@ -842,7 +842,7 @@ func TestScrapeTracksPeerDeparture(t *testing.T) {
 		t.Fatalf("stopped announce failed: %v", err)
 	}
 
-	body = string(server.handleScrape(scrapeRequest(t, h.infoHash), passkey, true))
+	body = string(server.handleScrape(scrapeRequest(t, h.infoHash), passkey, net.ParseIP("10.0.0.1"), true))
 	if !strings.Contains(body, "10:incompletei0e") {
 		t.Errorf("scrape should report 0 leechers after departure: %q", body)
 	}

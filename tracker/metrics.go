@@ -113,13 +113,14 @@ var (
 		[]string{"method", "path"},
 	)
 
-	// Rate limiting metrics
-	rateLimitExceeded = promauto.NewCounterVec(
+	// Rate limiting metrics. Deliberately unlabelled: a per-IP label creates
+	// one time series per client and will exhaust Prometheus on a public
+	// tracker. Per-IP detail belongs in the audit log, not in a metric.
+	rateLimitExceeded = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "ocelot_rate_limit_exceeded_total",
 			Help: "Total number of rate limit exceeded events",
 		},
-		[]string{"ip"},
 	)
 
 	// Worker pool metrics
@@ -176,6 +177,11 @@ func (m *MetricsRecorder) UpdatePeerCounts(seeders, leechers int) {
 // UpdateTorrentCount updates active torrent count
 func (m *MetricsRecorder) UpdateTorrentCount(count int) {
 	activeTorrents.Set(float64(count))
+}
+
+// RecordRateLimitExceeded counts a rejected request.
+func (m *MetricsRecorder) RecordRateLimitExceeded() {
+	rateLimitExceeded.Inc()
 }
 
 // UpdateWorkerPool updates worker pool metrics

@@ -36,6 +36,14 @@ type SQLiteShardManager struct {
 	stmtToken   *sql.Stmt
 }
 
+// DB returns the active shard's database handle, for callers that need to
+// ping or query it directly such as health checks and audit logging.
+func (sm *SQLiteShardManager) DB() *sql.DB {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.currentDB
+}
+
 // NewSQLiteShardManager creates a new SQLite shard manager
 func NewSQLiteShardManager(dbDir string) (*SQLiteShardManager, error) {
 	sm := &SQLiteShardManager{
@@ -390,14 +398,27 @@ func (sm *SQLiteShardManager) getDBSize(path string) (int64, error) {
 
 // Write Operations (all go to current DB only)
 
+// sqliteWriteRetry bounds retries on writes. SQLite surfaces brief
+// "database is locked" errors under WAL contention, which isRetryableError
+// already recognises. Waits are kept short because these run on the announce
+// hot path: 5ms, 10ms, 20ms.
+var sqliteWriteRetry = RetryConfig{
+	MaxRetries:  3,
+	InitialWait: 5 * time.Millisecond,
+	MaxWait:     50 * time.Millisecond,
+	Multiplier:  2.0,
+}
+
 // RecordPeer records or updates a peer's statistics
 func (sm *SQLiteShardManager) RecordPeer(userID UserID, torrentID TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string) error {
 	sm.mu.RLock()
 	stmt := sm.stmtPeer
 	sm.mu.RUnlock()
 
-	_, err := stmt.Exec(userID, torrentID, active, uploaded, downloaded, upSpeed, downSpeed, left, corrupt, announceTime, announces, ip, peerID, userAgent, time.Now().Unix())
-	return err
+	return RetryWithBackoff(func() error {
+		_, err := stmt.Exec(userID, torrentID, active, uploaded, downloaded, upSpeed, downSpeed, left, corrupt, announceTime, announces, ip, peerID, userAgent, time.Now().Unix())
+		return err
+	}, sqliteWriteRetry)
 }
 
 // RecordPeerLight records a lightweight peer update (no full stats)
@@ -407,8 +428,10 @@ func (sm *SQLiteShardManager) RecordPeerLight(userID UserID, torrentID TorrentID
 	sm.mu.RUnlock()
 
 	query := `UPDATE peers SET timespent=?, announces=?, last_announce=? WHERE user_id=? AND torrent_id=?`
-	_, err := db.Exec(query, announceTime, announces, time.Now().Unix(), userID, torrentID)
-	return err
+	return RetryWithBackoff(func() error {
+		_, err := db.Exec(query, announceTime, announces, time.Now().Unix(), userID, torrentID)
+		return err
+	}, sqliteWriteRetry)
 }
 
 // RecordUserStats updates a user's upload/download statistics
@@ -417,8 +440,10 @@ func (sm *SQLiteShardManager) RecordUserStats(userID UserID, uploaded, downloade
 	stmt := sm.stmtUser
 	sm.mu.RUnlock()
 
-	_, err := stmt.Exec(userID, uploaded, downloaded)
-	return err
+	return RetryWithBackoff(func() error {
+		_, err := stmt.Exec(userID, uploaded, downloaded)
+		return err
+	}, sqliteWriteRetry)
 }
 
 // RecordTorrent updates a torrent's statistics
@@ -427,8 +452,10 @@ func (sm *SQLiteShardManager) RecordTorrent(torrentID TorrentID, seeders, leeche
 	stmt := sm.stmtTorrent
 	sm.mu.RUnlock()
 
-	_, err := stmt.Exec(torrentID, seeders, leechers, snatched, balance, time.Now().Unix())
-	return err
+	return RetryWithBackoff(func() error {
+		_, err := stmt.Exec(torrentID, seeders, leechers, snatched, balance, time.Now().Unix())
+		return err
+	}, sqliteWriteRetry)
 }
 
 // RecordSnatch records a torrent completion (snatch)
@@ -437,8 +464,10 @@ func (sm *SQLiteShardManager) RecordSnatch(userID UserID, torrentID TorrentID, s
 	stmt := sm.stmtSnatch
 	sm.mu.RUnlock()
 
-	_, err := stmt.Exec(userID, torrentID, snatchTime.Unix(), ip)
-	return err
+	return RetryWithBackoff(func() error {
+		_, err := stmt.Exec(userID, torrentID, snatchTime.Unix(), ip)
+		return err
+	}, sqliteWriteRetry)
 }
 
 // RecordToken records freeleech token usage
@@ -447,8 +476,10 @@ func (sm *SQLiteShardManager) RecordToken(userID UserID, torrentID TorrentID, do
 	stmt := sm.stmtToken
 	sm.mu.RUnlock()
 
-	_, err := stmt.Exec(userID, torrentID, downloaded)
-	return err
+	return RetryWithBackoff(func() error {
+		_, err := stmt.Exec(userID, torrentID, downloaded)
+		return err
+	}, sqliteWriteRetry)
 }
 
 // Read Operations (may query historical DBs)

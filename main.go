@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -32,6 +33,11 @@ func main() {
 		ReportPassword:   "changeme",
 		ReadTimeout:      30 * time.Second,
 		WriteTimeout:     30 * time.Second,
+
+		MetricsAddr:        ":9090",
+		RateLimitRPS:       5,
+		RateLimitBurst:     20,
+		AuditRetentionDays: 90,
 	}
 
 	// Initialize data structures
@@ -51,6 +57,18 @@ func main() {
 	defer db.Close()
 
 	log.Printf("SQLite database initialized in %s", dbDir)
+
+	// Admin listener: Prometheus metrics and the health probes. Kept off the
+	// tracker port, which only routes /{passkey}/{action}.
+	health := tracker.NewHealthChecker(db.DB())
+	if config.MetricsAddr != "" {
+		go func() {
+			if err := tracker.StartMetricsServer(config.MetricsAddr, health); err != nil {
+				log.Printf("Admin listener error: %v", err)
+			}
+		}()
+		log.Printf("Admin listener (metrics, health) on %s", config.MetricsAddr)
+	}
 
 	// Create mock site communication (replace with real Gazelle integration)
 	siteComm := &MockSiteComm{}
@@ -91,8 +109,21 @@ func main() {
 		loadSampleData(torrents, users, whitelist)
 	}
 
+	// Initial load is done; the startup probe can stop holding off liveness.
+	health.MarkStarted()
+
 	// Create server
 	server := tracker.NewServer(config, worker)
+
+	// Audit trail for authentication and authorization failures.
+	if err := tracker.CreateAuditLogTable(db.DB()); err != nil {
+		log.Printf("Warning: failed to create audit_log table: %v", err)
+	} else {
+		audit := tracker.NewAuditLogger(db.DB())
+		server.SetAuditLogger(audit)
+		audit.StartPruning(context.Background(), config.AuditRetentionDays)
+		log.Printf("Audit logging enabled (retention: %d days)", config.AuditRetentionDays)
+	}
 
 	// Start server in background
 	go func() {
@@ -101,6 +132,8 @@ func main() {
 			log.Fatalf("Server error: %v", err)
 		}
 	}()
+
+	health.MarkReady()
 
 	// Print statistics periodically
 	go printStats(stats)
@@ -111,6 +144,12 @@ func main() {
 	<-sigChan
 
 	fmt.Println("\n🛑 Shutting down gracefully...")
+
+	// Fail readiness first so load balancers stop sending new work, then give
+	// in-flight announces a moment to finish before tearing the server down.
+	health.MarkNotReady()
+	time.Sleep(2 * time.Second)
+
 	if err := server.Shutdown(); err != nil {
 		log.Printf("Shutdown error: %v", err)
 	}

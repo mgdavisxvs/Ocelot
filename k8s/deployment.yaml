@@ -6,7 +6,14 @@ metadata:
     app: ocelot-tracker
     version: v1
 spec:
-  replicas: 3
+  # SQLite has a single writer and the volume below is ReadWriteOnce, so the
+  # tracker runs one instance. Extra replicas would each get their own
+  # divergent database rather than sharing load.
+  replicas: 1
+  strategy:
+    # RollingUpdate would deadlock: the new pod cannot mount a ReadWriteOnce
+    # volume still held by the old one.
+    type: Recreate
   selector:
     matchLabels:
       app: ocelot-tracker
@@ -20,18 +27,6 @@ spec:
         prometheus.io/port: "9090"
         prometheus.io/path: "/metrics"
     spec:
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchExpressions:
-                    - key: app
-                      operator: In
-                      values:
-                        - ocelot-tracker
-                topologyKey: kubernetes.io/hostname
       containers:
         - name: tracker
           image: ocelot-tracker:latest
@@ -46,24 +41,6 @@ spec:
           env:
             - name: LOG_LEVEL
               value: "info"
-            - name: REDIS_ADDR
-              value: "redis:6379"
-            - name: POSTGRES_HOST
-              value: "postgres"
-            - name: POSTGRES_PORT
-              value: "5432"
-            - name: POSTGRES_USER
-              valueFrom:
-                secretKeyRef:
-                  name: postgres-credentials
-                  key: username
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: postgres-credentials
-                  key: password
-            - name: POSTGRES_DB
-              value: "ocelot"
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -106,7 +83,8 @@ spec:
               mountPath: /data
       volumes:
         - name: data
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: ocelot-data
 ---
 apiVersion: v1
 kind: Service
@@ -128,44 +106,13 @@ spec:
   selector:
     app: ocelot-tracker
 ---
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
+apiVersion: v1
+kind: PersistentVolumeClaim
 metadata:
-  name: ocelot-tracker-hpa
+  name: ocelot-data
 spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: ocelot-tracker
-  minReplicas: 3
-  maxReplicas: 20
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70
-    - type: Resource
-      resource:
-        name: memory
-        target:
-          type: Utilization
-          averageUtilization: 80
-  behavior:
-    scaleDown:
-      stabilizationWindowSeconds: 300
-      policies:
-        - type: Percent
-          value: 10
-          periodSeconds: 60
-    scaleUp:
-      stabilizationWindowSeconds: 0
-      policies:
-        - type: Percent
-          value: 100
-          periodSeconds: 15
-        - type: Pods
-          value: 4
-          periodSeconds: 15
-      selectPolicy: Max
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
