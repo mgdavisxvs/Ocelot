@@ -1,2 +1,4 @@
 *.tar.*
 build/
+data/
+ocelot-tracker
