@@ -482,6 +482,41 @@ func (sm *SQLiteShardManager) RecordToken(userID UserID, torrentID TorrentID, do
 	}, sqliteWriteRetry)
 }
 
+// DeactivatePeers marks reaped peers inactive in one transaction, so a
+// restart does not reload peers that have already been collected. It
+// satisfies the optional PeerDeactivator interface used by Reaper.
+func (sm *SQLiteShardManager) DeactivatePeers(refs []PeerRef) error {
+	if len(refs) == 0 {
+		return nil
+	}
+
+	sm.mu.RLock()
+	db := sm.currentDB
+	sm.mu.RUnlock()
+
+	return RetryWithBackoff(func() error {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+
+		stmt, err := tx.Prepare(`UPDATE peers SET active = 0 WHERE user_id = ? AND torrent_id = ?`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+
+		for _, ref := range refs {
+			if _, err := stmt.Exec(ref.UserID, ref.TorrentID); err != nil {
+				return err
+			}
+		}
+
+		return tx.Commit()
+	}, sqliteWriteRetry)
+}
+
 // Read Operations (may query historical DBs)
 
 // GetUserStats retrieves a user's total upload/download from all databases

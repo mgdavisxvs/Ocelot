@@ -39,13 +39,24 @@ spec:
               containerPort: 9090
               protocol: TCP
           env:
-            - name: LOG_LEVEL
-              value: "info"
-            - name: JWT_SECRET
+            # Recognised by LoadConfig. The tracker logs a startup warning if
+            # site_password is left at the placeholder.
+            - name: OCELOT_SITE_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: ocelot-secrets
-                  key: jwt-secret
+                  key: site-password
+            - name: OCELOT_REPORT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ocelot-secrets
+                  key: report-password
+            - name: OCELOT_METRICS_ADDR
+              value: ":9090"
+            - name: OCELOT_PEERS_TIMEOUT
+              value: "7200"
+            - name: OCELOT_REAP_PEERS_INTERVAL
+              value: "1800"
           resources:
             requests:
               memory: "512Mi"

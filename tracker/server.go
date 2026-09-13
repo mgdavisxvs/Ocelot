@@ -52,7 +52,8 @@ type Server struct {
 type Config struct {
 	ListenAddr       string
 	AnnounceInterval int
-	PeersTimeout     int
+	PeersTimeout     int // Seconds of silence before a peer is reaped
+	ReapInterval     int // Seconds between reaper sweeps
 	MaxMiddlemen     int // Max concurrent connections
 	NumWantLimit     int
 	KeepaliveTimeout time.Duration

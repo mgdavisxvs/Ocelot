@@ -21,23 +21,22 @@ func main() {
 	fmt.Println("  • Stephen Wolfram - Computational modeling")
 	fmt.Println()
 
-	// Initialize configuration
-	config := &tracker.Config{
-		ListenAddr:       ":34000",
-		AnnounceInterval: 1800, // 30 minutes
-		PeersTimeout:     7200, // 2 hours
-		MaxMiddlemen:     20000,
-		NumWantLimit:     50,
-		KeepaliveTimeout: 60 * time.Second,
-		SitePassword:     "changeme",
-		ReportPassword:   "changeme",
-		ReadTimeout:      30 * time.Second,
-		WriteTimeout:     30 * time.Second,
+	// Configuration: defaults, then ocelot.conf, then OCELOT_* env vars.
+	configPath := os.Getenv("OCELOT_CONFIG")
+	if configPath == "" {
+		configPath = "ocelot.conf"
+	}
 
-		MetricsAddr:        ":9090",
-		RateLimitRPS:       5,
-		RateLimitBurst:     20,
-		AuditRetentionDays: 90,
+	config, err := tracker.LoadConfig(configPath)
+	if err != nil {
+		log.Fatalf("Configuration error: %v", err)
+	}
+	log.Printf("Configuration loaded from %s", configPath)
+
+	// Placeholder credentials leave the admin API open, so say so loudly
+	// rather than starting silently with a password baked into the image.
+	for _, warning := range config.InsecureWarnings() {
+		log.Printf("⚠️  INSECURE: %s", warning)
 	}
 
 	// Initialize data structures
@@ -135,6 +134,14 @@ func main() {
 
 	health.MarkReady()
 
+	// Reap peers that stopped announcing. Without this, peers that vanish
+	// without sending event=stopped stay in the swarm forever.
+	reaper := tracker.NewReaper(torrents, db, stats,
+		time.Duration(config.PeersTimeout)*time.Second,
+		time.Duration(config.ReapInterval)*time.Second,
+	)
+	reaper.Start()
+
 	// Print statistics periodically
 	go printStats(stats)
 
@@ -149,6 +156,8 @@ func main() {
 	// in-flight announces a moment to finish before tearing the server down.
 	health.MarkNotReady()
 	time.Sleep(2 * time.Second)
+
+	reaper.Stop()
 
 	if err := server.Shutdown(); err != nil {
 		log.Printf("Shutdown error: %v", err)

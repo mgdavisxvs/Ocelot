@@ -1,32 +1,45 @@
 # Ocelot config file
 # Lines starting with a # are ignored
 # A # anywhere else is treated like any other character
+#
+# Copy this to ocelot.conf and edit it. Any setting can be overridden by an
+# environment variable named OCELOT_<KEY>, e.g. OCELOT_SITE_PASSWORD, which is
+# the preferred way to supply secrets to a container.
+#
+# Unrecognised keys are ignored, so settings from older releases are harmless.
 
 listen_port         = 34000
-max_connections     = 128
 max_middlemen       = 20000
-max_read_buffer     = 4096
-connection_timeout  = 10
+# Seconds before an idle connection is dropped; applies to reads and writes
+connection_timeout  = 30
 # Keepalive is mostly useful if the tracker runs behind reverse proxies
 keepalive_timeout   = 0
 
 announce_interval   = 1800
-max_request_size    = 4096
 numwant_limit       = 50
-request_log_size    = 500
 
-mysql_host          = 
-mysql_username      = 
-mysql_password      = 
-mysql_db            = 
-
-# The passwords must be 32 characters and match the Gazelle config
+# The passwords must be 32 characters and match the Gazelle config.
+# Leaving these at the placeholder leaves the admin API open; the tracker
+# logs a warning at startup if you do.
 report_password     = 00000000000000000000000000000000
 site_password       = 00000000000000000000000000000000
 
+# Peers are dropped after peers_timeout seconds of silence. Most clients never
+# send event=stopped, so without this they would stay in the swarm forever.
+# reap_peers_interval must not exceed peers_timeout.
 peers_timeout       = 7200
-del_reason_lifetime = 86400
 reap_peers_interval = 1800
-schedule_interval   = 3
 
-readonly            = false
+# Admin listener serving /metrics, /health, /ready and /startup. This must not
+# be the tracker port, which only routes /{passkey}/{action}.
+# Leave empty to disable.
+metrics_addr        = :9090
+
+# Per-IP admission control. A real client announces about twice an hour, so
+# these are generous. Set rate_limit_rps to 0 to disable.
+rate_limit_rps      = 5
+rate_limit_burst    = 20
+
+# Days of audit history to keep. 0 keeps everything, which will eventually
+# make audit_log the largest table in the database.
+audit_retention_days = 90

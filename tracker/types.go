@@ -182,6 +182,19 @@ func (tl *TorrentList) Get(infoHash string) (*Torrent, bool) {
 	return t, ok
 }
 
+// ForEach calls fn for each torrent, stopping early if fn returns false. The
+// list is read-locked throughout, so fn must not add or remove torrents.
+func (tl *TorrentList) ForEach(fn func(infoHash string, torrent *Torrent) bool) {
+	tl.mu.RLock()
+	defer tl.mu.RUnlock()
+
+	for infoHash, torrent := range tl.torrents {
+		if !fn(infoHash, torrent) {
+			return
+		}
+	}
+}
+
 func (tl *TorrentList) Set(infoHash string, torrent *Torrent) {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()

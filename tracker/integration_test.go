@@ -51,13 +51,23 @@ type userStatRecord struct {
 type mockDB struct {
 	mu sync.Mutex
 
-	peers      []peerRecord
-	lightPeers int
-	userStats  []userStatRecord
-	torrents   []torrentRecord
-	snatches   []snatchRecord
-	tokens     int
-	closed     bool
+	peers       []peerRecord
+	lightPeers  int
+	userStats   []userStatRecord
+	torrents    []torrentRecord
+	snatches    []snatchRecord
+	tokens      int
+	closed      bool
+	deactivated []PeerRef
+}
+
+// DeactivatePeers satisfies the optional PeerDeactivator interface the reaper
+// probes for.
+func (m *mockDB) DeactivatePeers(refs []PeerRef) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deactivated = append(m.deactivated, refs...)
+	return nil
 }
 
 func (m *mockDB) RecordPeer(userID UserID, torrentID TorrentID, active int,

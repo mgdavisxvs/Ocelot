@@ -28,8 +28,6 @@ MetricsRecorder.RecordAnnounce
 MetricsRecorder.RecordDBQuery
 MetricsRecorder.RecordHTTPRequest
 MetricsRecorder.RecordScrape
-MetricsRecorder.UpdatePeerCounts
-MetricsRecorder.UpdateTorrentCount
 MetricsRecorder.UpdateWorkerPool
 NewCache
 NewTorrentCache

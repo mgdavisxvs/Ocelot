@@ -9,9 +9,12 @@ services:
       - "34000:34000"
       - "9090:9090"
     environment:
-      - DB_PATH=/data/db
-      - LOG_LEVEL=info
-      - METRICS_PORT=9090
+      # Recognised by LoadConfig; set OCELOT_SITE_PASSWORD to a real secret.
+      - OCELOT_SITE_PASSWORD=${OCELOT_SITE_PASSWORD:-}
+      - OCELOT_REPORT_PASSWORD=${OCELOT_REPORT_PASSWORD:-}
+      - OCELOT_METRICS_ADDR=:9090
+      - OCELOT_PEERS_TIMEOUT=7200
+      - OCELOT_REAP_PEERS_INTERVAL=1800
     volumes:
       - tracker-data:/data
     restart: unless-stopped
