@@ -15,14 +15,14 @@ import (
 type UserEngine struct {
 	mu          sync.RWMutex
 	globalChain *chain.Chain
-	lastState   map[int64]int    // uid → last ratio state
-	pathHistory map[int64][]int  // uid → recent state path (capped at pathHistoryLen)
+	lastState   map[int64]int   // uid → last ratio state
+	pathHistory map[int64][]int // uid → recent state path (capped at pathHistoryLen)
 	pathMaxLen  int
 }
 
-func newUserEngine(decay float64, pathMaxLen int) *UserEngine {
+func newUserEngine(decay, alpha float64, pathMaxLen int) *UserEngine {
 	return &UserEngine{
-		globalChain: chain.New(chain.NumUserStates, decay),
+		globalChain: chain.NewWithSmoothing(chain.NumUserStates, decay, alpha),
 		lastState:   make(map[int64]int),
 		pathHistory: make(map[int64][]int),
 		pathMaxLen:  pathMaxLen,
@@ -45,11 +45,12 @@ func (ue *UserEngine) loadStoredStates(recs []db.StoredUserState) {
 
 func (ue *UserEngine) loadChainCounts(rows []db.ChainCountRow) {
 	n := chain.NumUserStates
+	alpha := ue.globalChain.Smoothing()
 	counts := make([][]float64, n)
 	for i := range counts {
 		counts[i] = make([]float64, n)
 		for j := range counts[i] {
-			counts[i][j] = 1.0
+			counts[i][j] = alpha
 		}
 	}
 	for _, r := range rows {
@@ -102,16 +103,19 @@ func (ue *UserEngine) decay() {
 }
 
 // AnomalyResult holds fraud detection output for one user.
+// The model NEVER directly bans users — it only produces advisory risk signals.
+// Operators apply sanctions via policy independent of this layer.
 type AnomalyResult struct {
 	UID               int64
 	State             int
 	PathLogLikelihood float64
-	AnomalyScore      float64 // z-score relative to population mean
-	Flagged           bool
+	AnomalyScore      float64 // robust z-score via median/MAD normalization
+	Flagged           bool    // advisory: true means WATCH/SUSPICIOUS, not a ban
 }
 
-// computeAnomalies scores all users with sufficient path history.
-// threshold is the z-score above which a user is flagged.
+// computeAnomalies scores all users with sufficient path history using
+// normalized per-transition NLL and robust median/MAD normalization.
+// threshold is the MAD z-score above which a user is flagged as suspicious.
 // minPathLen is the minimum number of path observations required.
 func (ue *UserEngine) computeAnomalies(threshold float64, minPathLen int) []AnomalyResult {
 	ue.mu.RLock()
@@ -127,19 +131,20 @@ func (ue *UserEngine) computeAnomalies(threshold float64, minPathLen int) []Anom
 	}
 	ue.mu.RUnlock()
 
-	// Compute NLL for each eligible user.
+	// Compute normalized NLL (per-transition) for each eligible user.
 	type scored struct {
-		uid int64
-		nll float64
+		uid64 int64
+		nll   float64
 	}
 	candidates := make([]scored, 0, len(paths))
 	for uid, path := range paths {
 		if len(path) < minPathLen {
 			continue
 		}
-		nll := ue.globalChain.PathLogLikelihood(path)
+		// Use normalized NLL for fair cross-user comparison.
+		nll := ue.globalChain.NormalizedPathNLL(path)
 		if !math.IsInf(nll, 1) {
-			candidates = append(candidates, scored{uid, nll})
+			candidates = append(candidates, scored{uid64: uid, nll: nll})
 		}
 	}
 
@@ -147,32 +152,33 @@ func (ue *UserEngine) computeAnomalies(threshold float64, minPathLen int) []Anom
 		return nil
 	}
 
-	// Compute population mean and stddev.
-	var sum, sumSq float64
-	for _, c := range candidates {
-		sum += c.nll
-		sumSq += c.nll * c.nll
+	// Robust normalization via median and MAD (median absolute deviation).
+	// Avoids sensitivity to outliers that plague mean/stddev normalization.
+	nlls := make([]float64, len(candidates))
+	for i, c := range candidates {
+		nlls[i] = c.nll
 	}
-	n := float64(len(candidates))
-	mean := sum / n
-	variance := sumSq/n - mean*mean
-	if variance < 0 {
-		variance = 0
+	median := percentile(nlls, 0.5)
+	absDevs := make([]float64, len(nlls))
+	for i, v := range nlls {
+		absDevs[i] = math.Abs(v - median)
 	}
-	stddev := math.Sqrt(variance)
+	mad := percentile(absDevs, 0.5)
+	// Scale factor 1.4826 makes MAD consistent with stddev for normal data.
+	scaledMAD := mad * 1.4826
+	if scaledMAD < 1e-9 {
+		scaledMAD = 1e-9
+	}
 
 	results := make([]AnomalyResult, 0, len(candidates))
 	for _, c := range candidates {
-		var z float64
-		if stddev > 1e-9 {
-			z = (c.nll - mean) / stddev
-		}
+		z := (c.nll - median) / scaledMAD
 		results = append(results, AnomalyResult{
-			UID:               c.uid,
-			State:             states[c.uid],
+			UID:               c.uid64,
+			State:             states[c.uid64],
 			PathLogLikelihood: c.nll,
 			AnomalyScore:      z,
-			Flagged:           z > threshold,
+			Flagged:           z > threshold, // advisory only; operator decides sanctions
 		})
 	}
 	// Sort by anomaly score descending.
@@ -180,6 +186,24 @@ func (ue *UserEngine) computeAnomalies(threshold float64, minPathLen int) []Anom
 		return results[i].AnomalyScore > results[j].AnomalyScore
 	})
 	return results
+}
+
+// percentile returns the p-th percentile (0.0–1.0) of a float64 slice.
+// The slice is sorted in place. p=0.5 gives the median.
+func percentile(vals []float64, p float64) float64 {
+	if len(vals) == 0 {
+		return 0
+	}
+	sort.Float64s(vals)
+	n := float64(len(vals))
+	idx := p * (n - 1)
+	lo := int(idx)
+	hi := lo + 1
+	if hi >= len(vals) {
+		return vals[len(vals)-1]
+	}
+	frac := idx - float64(lo)
+	return vals[lo]*(1-frac) + vals[hi]*frac
 }
 
 // snapshotStates returns all current user states for DB persistence.

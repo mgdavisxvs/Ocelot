@@ -119,6 +119,48 @@ func (d *DB) createSchema() error {
 			updated_at INTEGER NOT NULL,
 			PRIMARY KEY (uid, torrent_id)
 		)`,
+
+		// Model governance tables (Req 7)
+		`CREATE TABLE IF NOT EXISTS markov_model_metadata (
+			chain_name          TEXT    NOT NULL PRIMARY KEY,
+			schema_version      INTEGER NOT NULL DEFAULT 1,
+			decay_lambda        REAL    NOT NULL,
+			smoothing_alpha     REAL    NOT NULL,
+			obs_interval_sec    INTEGER NOT NULL,
+			matrix_version      INTEGER NOT NULL DEFAULT 1,
+			eff_samples_json    TEXT,
+			created_at          INTEGER NOT NULL,
+			updated_at          INTEGER NOT NULL
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS markov_recommendation_log (
+			id                 INTEGER NOT NULL PRIMARY KEY,
+			chain_name         TEXT    NOT NULL,
+			entity_id          INTEGER NOT NULL,
+			prediction_json    TEXT    NOT NULL,
+			entropy            REAL    NOT NULL,
+			evidence_strength  REAL    NOT NULL,
+			model_version      INTEGER NOT NULL,
+			recommended_action TEXT    NOT NULL,
+			policy_action      TEXT    NOT NULL DEFAULT '',
+			outcome            TEXT    NOT NULL DEFAULT '',
+			shadow_mode        INTEGER NOT NULL DEFAULT 1,
+			created_at         INTEGER NOT NULL,
+			resolved_at        INTEGER NOT NULL DEFAULT 0
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS markov_forecast_evaluation (
+			id             INTEGER NOT NULL PRIMARY KEY,
+			chain_name     TEXT    NOT NULL,
+			entity_id      INTEGER NOT NULL,
+			horizon_steps  INTEGER NOT NULL,
+			forecast_json  TEXT    NOT NULL,
+			outcome_state  INTEGER NOT NULL DEFAULT -1,
+			brier_score    REAL    NOT NULL DEFAULT 0,
+			log_loss       REAL    NOT NULL DEFAULT 0,
+			created_at     INTEGER NOT NULL,
+			evaluated_at   INTEGER NOT NULL DEFAULT 0
+		)`,
 	}
 	for _, s := range stmts {
 		if _, err := d.pool.Exec(s); err != nil {

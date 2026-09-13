@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"math"
 	"sort"
 	"sync"
 
@@ -12,17 +13,19 @@ import (
 // TorrentEngine tracks torrent swarm health transitions and generates
 // predictions including expected time-to-death and freeleech recommendations.
 type TorrentEngine struct {
-	mu           sync.RWMutex
-	globalChain  *chain.Chain
-	lastState    map[int64]int       // torrent_id → last health state
+	mu            sync.RWMutex
+	globalChain   *chain.Chain
+	lastState     map[int64]int     // torrent_id → last health state
 	distributions map[int64][]float64 // torrent_id → current π
+	lastInterval  map[int64]int     // torrent_id → last recommended interval (for hysteresis)
 }
 
-func newTorrentEngine(decay float64) *TorrentEngine {
+func newTorrentEngine(decay, alpha float64) *TorrentEngine {
 	return &TorrentEngine{
-		globalChain:   chain.New(chain.NumTorrentStates, decay),
+		globalChain:   chain.NewWithSmoothing(chain.NumTorrentStates, decay, alpha),
 		lastState:     make(map[int64]int),
 		distributions: make(map[int64][]float64),
+		lastInterval:  make(map[int64]int),
 	}
 }
 
@@ -40,11 +43,12 @@ func (te *TorrentEngine) loadStoredStates(recs []db.StoredTorrentState) {
 
 func (te *TorrentEngine) loadChainCounts(rows []db.ChainCountRow) {
 	n := chain.NumTorrentStates
+	alpha := te.globalChain.Smoothing()
 	counts := make([][]float64, n)
 	for i := range counts {
 		counts[i] = make([]float64, n)
 		for j := range counts[i] {
-			counts[i][j] = 1.0
+			counts[i][j] = alpha
 		}
 	}
 	for _, r := range rows {
@@ -89,6 +93,7 @@ func (te *TorrentEngine) observe(torrents []db.TorrentRow) {
 		if _, ok := seenIDs[id]; !ok {
 			delete(te.lastState, id)
 			delete(te.distributions, id)
+			delete(te.lastInterval, id)
 		}
 	}
 }
@@ -122,19 +127,57 @@ type TorrentPrediction struct {
 	TorrentID           int64
 	HealthState         int
 	Pi                  []float64
+	Pi1h                []float64
+	Pi6h                []float64
 	Pi24h               []float64
 	Pi72h               []float64
+	DeadProb1h          float64
+	DeadProb6h          float64
 	DeadProb24h         float64
 	DeadProb72h         float64
 	ExpectedDeadHours   float64
 	Entropy             float64
+	EffectiveSamples    float64 // evidence strength: effective obs for current state
 	RecommendedInterval int
 }
 
+// boundedAdaptiveInterval computes a recommend announce interval using entropy
+// as a proxy for certainty, bounded by [minInterval, maxInterval] with hysteresis
+// to prevent oscillation. The model clock is NOT changed by this function.
+func boundedAdaptiveInterval(h, maxH float64, minInterval, maxInterval, lastInterval int, hysteresis float64) int {
+	certainty := 0.0
+	if maxH > 0 {
+		certainty = 1.0 - h/maxH
+	}
+	// Map certainty [0,1] → interval [maxInterval, minInterval].
+	// High certainty = long interval; low certainty = short interval.
+	raw := float64(maxInterval) - certainty*float64(maxInterval-minInterval)
+	proposed := int(raw)
+	if proposed < minInterval {
+		proposed = minInterval
+	}
+	if proposed > maxInterval {
+		proposed = maxInterval
+	}
+	if lastInterval == 0 {
+		return proposed
+	}
+	// Hysteresis: only update if fractional change exceeds threshold.
+	delta := math.Abs(float64(proposed-lastInterval)) / float64(lastInterval)
+	if delta < hysteresis {
+		return lastInterval
+	}
+	return proposed
+}
+
 // buildPredictions computes predictions for all tracked torrents.
-// steps24h and steps72h are the number of poll-intervals in 24h and 72h.
-// pollIntervalSec and baseInterval are in seconds.
-func (te *TorrentEngine) buildPredictions(steps24h, steps72h, pollIntervalSec, baseInterval int) []TorrentPrediction {
+// steps{1h,6h,24h,72h} are numbers of model-clock steps for each horizon.
+// modelClockSec is the model clock period (NOT the poll interval).
+// minInterval/maxInterval/hysteresis govern adaptive announce bounds.
+func (te *TorrentEngine) buildPredictions(
+	steps1h, steps6h, steps24h, steps72h, modelClockSec int,
+	minInterval, maxInterval int, hysteresis float64,
+) []TorrentPrediction {
 	absSteps := te.globalChain.ExpectedAbsorptionSteps(chain.TorrentDead)
 	maxH := chain.MaxEntropy(chain.NumTorrentStates)
 
@@ -148,46 +191,57 @@ func (te *TorrentEngine) buildPredictions(steps24h, steps72h, pollIntervalSec, b
 	out := make([]TorrentPrediction, 0, len(ids))
 	for _, id := range ids {
 		pi := te.distribution(id)
-		pi24 := te.globalChain.Step(pi, steps24h)
-		pi72 := te.globalChain.Step(pi, steps72h)
+		forecasts := te.globalChain.Forecast(pi, []int{steps1h, steps6h, steps24h, steps72h})
+		pi1h := forecasts[0]
+		pi6h := forecasts[1]
+		pi24 := forecasts[2]
+		pi72 := forecasts[3]
 
 		h := chain.Entropy(pi)
-		certainty := 0.0
-		if maxH > 0 {
-			certainty = 1.0 - h/maxH
-		}
-		interval := int(float64(baseInterval) * (0.5 + 0.5*certainty))
-		if interval < baseInterval/2 {
-			interval = baseInterval / 2
-		}
-		if interval > baseInterval {
-			interval = baseInterval
-		}
+		effSamples := te.globalChain.EffectiveSampleCount(te.currentState(id))
+
+		te.mu.RLock()
+		last := te.lastInterval[id]
+		hs := te.lastState[id]
+		te.mu.RUnlock()
+
+		interval := boundedAdaptiveInterval(h, maxH, minInterval, maxInterval, last, hysteresis)
+		te.mu.Lock()
+		te.lastInterval[id] = interval
+		te.mu.Unlock()
 
 		var expectedDeadSteps float64
 		for s, prob := range pi {
 			expectedDeadSteps += prob * absSteps[s]
 		}
-		expectedDeadHours := expectedDeadSteps * float64(pollIntervalSec) / 3600.0
-
-		te.mu.RLock()
-		hs := te.lastState[id]
-		te.mu.RUnlock()
+		expectedDeadHours := expectedDeadSteps * float64(modelClockSec) / 3600.0
 
 		out = append(out, TorrentPrediction{
 			TorrentID:           id,
 			HealthState:         hs,
 			Pi:                  pi,
+			Pi1h:                pi1h,
+			Pi6h:                pi6h,
 			Pi24h:               pi24,
 			Pi72h:               pi72,
+			DeadProb1h:          pi1h[chain.TorrentDead],
+			DeadProb6h:          pi6h[chain.TorrentDead],
 			DeadProb24h:         pi24[chain.TorrentDead],
 			DeadProb72h:         pi72[chain.TorrentDead],
 			ExpectedDeadHours:   expectedDeadHours,
 			Entropy:             h,
+			EffectiveSamples:    effSamples,
 			RecommendedInterval: interval,
 		})
 	}
 	return out
+}
+
+// currentState returns the last health state for a torrent (0 if unknown).
+func (te *TorrentEngine) currentState(torrentID int64) int {
+	te.mu.RLock()
+	defer te.mu.RUnlock()
+	return te.lastState[torrentID]
 }
 
 // toDB converts a TorrentPrediction to a DB record.
@@ -264,35 +318,33 @@ func (te *TorrentEngine) torrentCount() int {
 	return len(te.lastState)
 }
 
-// getPrediction retrieves a live prediction for a single torrent without
-// going through the full buildPredictions pass.
-func (te *TorrentEngine) getPrediction(torrentID int64, steps24h, steps72h, pollIntervalSec, baseInterval int) *TorrentPrediction {
+// getPrediction retrieves a live prediction for a single torrent.
+func (te *TorrentEngine) getPrediction(
+	torrentID int64,
+	steps1h, steps6h, steps24h, steps72h, modelClockSec int,
+	minInterval, maxInterval int, hysteresis float64,
+) *TorrentPrediction {
 	absSteps := te.globalChain.ExpectedAbsorptionSteps(chain.TorrentDead)
 	maxH := chain.MaxEntropy(chain.NumTorrentStates)
 
 	te.mu.RLock()
 	hs, ok := te.lastState[torrentID]
+	last := te.lastInterval[torrentID]
 	te.mu.RUnlock()
 	if !ok {
 		return nil
 	}
 
 	pi := te.distribution(torrentID)
-	pi24 := te.globalChain.Step(pi, steps24h)
-	pi72 := te.globalChain.Step(pi, steps72h)
+	forecasts := te.globalChain.Forecast(pi, []int{steps1h, steps6h, steps24h, steps72h})
+	pi1h := forecasts[0]
+	pi6h := forecasts[1]
+	pi24 := forecasts[2]
+	pi72 := forecasts[3]
 
 	h := chain.Entropy(pi)
-	certainty := 0.0
-	if maxH > 0 {
-		certainty = 1.0 - h/maxH
-	}
-	interval := int(float64(baseInterval) * (0.5 + 0.5*certainty))
-	if interval < baseInterval/2 {
-		interval = baseInterval / 2
-	}
-	if interval > baseInterval {
-		interval = baseInterval
-	}
+	effSamples := te.globalChain.EffectiveSampleCount(hs)
+	interval := boundedAdaptiveInterval(h, maxH, minInterval, maxInterval, last, hysteresis)
 
 	var expectedDeadSteps float64
 	for s, prob := range pi {
@@ -303,12 +355,17 @@ func (te *TorrentEngine) getPrediction(torrentID int64, steps24h, steps72h, poll
 		TorrentID:           torrentID,
 		HealthState:         hs,
 		Pi:                  pi,
+		Pi1h:                pi1h,
+		Pi6h:                pi6h,
 		Pi24h:               pi24,
 		Pi72h:               pi72,
+		DeadProb1h:          pi1h[chain.TorrentDead],
+		DeadProb6h:          pi6h[chain.TorrentDead],
 		DeadProb24h:         pi24[chain.TorrentDead],
 		DeadProb72h:         pi72[chain.TorrentDead],
-		ExpectedDeadHours:   expectedDeadSteps * float64(pollIntervalSec) / 3600.0,
+		ExpectedDeadHours:   expectedDeadSteps * float64(modelClockSec) / 3600.0,
 		Entropy:             h,
+		EffectiveSamples:    effSamples,
 		RecommendedInterval: interval,
 	}
 }

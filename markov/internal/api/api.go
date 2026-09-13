@@ -33,6 +33,8 @@ func New(addr string, eng *engine.Engine) *Server {
 	mux.HandleFunc("/user/", s.handleUser)
 	mux.HandleFunc("/peer/quality/", s.handlePeerQuality)
 	mux.HandleFunc("/freeleech", s.handleFreeleech)
+	mux.HandleFunc("/model/metadata", s.handleModelMetadata)
+	mux.HandleFunc("/model/calibration", s.handleCalibration)
 	s.server = &http.Server{
 		Addr:         addr,
 		Handler:      mux,
@@ -61,12 +63,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	stats := s.eng.Stats()
 	jsonOK(w, map[string]any{
-		"tracked_peers":    stats.TrackedPeers,
-		"tracked_torrents": stats.TrackedTorrents,
-		"tracked_users":    stats.TrackedUsers,
-		"poll_count":       stats.PollCount,
-		"snatch_watermark": stats.SnatchWatermark,
-		"time":             time.Now().Unix(),
+		"tracked_peers":     stats.TrackedPeers,
+		"tracked_torrents":  stats.TrackedTorrents,
+		"tracked_users":     stats.TrackedUsers,
+		"poll_count":        stats.PollCount,
+		"model_clock_tick":  stats.ModelClockTick,
+		"matrix_version":    stats.MatrixVersion,
+		"snatch_watermark":  stats.SnatchWatermark,
+		"shadow_mode":       stats.ShadowMode,
+		"time":              time.Now().Unix(),
 	})
 }
 
@@ -101,7 +106,7 @@ func (s *Server) handleChain(w http.ResponseWriter, p [][]float64, names []strin
 }
 
 // GET /torrent/{id}
-// Returns health prediction for a single torrent.
+// Returns health prediction for a single torrent with multi-horizon forecasts.
 func (s *Server) handleTorrent(w http.ResponseWriter, r *http.Request) {
 	id, err := parseIDFromPath(r.URL.Path, "/torrent/")
 	if err != nil {
@@ -118,12 +123,17 @@ func (s *Server) handleTorrent(w http.ResponseWriter, r *http.Request) {
 		"health_state":         chain.TorrentStateNames[pred.HealthState],
 		"health_state_id":      pred.HealthState,
 		"pi_current":           pred.Pi,
+		"pi_1h":                pred.Pi1h,
+		"pi_6h":                pred.Pi6h,
 		"pi_24h":               pred.Pi24h,
 		"pi_72h":               pred.Pi72h,
+		"dead_prob_1h":         pred.DeadProb1h,
+		"dead_prob_6h":         pred.DeadProb6h,
 		"dead_prob_24h":        pred.DeadProb24h,
 		"dead_prob_72h":        pred.DeadProb72h,
 		"expected_dead_hours":  pred.ExpectedDeadHours,
 		"entropy_bits":         pred.Entropy,
+		"effective_samples":    pred.EffectiveSamples,
 		"recommended_interval": pred.RecommendedInterval,
 	})
 }
@@ -164,11 +174,13 @@ func (s *Server) handleUserAnomaly(w http.ResponseWriter, uid int64) {
 		"path_log_likelihood": result.PathLogLikelihood,
 		"anomaly_score":       result.AnomalyScore,
 		"flagged":             result.Flagged,
+		"advisory_only":       true,
 	})
 }
 
 // handleUserCheat implements FR-011: decomposed cheat_confidence.
 // Formula: cheat_confidence = 0.6×(1−global_p) + 0.4×clamp(nll_zscore/3, 0, 1)
+// The result is advisory only. The model NEVER directly bans users.
 func (s *Server) handleUserCheat(w http.ResponseWriter, uid int64) {
 	result := s.eng.UserAnomalyForID(uid)
 	if result == nil {
@@ -186,6 +198,7 @@ func (s *Server) handleUserCheat(w http.ResponseWriter, uid int64) {
 		"global_p":         globalP,
 		"obs_count":        obsCount,
 		"flagged":          cheatConf > 0.6,
+		"advisory_only":    true, // model never directly bans; operator policy governs sanctions
 	})
 }
 
@@ -244,6 +257,44 @@ func (s *Server) handleFreeleech(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	jsonOK(w, rows)
+}
+
+// GET /model/metadata — returns governance metadata for all chains.
+func (s *Server) handleModelMetadata(w http.ResponseWriter, r *http.Request) {
+	metas, err := s.eng.ModelMetadata(r.Context())
+	if err != nil {
+		slog.Error("LoadModelMetadata", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	rows := make([]map[string]any, len(metas))
+	for i, m := range metas {
+		rows[i] = map[string]any{
+			"chain_name":       m.ChainName,
+			"schema_version":   m.SchemaVersion,
+			"decay_lambda":     m.DecayLambda,
+			"smoothing_alpha":  m.SmoothingAlpha,
+			"obs_interval_sec": m.ObsIntervalSec,
+			"matrix_version":   m.MatrixVersion,
+			"eff_samples":      m.EffSamples,
+			"updated_at":       m.UpdatedAt,
+		}
+	}
+	jsonOK(w, map[string]any{
+		"chains":      rows,
+		"shadow_mode": s.eng.ShadowMode(),
+	})
+}
+
+// GET /model/calibration — returns aggregate Brier/log-loss calibration by chain/horizon.
+func (s *Server) handleCalibration(w http.ResponseWriter, r *http.Request) {
+	summaries, err := s.eng.CalibrationSummary(r.Context())
+	if err != nil {
+		slog.Error("LoadCalibrationSummary", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, summaries)
 }
 
 // --- helpers ---
