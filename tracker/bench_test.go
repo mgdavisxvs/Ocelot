@@ -32,7 +32,7 @@ func BenchmarkAnnounce_Leecher(b *testing.B) {
 			Event:      "started",
 			NumWant:    50,
 		}
-		_, _ = w.Announce(req, u, ip, "-qB4bench")
+		_, _ = w.Announce(req, u, ip, "-qB4bench", "")
 	}
 }
 
@@ -60,7 +60,7 @@ func BenchmarkAnnounce_Seeder(b *testing.B) {
 			Event:      "started",
 			NumWant:    50,
 		}
-		_, _ = w.Announce(req, u, ip, "-qB4bench")
+		_, _ = w.Announce(req, u, ip, "-qB4bench", "")
 	}
 }
 
@@ -104,7 +104,7 @@ func BenchmarkAnnounce_WithPeers(b *testing.B) {
 					Event:    "started",
 					NumWant:  50,
 				}
-				_, _ = w.Announce(req, u, ip, "-qB4bench")
+				_, _ = w.Announce(req, u, ip, "-qB4bench", "")
 			}
 		})
 	}

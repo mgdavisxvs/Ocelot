@@ -295,8 +295,43 @@ func (c *SwarmPolicyController) classifyEdgeReplicas(infoHash string, artifact *
 	})
 }
 
+// retireGraceExpired finds replicas on UNREACHABLE nodes whose GraceTTL has
+// elapsed, force-evicts them, and emits RETIRE_REPLICA directives.
+// Prevents VerifiedCount from inflating indefinitely on dead nodes.
+func (c *SwarmPolicyController) retireGraceExpired(infoHash string) {
+	c.replicas.ForHash(infoHash, func(r *NodeReplica) bool {
+		if !r.GetState().CountsAsVerified() {
+			return true
+		}
+		n, ok := c.nodes.Get(r.NodeID)
+		if !ok {
+			return true
+		}
+		n.mu.RLock()
+		reach := n.ReachState
+		lastFlap := n.LastFlap
+		n.mu.RUnlock()
+		if reach != NodeUnreachable || lastFlap.IsZero() || time.Since(lastFlap) <= GraceTTL {
+			return true
+		}
+		r.ForceEvict()
+		select {
+		case c.directives <- ControllerAction{
+			Directive: DirectiveRetireReplica,
+			NodeID:    r.NodeID,
+			InfoHash:  infoHash,
+		}:
+		default:
+		}
+		log.Printf("controller: grace-expired replica %s on node %d retired (unreachable %s)",
+			infoHash, r.NodeID, time.Since(lastFlap).Round(time.Second))
+		return true
+	})
+}
+
 func (c *SwarmPolicyController) reconcileArtifact(infoHash string, artifact *Artifact) {
 	c.classifyEdgeReplicas(infoHash, artifact) // OPP-A: heatmap-driven tier classification
+	c.retireGraceExpired(infoHash)             // GraceTTL: evict replicas on long-UNREACHABLE nodes
 
 	artifact.mu.RLock()
 	minR := artifact.MinReplicas

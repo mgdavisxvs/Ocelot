@@ -170,6 +170,19 @@ func (r *NodeReplica) GetState() NodeReplicaState {
 	return r.State
 }
 
+// ForceEvict immediately retires a replica on an UNREACHABLE node by bypassing
+// the normal FSM, setting State directly to ABSENT. Only acts on SEEDING and
+// VERIFIED states (the two counted by VerifiedCount). Idempotent on others.
+// Called by the GraceTTL retirement pass in retireGraceExpired.
+func (r *NodeReplica) ForceEvict() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.State == ReplicaStateSeeding || r.State == ReplicaStateVerified {
+		r.State = ReplicaStateAbsent
+		r.LastTransition = time.Now()
+	}
+}
+
 // UpgradeClass promotes the replica's class when to is higher priority than current.
 // Returns true if a promotion occurred. Used by the auto-classification engine.
 func (r *NodeReplica) UpgradeClass(to ReplicaClass) bool {

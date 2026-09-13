@@ -38,7 +38,7 @@ type AnnounceResponse struct {
 
 // Announce handles a BitTorrent announce request.
 // Go equivalent of worker::announce() (worker.cpp:266-735).
-func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, userAgent string) (*AnnounceResponse, error) {
+func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, userAgent string, passkey string) (*AnnounceResponse, error) {
 	now := time.Now()
 
 	if !req.Compact {
@@ -54,6 +54,10 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	torrent, ok := w.Torrents.Get(req.InfoHash)
 	if !ok {
 		return nil, fmt.Errorf("unregistered torrent")
+	}
+
+	if w.Admission != nil && !w.Admission.IsAdmitted(req.InfoHash, passkey) {
+		return nil, fmt.Errorf("passkey not admitted to this swarm")
 	}
 
 	peerKey := PeerKey(req.PeerID, user.ID, torrent.ID)

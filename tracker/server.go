@@ -260,7 +260,7 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 	}
 
 	userAgent := req.Header.Get("User-Agent")
-	announceResp, err := s.worker.Announce(announceReq, user, clientIP, userAgent)
+	announceResp, err := s.worker.Announce(announceReq, user, clientIP, userAgent, passkey)
 	if err != nil {
 		return s.errorResponse(err.Error(), httpClose)
 	}
@@ -509,6 +509,9 @@ type Worker struct {
 
 	// S-E6: optional artifact list for demand heatmap recording. Set by main.
 	Artifacts *ArtifactList
+
+	// Admission enforces per-swarm passkey allow-lists. nil = all admitted.
+	Admission *SwarmAdmissionPolicy
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.
