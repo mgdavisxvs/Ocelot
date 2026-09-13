@@ -39,6 +39,10 @@ type FileConfig struct {
 	// TLS for the control plane (S-03)
 	TLSCertFile string
 	TLSKeyFile  string
+
+	// ControlSecret is the Bearer token for the REST control API (:34001).
+	// Independent of site_password; defaults to site_password when empty.
+	ControlSecret string
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -149,6 +153,8 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.TLSCertFile = val
 		case "tls_key_file":
 			cfg.TLSKeyFile = val
+		case "control_secret":
+			cfg.ControlSecret = val
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -175,6 +181,7 @@ func (fc *FileConfig) ToTrackerConfig() *Config {
 		OpsAddr:          fmt.Sprintf(":%d", fc.OpsPort),
 		TLSCertFile:      fc.TLSCertFile,
 		TLSKeyFile:       fc.TLSKeyFile,
+		ControlSecret:    fc.ControlSecret,
 	}
 }
 

@@ -64,12 +64,19 @@ func (cs *ControlServer) Shutdown(ctx context.Context) error {
 	return cs.httpSrv.Shutdown(ctx)
 }
 
-// authMiddleware validates the Bearer token against config.SitePassword.
+// authMiddleware validates the Bearer token for the control REST API.
+// It uses ControlSecret when set; falls back to SitePassword for compatibility.
+// This keeps the control plane credential independent from the Gazelle callback
+// credential, so rotating one does not require rotating both.
 func (cs *ControlServer) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
 		token := strings.TrimPrefix(auth, "Bearer ")
-		if token != cs.config.SitePassword {
+		expected := cs.config.ControlSecret
+		if expected == "" {
+			expected = cs.config.SitePassword
+		}
+		if token == "" || token != expected {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})

@@ -182,10 +182,17 @@ func (b *WANBudget) resetIfNewDay() {
 		return
 	}
 	now := time.Now().UTC()
-	last := b.LastReset.UTC()
-	if now.Year() != last.Year() || now.YearDay() != last.YearDay() {
+	today := now.Truncate(24 * time.Hour)
+	if b.LastReset.IsZero() {
+		// First call: initialize anchor without clearing accumulated usage.
+		// This prevents a tracker restart mid-day from resetting the counter.
+		b.LastReset = today
+		return
+	}
+	last := b.LastReset.Truncate(24 * time.Hour)
+	if !today.Equal(last) {
 		b.UsedBytesThisDay = 0
-		b.LastReset = now
+		b.LastReset = today
 	}
 }
 
@@ -237,6 +244,11 @@ func (g GeoCoord) DistanceKm(other GeoCoord) float64 {
 	lat2 := other.Lat * math.Pi / 180
 	a := math.Sin(dlat/2)*math.Sin(dlat/2) +
 		math.Cos(lat1)*math.Cos(lat2)*math.Sin(dlon/2)*math.Sin(dlon/2)
+	// Clamp to [0,1]: floating-point precision at poles can push a slightly > 1,
+	// causing math.Sqrt(1-a) = NaN which propagates through the entire score path.
+	if a > 1 {
+		a = 1
+	}
 	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 	return R * c
 }
@@ -286,15 +298,17 @@ type NodeIdentity struct {
 }
 
 func NewNodeIdentity(id uint64, hostname, passkey string, domains FailureDomainLabels) *NodeIdentity {
+	now := time.Now()
 	return &NodeIdentity{
 		NodeID:     id,
 		Kind:       PeerManaged,
 		Hostname:   hostname,
 		Passkey:    passkey,
 		Domains:    domains,
-		LastSeen:   time.Now(),
-		Registered: time.Now(),
+		LastSeen:   now,
+		Registered: now,
 		ReachState: NodeReachable,
+		WAN:        WANBudget{LastReset: now.UTC().Truncate(24 * time.Hour)},
 	}
 }
 
@@ -474,6 +488,12 @@ func (r *NodeRegistry) MarkStale(cutoff time.Duration) {
 			continue
 		}
 		n.mu.Lock()
+		// Re-check LastSeen under write lock: a Heartbeat may have arrived
+		// between our snapshot pass and now. If the node is fresh, skip it.
+		if !n.LastSeen.Before(threshold) {
+			n.mu.Unlock()
+			continue
+		}
 		switch n.ReachState {
 		case NodeReachable:
 			n.ReachState = NodeFlapping

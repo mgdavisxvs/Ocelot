@@ -42,18 +42,36 @@ func (g *GazelleSiteComm) ExpireToken(torrentID TorrentID, userID UserID) {
 	}
 }
 
+const siteCommMaxRetries = 3
+
+// siteCommBaseDelay is the initial retry back-off. Declared as var so tests
+// can set it to zero to avoid sleeping.
+var siteCommBaseDelay = 2 * time.Second
+
 func (g *GazelleSiteComm) post(params url.Values) error {
 	params.Set("password", g.password)
-	resp, err := g.client.PostForm(g.baseURL, params)
-	if err != nil {
-		return err
+	var lastErr error
+	for attempt := 0; attempt < siteCommMaxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(siteCommBaseDelay << (attempt - 1)) // 2s, 4s
+		}
+		resp, err := g.client.PostForm(g.baseURL, params)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("HTTP %d from Gazelle", resp.StatusCode)
+			continue // transient server error; retry
+		}
+		if resp.StatusCode >= 400 {
+			return fmt.Errorf("HTTP %d from Gazelle (client error)", resp.StatusCode)
+		}
+		return nil
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("HTTP %d from Gazelle", resp.StatusCode)
-	}
-	return nil
+	return fmt.Errorf("site_comm: %d attempts exhausted: %w", siteCommMaxRetries, lastErr)
 }
 
 // NoOpSiteComm is used when no Gazelle URL is configured.

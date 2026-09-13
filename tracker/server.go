@@ -50,6 +50,11 @@ type Config struct {
 	// TLS for the control plane (S-03).
 	TLSCertFile string
 	TLSKeyFile  string
+
+	// ControlSecret is the Bearer token for the control REST API (:34001).
+	// When set, it is required instead of SitePassword, keeping the two
+	// credentials independent. Defaults to SitePassword when empty.
+	ControlSecret string
 }
 
 func NewServer(config *Config, worker *Worker) *Server {

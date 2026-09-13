@@ -1,6 +1,8 @@
 package tracker
 
 import (
+	"math"
+	"net"
 	"testing"
 	"time"
 )
@@ -407,4 +409,222 @@ func TestNetAffinity(t *testing.T) {
 	if NetAffinity(sameNet, different) != 0.0 {
 		t.Error("different /8 should return 0.0")
 	}
+}
+
+// ── GAP-01: GeoCoord.DistanceKm tests ────────────────────────────────────────
+
+func TestGeoCoordDistanceKm(t *testing.T) {
+	cases := []struct {
+		name    string
+		a, b    GeoCoord
+		wantMin float64
+		wantMax float64
+	}{
+		{
+			name:    "same point",
+			a:       GeoCoord{Lat: 51.5, Lon: -0.1},
+			b:       GeoCoord{Lat: 51.5, Lon: -0.1},
+			wantMin: 0, wantMax: 0.001,
+		},
+		{
+			name:    "equator 1 degree longitude",
+			a:       GeoCoord{Lat: 0, Lon: 0},
+			b:       GeoCoord{Lat: 0, Lon: 1},
+			wantMin: 111.0, wantMax: 111.7,
+		},
+		{
+			name:    "London to Paris",
+			a:       GeoCoord{Lat: 51.5074, Lon: -0.1278},
+			b:       GeoCoord{Lat: 48.8566, Lon: 2.3522},
+			wantMin: 335.0, wantMax: 345.0,
+		},
+		{
+			name:    "north pole to south pole — no NaN",
+			a:       GeoCoord{Lat: 90, Lon: 0},
+			b:       GeoCoord{Lat: -90, Lon: 0},
+			wantMin: 20000, wantMax: 20050,
+		},
+		{
+			name:    "zero value coords",
+			a:       GeoCoord{},
+			b:       GeoCoord{},
+			wantMin: 0, wantMax: 0.001,
+		},
+	}
+	for _, tc := range cases {
+		got := tc.a.DistanceKm(tc.b)
+		if math.IsNaN(got) {
+			t.Errorf("%s: DistanceKm returned NaN", tc.name)
+			continue
+		}
+		if got < tc.wantMin || got > tc.wantMax {
+			t.Errorf("%s: DistanceKm() = %.2f km, want [%.1f, %.1f]",
+				tc.name, got, tc.wantMin, tc.wantMax)
+		}
+		// Symmetry invariant
+		rev := tc.b.DistanceKm(tc.a)
+		if math.Abs(got-rev) > 0.001 {
+			t.Errorf("%s: not symmetric: a→b=%.4f b→a=%.4f", tc.name, got, rev)
+		}
+	}
+}
+
+// ── GAP-05: MarkStale race test ───────────────────────────────────────────────
+
+func TestMarkStaleRaceWithHeartbeat(t *testing.T) {
+	// Run with: go test -race -run TestMarkStaleRaceWithHeartbeat ./tracker/
+	r := NewNodeRegistry()
+	n := NewNodeIdentity(1, "race.test", "pk", FailureDomainLabels{})
+	n.LastSeen = time.Now().Add(-5 * time.Minute)
+	r.Register(n)
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 200; i++ {
+			n.Heartbeat("10.0.0.1", NodeCapabilities{})
+		}
+		close(done)
+	}()
+	for i := 0; i < 200; i++ {
+		r.MarkStale(2 * time.Minute)
+	}
+	<-done
+	// Primary assertion is that -race detects no data race.
+	// Secondary: node must be in a valid state.
+	state := n.GetReachState()
+	if state != NodeReachable && state != NodeFlapping && state != NodeUnreachable {
+		t.Errorf("node in invalid reach state: %v", state)
+	}
+}
+
+func TestMarkStaleHeartbeatPreemptsFlap(t *testing.T) {
+	r := NewNodeRegistry()
+	n := NewNodeIdentity(1, "preempt.test", "pk", FailureDomainLabels{})
+	n.mu.Lock()
+	n.LastSeen = time.Now().Add(-5 * time.Minute)
+	n.mu.Unlock()
+	r.Register(n)
+
+	// Heartbeat arrives just before MarkStale processes this node.
+	// Because MarkStale re-checks LastSeen under write lock, it must not flap.
+	n.Heartbeat("10.0.0.1", NodeCapabilities{}) // now LastSeen = time.Now()
+
+	r.MarkStale(2 * time.Minute) // threshold = 2min ago; node is fresh now
+
+	if n.GetReachState() != NodeReachable {
+		t.Errorf("heartbeat before MarkStale should keep node REACHABLE, got %s",
+			n.GetReachState())
+	}
+}
+
+// ── GAP-07: WANBudget resetIfNewDay tests ────────────────────────────────────
+
+func TestWANBudgetResetZeroLastReset(t *testing.T) {
+	b := &WANBudget{LimitBytesPerDay: 1000}
+	b.UsedBytesThisDay = 900
+	// LastReset is zero value (e.g., after tracker restart).
+	b.resetIfNewDay()
+	if b.UsedBytesThisDay == 0 {
+		t.Error("zero LastReset should not clear UsedBytesThisDay mid-day")
+	}
+	if b.LastReset.IsZero() {
+		t.Error("resetIfNewDay should initialize LastReset from zero")
+	}
+}
+
+func TestWANBudgetResetNewDay(t *testing.T) {
+	yesterday := time.Now().UTC().Truncate(24 * time.Hour).Add(-24 * time.Hour)
+	b := &WANBudget{
+		LimitBytesPerDay: 1000,
+		UsedBytesThisDay: 900,
+		LastReset:        yesterday,
+	}
+	b.IsNearCap() // triggers resetIfNewDay
+	if b.UsedBytesThisDay != 0 {
+		t.Error("new day should reset UsedBytesThisDay to 0")
+	}
+	if b.IsNearCap() {
+		t.Error("after reset, IsNearCap should be false")
+	}
+}
+
+func TestWANBudgetNoResetSameDay(t *testing.T) {
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	b := &WANBudget{
+		LimitBytesPerDay: 1000,
+		UsedBytesThisDay: 500,
+		LastReset:        today,
+	}
+	b.resetIfNewDay()
+	if b.UsedBytesThisDay != 500 {
+		t.Error("same-day call should not reset usage")
+	}
+}
+
+// ── GAP-08: SortPeersByProximity order tests ─────────────────────────────────
+
+func TestSortPeersByProximityOrder(t *testing.T) {
+	nodes := NewNodeRegistry()
+
+	edgeNode := NewNodeIdentity(1, "edge.node", "pk", FailureDomainLabels{})
+	edgeNode.LastIP = "10.0.0.10"
+	edgeNode.Tier = NodeTierEdge
+	nodes.Register(edgeNode)
+
+	regionalNode := NewNodeIdentity(2, "regional.node", "pk", FailureDomainLabels{})
+	regionalNode.LastIP = "10.0.1.20"
+	regionalNode.Tier = NodeTierRegional
+	nodes.Register(regionalNode)
+
+	coreNode := NewNodeIdentity(3, "core.node", "pk", FailureDomainLabels{})
+	coreNode.LastIP = "192.168.1.5"
+	coreNode.Tier = NodeTierCore
+	nodes.Register(coreNode)
+
+	clientIP := net.ParseIP("10.0.0.1")
+
+	// Worst-case ordering: core first, edge last.
+	peers := []PeerEntry{
+		{IP: net.ParseIP("192.168.1.5"), Port: 6881}, // CORE       → priority 2
+		{IP: net.ParseIP("10.0.1.20"), Port: 6882},   // REGIONAL   → priority 1
+		{IP: nil, Port: 0},                            // nil IP     → priority 2
+		{IP: net.ParseIP("203.0.113.1"), Port: 6883}, // UNMANAGED  → priority 2
+		{IP: net.ParseIP("10.0.0.10"), Port: 6884},   // EDGE same  → priority 0
+	}
+
+	sorter := SortPeersByProximity(nodes)
+	sorter(clientIP, peers)
+
+	if peers[0].Port != 6884 {
+		t.Errorf("slot 0: want EDGE same-net (port 6884), got port %d", peers[0].Port)
+	}
+	if peers[1].Port != 6882 {
+		t.Errorf("slot 1: want REGIONAL (port 6882), got port %d", peers[1].Port)
+	}
+	// Slots 2-4 are all priority 2; verify they are all in that group.
+	prio2Ports := map[uint16]bool{6881: true, 0: true, 6883: true}
+	for i, p := range peers[2:] {
+		if !prio2Ports[p.Port] {
+			t.Errorf("slot %d: unexpected port %d in priority-2 group", i+2, p.Port)
+		}
+	}
+}
+
+func TestSortPeersByProximityNilNodes(t *testing.T) {
+	sorter := SortPeersByProximity(nil)
+	peers := []PeerEntry{
+		{IP: net.ParseIP("10.0.0.1"), Port: 6881},
+		{IP: net.ParseIP("10.0.0.2"), Port: 6882},
+	}
+	sorter(net.ParseIP("10.0.0.99"), peers)
+	// nil NodeRegistry → no-op; first element unchanged.
+	if peers[0].Port != 6881 {
+		t.Error("nil NodeRegistry should leave peer order unchanged")
+	}
+}
+
+func TestSortPeersByProximitySinglePeer(t *testing.T) {
+	sorter := SortPeersByProximity(NewNodeRegistry())
+	peers := []PeerEntry{{IP: net.ParseIP("10.0.0.1"), Port: 6881}}
+	sorter(net.ParseIP("10.0.0.2"), peers) // must not panic with len=1
 }
