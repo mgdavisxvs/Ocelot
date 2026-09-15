@@ -377,7 +377,7 @@ function torrentLookup() {
             this.error = '';
             this.result = null;
             try {
-                const r = await fetch(`<?= rtrim(MARKOV_URL, '/') ?>/torrent/${id}`);
+                const r = await fetch('api/markov-proxy.php?path=/torrent/' + id);
                 if (r.status === 404) { this.error = 'Torrent not tracked by Markov engine'; return; }
                 if (!r.ok) { this.error = `HTTP ${r.status}`; return; }
                 this.result = await r.json();

@@ -242,6 +242,10 @@ func (w *Worker) GetStats() ([]byte, error) {
 		"user_count":          w.Users.Size(),
 		"whitelist_count":     len(w.Whitelist.GetAll()),
 	}
+	type cbStater interface{ CBState() string }
+	if cb, ok := w.DB.(cbStater); ok {
+		data["circuit_breaker_state"] = cb.CBState()
+	}
 	return json.Marshal(data)
 }
 

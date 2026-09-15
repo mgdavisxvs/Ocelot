@@ -4,6 +4,11 @@ requireAuth();
 
 $pageTitle = 'Dashboard';
 
+// Fetch live tracker stats (includes circuit breaker state)
+$trackerStats = TrackerAPI::getStats();
+$cbState = $trackerStats['circuit_breaker_state'] ?? null;
+$trackerUptime = isset($trackerStats['uptime_seconds']) ? (int)$trackerStats['uptime_seconds'] : null;
+
 // Fetch recent statistics from database
 try {
     $db = OcelotDB::connect();
@@ -64,6 +69,51 @@ include 'includes/header.php';
     </div>
 </div>
 <?php endif; ?>
+
+<!-- Tracker Status Bar -->
+<div class="flex flex-wrap gap-3 mb-6">
+    <?php if ($cbState !== null):
+        $cbColor = match($cbState) {
+            'CLOSED'    => 'bg-green-900 border-green-700 text-green-300',
+            'HALF_OPEN' => 'bg-yellow-900 border-yellow-700 text-yellow-300',
+            'OPEN'      => 'bg-red-900 border-red-700 text-red-300',
+            default     => 'bg-gray-800 border-gray-600 text-gray-300',
+        };
+        $cbIcon = match($cbState) {
+            'CLOSED'    => 'shield-check',
+            'HALF_OPEN' => 'shield-alert',
+            'OPEN'      => 'shield-off',
+            default     => 'shield',
+        };
+    ?>
+    <div class="flex items-center gap-2 px-3 py-2 rounded-md border text-sm font-medium <?= $cbColor ?>">
+        <i data-lucide="<?= $cbIcon ?>" class="w-4 h-4"></i>
+        Circuit Breaker: <?= htmlspecialchars($cbState) ?>
+    </div>
+    <?php elseif ($trackerStats === null): ?>
+    <div class="flex items-center gap-2 px-3 py-2 rounded-md border bg-red-900 border-red-700 text-red-300 text-sm">
+        <i data-lucide="wifi-off" class="w-4 h-4"></i>
+        Tracker API offline
+    </div>
+    <?php endif; ?>
+
+    <?php if ($trackerUptime !== null):
+        $h = floor($trackerUptime / 3600);
+        $m = floor(($trackerUptime % 3600) / 60);
+    ?>
+    <div class="flex items-center gap-2 px-3 py-2 rounded-md border bg-gray-800 border-gray-700 text-gray-300 text-sm">
+        <i data-lucide="clock" class="w-4 h-4"></i>
+        Uptime: <?= $h ?>h <?= $m ?>m
+    </div>
+    <?php endif; ?>
+
+    <?php if (!empty($trackerStats['announcements'])): ?>
+    <div class="flex items-center gap-2 px-3 py-2 rounded-md border bg-gray-800 border-gray-700 text-gray-300 text-sm">
+        <i data-lucide="zap" class="w-4 h-4"></i>
+        <?= number_format($trackerStats['announcements']) ?> announces total
+    </div>
+    <?php endif; ?>
+</div>
 
 <!-- Stats Grid -->
 <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4 mb-8">
