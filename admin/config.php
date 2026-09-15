@@ -29,6 +29,10 @@ if ($adminPassHash === '') {
 define('TRACKER_URL', $trackerUrl);
 define('SITE_PASSWORD', $sitePassword);
 
+// Markov analytics sidecar URL (set MARKOV_URL env var to enable)
+$markovUrl = getenv('MARKOV_URL') ?: 'http://localhost:9090';
+define('MARKOV_URL', $markovUrl);
+
 // Application Settings
 define('ITEMS_PER_PAGE', 50);
 define('SESSION_TIMEOUT', 3600);
@@ -104,8 +108,9 @@ class OcelotDB {
     }
 }
 
-// Load Tracker API client (new JSON-based implementation)
+// Load API clients
 require_once __DIR__ . '/api/tracker-api.php';
+require_once __DIR__ . '/api/markov-api.php';
 
 // Utility Functions
 function formatBytes($bytes, $precision = 2) {

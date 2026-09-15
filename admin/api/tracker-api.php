@@ -7,8 +7,17 @@
  */
 
 class TrackerAPI {
-    private static $trackerUrl = 'http://localhost:34000';
-    private static $sitePassword = 'changeme'; // Must match tracker config
+    private static $trackerUrl = null;
+    private static $sitePassword = null;
+
+    private static function init(): void {
+        if (self::$trackerUrl === null) {
+            self::$trackerUrl = defined('TRACKER_URL') ? TRACKER_URL : 'http://localhost:34000';
+        }
+        if (self::$sitePassword === null) {
+            self::$sitePassword = defined('SITE_PASSWORD') ? SITE_PASSWORD : '';
+        }
+    }
 
     /**
      * Send a request to the tracker's update endpoint
@@ -19,6 +28,7 @@ class TrackerAPI {
      * @throws Exception on error
      */
     private static function sendRequest($action, $data = []) {
+        self::init();
         $data['action'] = $action;
         $jsonData = json_encode($data);
 
@@ -225,6 +235,7 @@ class TrackerAPI {
      * @return array Stats including uptime, connections, announces, etc.
      */
     public static function getStats() {
+        self::init();
         $url = self::$trackerUrl . '/' . self::$sitePassword . '/stats';
 
         $ch = curl_init($url);
@@ -244,6 +255,7 @@ class TrackerAPI {
      * @return array List of torrents
      */
     public static function getTorrents($limit = 100) {
+        self::init();
         $url = self::$trackerUrl . '/' . self::$sitePassword . '/torrents?limit=' . $limit;
 
         $ch = curl_init($url);
@@ -264,6 +276,7 @@ class TrackerAPI {
      * @return array List of peers
      */
     public static function getPeers($infoHash, $limit = 100) {
+        self::init();
         $url = self::$trackerUrl . '/' . self::$sitePassword . '/peers?info_hash=' . urlencode($infoHash) . '&limit=' . $limit;
 
         $ch = curl_init($url);
@@ -282,6 +295,7 @@ class TrackerAPI {
      * @return array List of whitelist prefixes
      */
     public static function getWhitelist() {
+        self::init();
         $url = self::$trackerUrl . '/' . self::$sitePassword . '/whitelist';
 
         $ch = curl_init($url);
