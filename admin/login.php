@@ -78,7 +78,7 @@ if (isAuthenticated()) {
             </form>
 
             <p class="mt-10 text-center text-sm text-gray-500">
-                Default: admin / changeme
+                Set <code class="font-mono">ADMIN_USER</code> and <code class="font-mono">ADMIN_PASS_HASH</code> environment variables.
             </p>
         </div>
     </div>

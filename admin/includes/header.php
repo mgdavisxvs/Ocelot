@@ -65,6 +65,12 @@
                                     <i data-lucide="git-branch" class="w-3.5 h-3.5"></i>
                                     Markov
                                 </a>
+                                <a href="whitelist.php" class="<?= basename($_SERVER['PHP_SELF']) === 'whitelist.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> rounded-md px-3 py-2 text-sm font-medium">
+                                    Whitelist
+                                </a>
+                                <a href="audit.php" class="<?= basename($_SERVER['PHP_SELF']) === 'audit.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> rounded-md px-3 py-2 text-sm font-medium">
+                                    Audit
+                                </a>
                             </div>
                         </div>
                     </div>
@@ -103,6 +109,8 @@
                     <a href="peers.php" class="<?= basename($_SERVER['PHP_SELF']) === 'peers.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Peers</a>
                     <a href="stats.php" class="<?= basename($_SERVER['PHP_SELF']) === 'stats.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Statistics</a>
                     <a href="markov.php" class="<?= basename($_SERVER['PHP_SELF']) === 'markov.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Markov</a>
+                    <a href="whitelist.php" class="<?= basename($_SERVER['PHP_SELF']) === 'whitelist.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Whitelist</a>
+                    <a href="audit.php" class="<?= basename($_SERVER['PHP_SELF']) === 'audit.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Audit</a>
                     <a href="logout.php" class="text-gray-300 hover:bg-gray-700 hover:text-white block rounded-md px-3 py-2 text-base font-medium">Logout</a>
                 </div>
             </div>

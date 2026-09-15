@@ -1,13 +1,11 @@
 <?php
 /**
- * Parse .torrent file and extract info hash
- *
- * This endpoint accepts a .torrent file upload and returns:
- * - Info hash (SHA-1)
- * - Torrent name
- * - File size
- * - Piece count
+ * Parse .torrent file and extract info hash.
+ * Auth-gated: requires an active admin session.
  */
+
+require_once dirname(__DIR__) . '/config.php';
+requireAuth();
 
 header('Content-Type: application/json');
 
@@ -196,12 +194,3 @@ try {
     ]);
 }
 
-function formatBytes($bytes, $precision = 2) {
-    $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-
-    for ($i = 0; $bytes > 1024 && $i < count($units) - 1; $i++) {
-        $bytes /= 1024;
-    }
-
-    return round($bytes, $precision) . ' ' . $units[$i];
-}
