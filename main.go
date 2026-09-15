@@ -12,27 +12,40 @@ import (
 )
 
 func main() {
-	fmt.Println("🐆 Ocelot BitTorrent Tracker (Go Edition)")
-	fmt.Println("Ported from C++ with innovative approaches from:")
-	fmt.Println("  • Donald Knuth - Algorithm efficiency")
-	fmt.Println("  • Ronald Graham - Combinatorial optimization")
-	fmt.Println("  • Linus Torvalds - Collaborative systems")
-	fmt.Println("  • Stephen Wolfram - Computational modeling")
-	fmt.Println()
+	fmt.Println("Ocelot BitTorrent Tracker (Go Edition)")
 
-	// Initialize configuration
-	config := &tracker.Config{
-		ListenAddr:       ":34000",
-		AnnounceInterval: 1800, // 30 minutes
-		PeersTimeout:     7200, // 2 hours
-		MaxMiddlemen:     20000,
-		NumWantLimit:     50,
-		KeepaliveTimeout: 60 * time.Second,
-		SitePassword:     "changeme",
-		ReportPassword:   "changeme",
-		ReadTimeout:      30 * time.Second,
-		WriteTimeout:     30 * time.Second,
+	// Load config from file (path via -c flag, defaults to ocelot.conf)
+	cfgPath := tracker.ParseFlags()
+	fileCfg, err := tracker.ParseConfigFile(cfgPath)
+	if err != nil {
+		log.Fatalf("config: %v", err)
 	}
+
+	// Allow environment variables to override file config for secrets
+	if v := os.Getenv("SITE_PASSWORD"); v != "" {
+		fileCfg.SitePassword = v
+	}
+	if v := os.Getenv("REPORT_PASSWORD"); v != "" {
+		fileCfg.ReportPassword = v
+	}
+	if v := os.Getenv("GAZELLE_URL"); v != "" {
+		fileCfg.GazelleURL = v
+	}
+	if v := os.Getenv("DB_DIR"); v != "" {
+		fileCfg.DBDir = v
+	}
+
+	// Refuse insecure default credentials at startup
+	if fileCfg.SitePassword == "changeme" || fileCfg.SitePassword == "00000000000000000000000000000000" {
+		log.Fatal("FATAL: site_password is set to the default value. Set a strong password via ocelot.conf or SITE_PASSWORD env var before starting.")
+	}
+	if fileCfg.ReportPassword == "changeme" || fileCfg.ReportPassword == "00000000000000000000000000000000" {
+		log.Fatal("FATAL: report_password is set to the default value. Set a strong password via ocelot.conf or REPORT_PASSWORD env var before starting.")
+	}
+
+	config := fileCfg.ToTrackerConfig()
+	config.GazelleURL = fileCfg.GazelleURL
+	config.ScheduleInterval = fileCfg.ScheduleInterval
 
 	// Initialize data structures
 	torrents := tracker.NewTorrentList()
@@ -43,17 +56,31 @@ func main() {
 	}
 
 	// Create SQLite database with 84GB sharding
-	dbDir := "./data/db"
-	db, err := tracker.NewSQLiteShardManager(dbDir)
+	db, err := tracker.NewSQLiteShardManager(fileCfg.DBDir)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
 
-	log.Printf("SQLite database initialized in %s", dbDir)
+	log.Printf("SQLite database initialized in %s", fileCfg.DBDir)
 
-	// Create mock site communication (replace with real Gazelle integration)
-	siteComm := &MockSiteComm{}
+	// Wire real Gazelle site communication when a URL is provided;
+	// fall back to a no-op implementation that logs instead of calling out.
+	var siteComm tracker.SiteCommInterface
+	if fileCfg.GazelleURL != "" {
+		gazellePass := os.Getenv("GAZELLE_PASSWORD")
+		if gazellePass == "" {
+			gazellePass = fileCfg.SitePassword // fallback to shared site password
+		}
+		siteComm = tracker.NewGazelleSiteComm(fileCfg.GazelleURL, gazellePass)
+		log.Printf("Gazelle site comm active: %s", fileCfg.GazelleURL)
+	} else {
+		siteComm = &tracker.NoOpSiteComm{}
+		log.Println("Gazelle site comm: no-op (set gazelle_url in config to enable)")
+	}
+
+	// Wire audit logger against the active SQLite shard
+	auditLogger := tracker.NewAuditLogger(db.CurrentDB())
 
 	// Create worker with all dependencies
 	worker := &tracker.Worker{
@@ -64,6 +91,7 @@ func main() {
 		Users:     users,
 		Whitelist: whitelist,
 		Stats:     stats,
+		Audit:     auditLogger,
 	}
 
 	// Create loader and load initial state from database
@@ -80,15 +108,7 @@ func main() {
 		log.Printf("Warning: Failed to load initial state: %v", err)
 		log.Println("Starting with empty state - add torrents and users via admin panel")
 	} else {
-		log.Println("✅ Initial state loaded from database")
-	}
-
-	// Fallback: Load sample data if database is empty
-	torrentCount := torrents.Size()
-	userCount := users.Size()
-	if torrentCount == 0 || userCount == 0 {
-		log.Println("Database is empty, loading sample data...")
-		loadSampleData(torrents, users, whitelist)
+		log.Println("Initial state loaded from database")
 	}
 
 	// Create server
@@ -110,59 +130,29 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	fmt.Println("\n🛑 Shutting down gracefully...")
+	log.Println("Shutting down gracefully...")
 	if err := server.Shutdown(); err != nil {
 		log.Printf("Shutdown error: %v", err)
 	}
 
-	fmt.Println("✅ Shutdown complete")
+	log.Println("Shutdown complete")
 }
 
-// loadSampleData loads sample torrents and users for testing
-func loadSampleData(torrents *tracker.TorrentList, users *tracker.UserList, whitelist *tracker.Whitelist) {
-	// Add sample user
-	user := tracker.NewUser(1, true, false)
-	users.Set("0123456789abcdef0123456789abcdef", user)
-
-	// Add sample torrent
-	torrent := tracker.NewTorrent(1)
-	torrents.Set("sampleinfohash12345", torrent)
-
-	fmt.Println("✅ Loaded sample data:")
-	fmt.Println("   • 1 user (passkey: 0123456789abcdef0123456789abcdef)")
-	fmt.Println("   • 1 torrent")
-	fmt.Println()
-}
-
-// printStats displays tracker statistics every 30 seconds
+// printStats logs tracker statistics every 30 seconds.
 func printStats(stats *tracker.Stats) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		uptime := time.Since(stats.StartTime)
-		announces := stats.Announcements.Load()
-		successAnnounces := stats.SuccAnnouncements.Load()
-		scrapes := stats.Scrapes.Load()
-		connections := stats.OpenConnections.Load()
-		seeders := stats.Seeders.Load()
-		leechers := stats.Leechers.Load()
-
-		fmt.Printf("\n📊 Tracker Statistics (uptime: %s)\n", uptime.Round(time.Second))
-		fmt.Printf("   Connections: %d active\n", connections)
-		fmt.Printf("   Announces: %d total, %d successful\n", announces, successAnnounces)
-		fmt.Printf("   Scrapes: %d\n", scrapes)
-		fmt.Printf("   Peers: %d seeders, %d leechers\n", seeders, leechers)
-		fmt.Println()
+		log.Printf("uptime=%s conns=%d announces=%d/%d scrapes=%d seeders=%d leechers=%d",
+			uptime.Round(time.Second),
+			stats.OpenConnections.Load(),
+			stats.SuccAnnouncements.Load(),
+			stats.Announcements.Load(),
+			stats.Scrapes.Load(),
+			stats.Seeders.Load(),
+			stats.Leechers.Load(),
+		)
 	}
-}
-
-// Note: MockDatabase removed - now using real SQLite implementation
-
-// MockSiteComm implements a simple mock for site communication
-type MockSiteComm struct{}
-
-func (sc *MockSiteComm) ExpireToken(torrentID tracker.TorrentID, userID tracker.UserID) {
-	// In production: Send HTTP request to Gazelle to expire freeleech token
-	log.Printf("Expired token for user %d on torrent %d", userID, torrentID)
 }

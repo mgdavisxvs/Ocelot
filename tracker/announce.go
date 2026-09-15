@@ -124,6 +124,8 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	}
 
 	var upSpeed, downSpeed int64
+	var recordTokenDownload int64
+	var recordUpload, recordDownload int64
 
 	if inserted || req.Event == "started" {
 		updateTorrent = true
@@ -183,13 +185,16 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 			default:
 				if hasToken {
 					expireToken = true
-					w.DB.RecordToken(user.ID, torrent.ID, downloadedChange)
+					// Snapshot token download amount for DB write outside lock
+					recordTokenDownload = downloadedChange
 					downloadedChange = 0
 				}
 			}
 
+			// Snapshot stat deltas for DB write outside lock
 			if uploadedChange > 0 || downloadedChange > 0 {
-				w.DB.RecordUserStats(user.ID, uploadedChange, downloadedChange)
+				recordUpload = uploadedChange
+				recordDownload = downloadedChange
 			}
 		}
 	}
@@ -217,6 +222,14 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	peer.Visible = w.peerIsVisible(user, peer)
 
 	torrent.mu.Unlock()
+
+	// DB writes after lock release — keeps lock scope minimal
+	if expireToken && recordTokenDownload > 0 {
+		w.DB.RecordToken(user.ID, torrent.ID, recordTokenDownload)
+	}
+	if recordUpload > 0 || recordDownload > 0 {
+		w.DB.RecordUserStats(user.ID, recordUpload, recordDownload)
+	}
 
 	if peerChanged {
 		announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())

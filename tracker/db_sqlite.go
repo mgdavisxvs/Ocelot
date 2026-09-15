@@ -593,6 +593,14 @@ func (sm *SQLiteShardManager) GetDBStats() (currentSize int64, numHistorical int
 	return
 }
 
+// CurrentDB returns the active shard's underlying *sql.DB for auxiliary uses
+// such as audit logging. Callers must not close or retain it across rotations.
+func (sm *SQLiteShardManager) CurrentDB() *sql.DB {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.currentDB
+}
+
 func (sm *SQLiteShardManager) Close() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()

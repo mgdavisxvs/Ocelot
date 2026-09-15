@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -26,6 +27,10 @@ func (w *Worker) HandleUpdate(req *http.Request) ([]byte, error) {
 		return w.adminRemoveUser(params)
 	case "change_passkey":
 		return w.adminChangePasskey(params)
+	case "add_token":
+		return w.adminAddToken(params)
+	case "remove_token":
+		return w.adminRemoveToken(params)
 	case "add_whitelist":
 		return w.adminAddWhitelist(params)
 	case "remove_whitelist":
@@ -60,6 +65,9 @@ func (w *Worker) adminAddTorrent(params map[string][]string) ([]byte, error) {
 	if err := w.DB.RecordTorrentHash(TorrentID(id), infoHash); err != nil {
 		return nil, fmt.Errorf("persist torrent hash: %w", err)
 	}
+	if w.Audit != nil {
+		w.Audit.LogSuccess(context.Background(), "add_torrent", "torrent", infoHash)
+	}
 	return jsonOK("torrent added")
 }
 
@@ -69,6 +77,9 @@ func (w *Worker) adminDeleteTorrent(params map[string][]string) ([]byte, error) 
 		return nil, fmt.Errorf("delete_torrent requires info_hash")
 	}
 	w.Torrents.Delete(infoHash)
+	if w.Audit != nil {
+		w.Audit.LogSuccess(context.Background(), "delete_torrent", "torrent", infoHash)
+	}
 	return jsonOK("torrent deleted")
 }
 
@@ -108,6 +119,9 @@ func (w *Worker) adminAddUser(params map[string][]string) ([]byte, error) {
 	if err := w.DB.RecordUserPasskey(UserID(id), passkey, canLeech, protectIP); err != nil {
 		return nil, fmt.Errorf("persist user passkey: %w", err)
 	}
+	if w.Audit != nil {
+		w.Audit.LogSuccess(context.Background(), "add_user", "user", idStr)
+	}
 	return jsonOK("user added")
 }
 
@@ -117,6 +131,9 @@ func (w *Worker) adminRemoveUser(params map[string][]string) ([]byte, error) {
 		return nil, fmt.Errorf("remove_user requires passkey")
 	}
 	w.Users.Delete(passkey)
+	if w.Audit != nil {
+		w.Audit.LogSuccess(context.Background(), "remove_user", "user", passkey[:8]+"...")
+	}
 	return jsonOK("user removed")
 }
 
@@ -136,6 +153,46 @@ func (w *Worker) adminChangePasskey(params map[string][]string) ([]byte, error) 
 		return nil, fmt.Errorf("persist passkey change: %w", err)
 	}
 	return jsonOK("passkey changed")
+}
+
+func (w *Worker) adminAddToken(params map[string][]string) ([]byte, error) {
+	infoHash := getParam(params, "info_hash")
+	userIDStr := getParam(params, "user_id")
+	if infoHash == "" || userIDStr == "" {
+		return nil, fmt.Errorf("add_token requires info_hash and user_id")
+	}
+	uid, err := parseUint32(userIDStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user_id: %w", err)
+	}
+	torrent, ok := w.Torrents.Get(infoHash)
+	if !ok {
+		return nil, fmt.Errorf("torrent not found")
+	}
+	torrent.mu.Lock()
+	torrent.TokenedUsers[UserID(uid)] = struct{}{}
+	torrent.mu.Unlock()
+	return jsonOK("token added")
+}
+
+func (w *Worker) adminRemoveToken(params map[string][]string) ([]byte, error) {
+	infoHash := getParam(params, "info_hash")
+	userIDStr := getParam(params, "user_id")
+	if infoHash == "" || userIDStr == "" {
+		return nil, fmt.Errorf("remove_token requires info_hash and user_id")
+	}
+	uid, err := parseUint32(userIDStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user_id: %w", err)
+	}
+	torrent, ok := w.Torrents.Get(infoHash)
+	if !ok {
+		return nil, fmt.Errorf("torrent not found")
+	}
+	torrent.mu.Lock()
+	delete(torrent.TokenedUsers, UserID(uid))
+	torrent.mu.Unlock()
+	return jsonOK("token removed")
 }
 
 func (w *Worker) adminAddWhitelist(params map[string][]string) ([]byte, error) {

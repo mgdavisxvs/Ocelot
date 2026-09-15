@@ -9,16 +9,33 @@ if (!is_dir($dbPath)) {
     @mkdir($dbPath, 0755, true);
 }
 define('DB_PATH', $dbPath);
-define('TRACKER_URL', 'http://localhost:34000'); // Tracker API endpoint
-define('SITE_PASSWORD', 'changeme'); // Must match tracker config
+// Credentials and URLs are read from environment variables.
+// Set them before starting the web server; never hardcode secrets here.
+$trackerUrl = getenv('TRACKER_URL') ?: 'http://localhost:34000';
+$sitePassword = getenv('SITE_PASSWORD') ?: '';
+$adminUser = getenv('ADMIN_USER') ?: 'admin';
+$adminPassHash = getenv('ADMIN_PASS_HASH') ?: ''; // bcrypt hash via: php -r "echo password_hash('yourpass', PASSWORD_BCRYPT);"
+
+// Refuse insecure defaults
+if ($sitePassword === '' || $sitePassword === 'changeme') {
+    http_response_code(500);
+    die('FATAL: SITE_PASSWORD environment variable is not set or uses the default value.');
+}
+if ($adminPassHash === '') {
+    http_response_code(500);
+    die('FATAL: ADMIN_PASS_HASH environment variable is not set.');
+}
+
+define('TRACKER_URL', $trackerUrl);
+define('SITE_PASSWORD', $sitePassword);
 
 // Application Settings
 define('ITEMS_PER_PAGE', 50);
 define('SESSION_TIMEOUT', 3600);
 
-// Admin Authentication (in production, use proper auth)
-define('ADMIN_USER', 'admin');
-define('ADMIN_PASS', password_hash('changeme', PASSWORD_BCRYPT));
+// Admin Authentication
+define('ADMIN_USER', $adminUser);
+define('ADMIN_PASS', $adminPassHash);
 
 // Timezone
 date_default_timezone_set('UTC');

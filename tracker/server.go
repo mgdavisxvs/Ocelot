@@ -184,31 +184,31 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 		return s.handleScrape(req, passkey, httpClose), httpClose
 
 	case "update":
-		if passkey == s.config.SitePassword {
+		if s.checkAdminAuth(req, passkey) {
 			return s.handleUpdate(req, httpClose), httpClose
 		}
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
 	case "stats":
-		if passkey == s.config.SitePassword {
+		if s.checkAdminAuth(req, passkey) {
 			return s.handleStatsAPI(httpClose), httpClose
 		}
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
 	case "torrents":
-		if passkey == s.config.SitePassword {
+		if s.checkAdminAuth(req, passkey) {
 			return s.handleTorrentsAPI(req, httpClose), httpClose
 		}
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
 	case "peers":
-		if passkey == s.config.SitePassword {
+		if s.checkAdminAuth(req, passkey) {
 			return s.handlePeersAPI(req, httpClose), httpClose
 		}
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
 	case "whitelist":
-		if passkey == s.config.SitePassword {
+		if s.checkAdminAuth(req, passkey) {
 			return s.handleWhitelistAPI(httpClose), httpClose
 		}
 		return s.errorResponse("Authentication failure", httpClose), httpClose
@@ -400,6 +400,15 @@ func (s *Server) response(content string, httpClose bool, html bool) []byte {
 	return []byte(b.String())
 }
 
+// checkAdminAuth verifies admin credentials, preferring the Authorization header
+// over the URL passkey to keep secrets out of proxy access logs.
+func (s *Server) checkAdminAuth(req *http.Request, urlPasskey string) bool {
+	if auth := req.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ") == s.config.SitePassword
+	}
+	return urlPasskey == s.config.SitePassword
+}
+
 // ── Utility ───────────────────────────────────────────────────────────────────
 
 func (s *Server) getClientIP(conn net.Conn, req *http.Request) net.IP {
@@ -470,6 +479,7 @@ type Worker struct {
 	Users     *UserList
 	Whitelist *Whitelist
 	Stats     *Stats
+	Audit     *AuditLogger // optional; nil disables audit logging
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.
