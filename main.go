@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -16,6 +17,18 @@ const defaultBackupInterval = 6 * time.Hour
 
 func main() {
 	fmt.Println("Ocelot BitTorrent Tracker (Go Edition)")
+
+	// Initialise OpenTelemetry trace provider (no-op when OTEL_ENDPOINT is unset)
+	shutdownTracing, err := tracker.InitTracing("ocelot-tracker")
+	if err != nil {
+		log.Printf("Warning: OTel tracing init failed: %v — running without tracing", err)
+	} else {
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = shutdownTracing(ctx)
+		}()
+	}
 
 	// Load config from file (path via -c flag, defaults to ocelot.conf)
 	cfgPath := tracker.ParseFlags()
