@@ -31,6 +31,7 @@ type FileConfig struct {
 	Readonly          bool
 	DBDir             string
 	GazelleURL        string // optional Gazelle callback endpoint
+	MetricsPort       string // Prometheus metrics listen address, e.g. ":9090"
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -54,6 +55,7 @@ func DefaultFileConfig() *FileConfig {
 		ScheduleInterval:  3,
 		Readonly:          false,
 		DBDir:             "./data/db",
+		MetricsPort:       ":9090",
 	}
 }
 
@@ -131,6 +133,8 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.DBDir = val
 		case "gazelle_url":
 			cfg.GazelleURL = val
+		case "metrics_port":
+			cfg.MetricsPort = val
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -153,6 +157,7 @@ func (fc *FileConfig) ToTrackerConfig() *Config {
 		ReportPassword:   fc.ReportPassword,
 		ReadTimeout:      readTimeout,
 		WriteTimeout:     readTimeout,
+		MetricsPort:      fc.MetricsPort,
 	}
 }
 

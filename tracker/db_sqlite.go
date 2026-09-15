@@ -70,6 +70,13 @@ func NewSQLiteShardManager(dbDir string) (*SQLiteShardManager, error) {
 	return sm, nil
 }
 
+// CurrentDB returns the active *sql.DB shard. Required by AuditLogger and BatchWriter.
+func (sm *SQLiteShardManager) CurrentDB() *sql.DB {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.currentDB
+}
+
 func (sm *SQLiteShardManager) openDB(path string) (*sql.DB, error) {
 	dsn := fmt.Sprintf("file:%s?cache=shared&mode=rwc", path)
 	db, err := sql.Open("sqlite", dsn)

@@ -163,6 +163,11 @@ func printStats(stats *tracker.Stats) {
 type MockSiteComm struct{}
 
 func (sc *MockSiteComm) ExpireToken(torrentID tracker.TorrentID, userID tracker.UserID) {
-	// In production: Send HTTP request to Gazelle to expire freeleech token
 	log.Printf("Expired token for user %d on torrent %d", userID, torrentID)
 }
+
+func (sc *MockSiteComm) NotifyFreeleech(torrentID int64, hours int) error { return nil }
+func (sc *MockSiteComm) ReportAnomaly(userID int64, score float64) error  { return nil }
+func (sc *MockSiteComm) UpdateStats(seeders, leechers, completed int64) error { return nil }
+func (sc *MockSiteComm) BanUser(userID int64) error                       { return nil }
+func (sc *MockSiteComm) UnbanUser(userID int64) error                     { return nil }

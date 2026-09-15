@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 )
 
@@ -501,74 +500,9 @@ func (w *Worker) peerToInfo(peer *Peer) PeerInfo {
 	}
 }
 
-// Size returns the number of torrents (for TorrentList)
-func (tl *TorrentList) Size() int {
-	tl.mu.RLock()
-	defer tl.mu.RUnlock()
-	return len(tl.torrents)
-}
-
-// Size returns the number of users (for UserList)
-func (ul *UserList) Size() int {
-	ul.mu.RLock()
-	defer ul.mu.RUnlock()
-	return len(ul.users)
-}
-
-// Add adds a prefix to the whitelist
-func (wl *Whitelist) Add(prefix string) {
-	wl.mu.Lock()
-	defer wl.mu.Unlock()
-
-	// Check if already exists
-	for _, p := range wl.prefixes {
-		if p == prefix {
-			return
-		}
-	}
-
-	wl.prefixes = append(wl.prefixes, prefix)
-}
-
-// Remove removes a prefix from the whitelist
-func (wl *Whitelist) Remove(prefix string) {
-	wl.mu.Lock()
-	defer wl.mu.Unlock()
-
-	for i, p := range wl.prefixes {
-		if p == prefix {
-			wl.prefixes = append(wl.prefixes[:i], wl.prefixes[i+1:]...)
-			return
-		}
-	}
-}
-
-// GetAll returns all whitelist prefixes
-func (wl *Whitelist) GetAll() []string {
-	wl.mu.RLock()
-	defer wl.mu.RUnlock()
-
-	result := make([]string, len(wl.prefixes))
-	copy(result, wl.prefixes)
-	return result
-}
-
 // GetWhitelist returns the whitelist as JSON
 func (w *Worker) GetWhitelist() ([]byte, error) {
 	return json.Marshal(map[string][]string{
 		"prefixes": w.Whitelist.GetAll(),
 	})
-}
-
-// Helper function to parse query parameter as int
-func queryInt(req *http.Request, param string, defaultVal int) int {
-	val := req.URL.Query().Get(param)
-	if val == "" {
-		return defaultVal
-	}
-	i, err := strconv.Atoi(val)
-	if err != nil {
-		return defaultVal
-	}
-	return i
 }

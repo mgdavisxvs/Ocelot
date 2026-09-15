@@ -42,6 +42,7 @@ type Config struct {
 	WriteTimeout     time.Duration
 	ScheduleInterval int
 	GazelleURL       string
+	MetricsPort      string
 }
 
 func NewServer(config *Config, worker *Worker) *Server {
@@ -463,13 +464,17 @@ func (s *Server) Shutdown() error {
 
 // Worker encapsulates tracker business logic.
 type Worker struct {
-	Config    *Config
-	DB        DatabaseInterface
-	SiteComm  SiteCommInterface
-	Torrents  *TorrentList
-	Users     *UserList
-	Whitelist *Whitelist
-	Stats     *Stats
+	Config       *Config
+	DB           DatabaseInterface
+	SiteComm     SiteCommInterface
+	Torrents     *TorrentList
+	Users        *UserList
+	Whitelist    *Whitelist
+	Stats        *Stats
+	RateLimiter  *RateLimiter
+	CircuitBreak *CircuitBreaker
+	AuditLog     *AuditLogger
+	Metrics      *MetricsRecorder
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.
@@ -504,4 +509,9 @@ type DatabaseInterface interface {
 // SiteCommInterface abstracts communication back to the Gazelle web application.
 type SiteCommInterface interface {
 	ExpireToken(torrentID TorrentID, userID UserID)
+	NotifyFreeleech(torrentID int64, hours int) error
+	ReportAnomaly(userID int64, score float64) error
+	UpdateStats(seeders, leechers, completed int64) error
+	BanUser(userID int64) error
+	UnbanUser(userID int64) error
 }

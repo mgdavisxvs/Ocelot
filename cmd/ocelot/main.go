@@ -32,6 +32,38 @@ func main() {
 	defer db.Close()
 	log.Printf("SQLite database ready in %s", fc.DBDir)
 
+	// ── Audit log ─────────────────────────────────────────────────────────────
+	if err := tracker.CreateAuditLogTable(db.CurrentDB()); err != nil {
+		log.Printf("Warning: could not create audit log table: %v", err)
+	}
+	auditLog := tracker.NewAuditLogger(db.CurrentDB())
+
+	// ── Batch writer ──────────────────────────────────────────────────────────
+	batchWriter := tracker.NewBatchWriter(db.CurrentDB(), 100, 5*time.Second)
+	defer batchWriter.Stop()
+
+	// ── Rate limiter ──────────────────────────────────────────────────────────
+	rateLimiter := tracker.NewRateLimiter(10, 30, 100_000)
+
+	// ── Circuit breaker ───────────────────────────────────────────────────────
+	circuitBreaker := tracker.NewCircuitBreaker(tracker.CircuitBreakerConfig{
+		Name:         "db",
+		MaxFailures:  5,
+		ResetTimeout: 30 * time.Second,
+		HalfOpenMax:  3,
+	})
+
+	// ── Metrics ───────────────────────────────────────────────────────────────
+	metrics := tracker.GetMetricsRecorder()
+	if config.MetricsPort != "" {
+		go func() {
+			log.Printf("Prometheus metrics on %s", config.MetricsPort)
+			if err := tracker.StartMetricsServer(config.MetricsPort); err != nil {
+				log.Printf("Metrics server error: %v", err)
+			}
+		}()
+	}
+
 	// ── In-memory state ───────────────────────────────────────────────────────
 	torrents := tracker.NewTorrentList()
 	users := tracker.NewUserList()
@@ -59,13 +91,17 @@ func main() {
 
 	// ── Worker ────────────────────────────────────────────────────────────────
 	worker := &tracker.Worker{
-		Config:    config,
-		DB:        db,
-		SiteComm:  siteComm,
-		Torrents:  torrents,
-		Users:     users,
-		Whitelist: whitelist,
-		Stats:     stats,
+		Config:       config,
+		DB:           db,
+		SiteComm:     siteComm,
+		Torrents:     torrents,
+		Users:        users,
+		Whitelist:    whitelist,
+		Stats:        stats,
+		RateLimiter:  rateLimiter,
+		CircuitBreak: circuitBreaker,
+		AuditLog:     auditLog,
+		Metrics:      metrics,
 	}
 
 	// ── Background subsystems ─────────────────────────────────────────────────
@@ -79,7 +115,7 @@ func main() {
 
 	// ── Signal handlers ───────────────────────────────────────────────────────
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1)
+	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGUSR1)
 
 	go func() {
 		for sig := range sigCh {
@@ -91,7 +127,6 @@ func main() {
 					continue
 				}
 				newCfg := newFC.ToTrackerConfig()
-				// Update fields that can change without a server restart.
 				config.SitePassword = newCfg.SitePassword
 				config.ReportPassword = newCfg.ReportPassword
 				config.NumWantLimit = newCfg.NumWantLimit

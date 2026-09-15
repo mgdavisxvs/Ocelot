@@ -56,7 +56,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		return nil, fmt.Errorf("unregistered torrent")
 	}
 
-	peerKey := PeerKey(req.PeerID, user.ID, torrent.ID)
+	peerKey := PeerKeyPrime(req.PeerID, user.ID, torrent.ID)
 
 	var (
 		inserted         = false
@@ -201,7 +201,10 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		ip = clientIP
 	}
 
-	if inserted || peer.Port != req.Port || !peer.IP.Equal(ip) {
+	if !ValidateIPNotPrivate(ip) {
+		invalidIP = true
+		peer.InvalidIP = true
+	} else if inserted || peer.Port != req.Port || !peer.IP.Equal(ip) {
 		peer.Port = req.Port
 		peer.IP = ip
 		peer.IPPort = CompactIPPort(ip, req.Port)
@@ -281,7 +284,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		numwant = 0
 	}
 
-	peers := w.selectPeers(torrent, peer, user.ID, numwant, req.Left > 0)
+	peers := SelectPeersOptimized(torrent, peer, user.ID, numwant, req.Left > 0)
 
 	w.Stats.SuccAnnouncements.Add(1)
 	if incLeechers {
@@ -326,14 +329,14 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	}
 
 	response := &AnnounceResponse{
-		Interval:    int32(w.Config.AnnounceInterval + minInt(600, seederCount)),
+		Interval:    AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval),
 		MinInterval: int32(w.Config.AnnounceInterval),
 		Complete:    int32(seederCount),
 		Incomplete:  int32(leecherCount),
 		Peers:       peers,
 	}
 	if invalidIP {
-		response.Warning = "Illegal character found in IP address. IPv6 is not supported"
+		response.Warning = "Illegal character found in IP address"
 	}
 
 	return response, nil
