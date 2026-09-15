@@ -365,6 +365,13 @@ func (s *Server) bencodedAnnounceResponse(resp *AnnounceResponse, httpClose bool
 		b.Write(resp.Peers)
 	}
 
+	if len(resp.Peers6) > 0 {
+		b.WriteString("6:peers6")
+		b.WriteString(strconv.Itoa(len(resp.Peers6)))
+		b.WriteString(":")
+		b.Write(resp.Peers6)
+	}
+
 	if resp.Warning != "" {
 		b.WriteString("15:warning message")
 		b.WriteString(strconv.Itoa(len(resp.Warning)))

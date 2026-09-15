@@ -346,3 +346,9 @@ func (e *Engine) UserChainP() [][]float64 {
 func (e *Engine) TorrentChainP() [][]float64 {
 	return e.torrents.globalChain.P()
 }
+
+// SeederPageRank scores all tracked users by their seeder contribution quality
+// using the Markov chain's stationary distribution. dampingFactor should be 0.85.
+func (e *Engine) SeederPageRank(dampingFactor float64) []SeederPageRankResult {
+	return e.users.computeSeederPageRank(dampingFactor, 50)
+}

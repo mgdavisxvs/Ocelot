@@ -5,8 +5,17 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 )
+
+// peerBufPool reduces GC pressure by reusing accumulation buffers in selectPeers.
+var peerBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 200*6) // pre-size for 200 IPv4 peers
+		return &b
+	},
+}
 
 // AnnounceRequest represents a parsed BitTorrent announce request.
 type AnnounceRequest struct {
@@ -32,7 +41,8 @@ type AnnounceResponse struct {
 	MinInterval int32
 	Complete    int32  // number of seeders
 	Incomplete  int32  // number of leechers
-	Peers       []byte // compact format: 6 bytes per peer
+	Peers       []byte // compact IPv4 format: 6 bytes per peer (BEP 23)
+	Peers6      []byte // compact IPv6 format: 18 bytes per peer (BEP 7)
 	Warning     string
 }
 
@@ -209,7 +219,11 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	if inserted || peer.Port != req.Port || !peer.IP.Equal(ip) {
 		peer.Port = req.Port
 		peer.IP = ip
-		peer.IPPort = CompactIPPort(ip, req.Port)
+		if ip.To4() != nil {
+			peer.IPPort = CompactIPPort(ip, req.Port)
+		} else {
+			peer.IPPort = CompactIPv6Port(ip, req.Port)
+		}
 		if peer.IPPort == nil {
 			invalidIP = true
 			peer.InvalidIP = true
@@ -294,7 +308,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		numwant = 0
 	}
 
-	peers := w.selectPeers(torrent, peer, user.ID, numwant, req.Left > 0)
+	peers, peers6 := w.selectPeers(torrent, peer, user.ID, numwant, req.Left > 0)
 
 	w.Stats.SuccAnnouncements.Add(1)
 	if incLeechers {
@@ -344,23 +358,41 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		Complete:    int32(seederCount),
 		Incomplete:  int32(leecherCount),
 		Peers:       peers,
+		Peers6:      peers6,
 	}
 	if invalidIP {
-		response.Warning = "Illegal character found in IP address. IPv6 is not supported"
+		response.Warning = "Invalid IP address"
 	}
 
 	return response, nil
 }
 
-// selectPeers picks up to numwant peers to return. Leechers receive seeders
-// first (round-robin), then other leechers. Seeders receive only leechers.
-func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool) []byte {
+// selectPeers picks up to numwant peers to return. Returns compact IPv4 peers
+// (BEP 23, 6 bytes each) and compact IPv6 peers (BEP 7, 18 bytes each)
+// separately. Leechers receive seeders first (round-robin), then leechers.
+// Seeders receive only leechers. sync.Pool reduces allocation pressure on the
+// accumulation buffers.
+func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool) (peers []byte, peers6 []byte) {
 	if numwant <= 0 {
-		return []byte{}
+		return []byte{}, []byte{}
 	}
 
-	peers := make([]byte, 0, numwant*6)
+	// Borrow accumulators from pool; copy results; return accumulators.
+	buf4ptr := peerBufPool.Get().(*[]byte)
+	buf6ptr := peerBufPool.Get().(*[]byte)
+	buf4 := (*buf4ptr)[:0]
+	buf6 := (*buf6ptr)[:0]
+
 	found := 0
+
+	appendPeer := func(peer *Peer) {
+		switch len(peer.IPPort) {
+		case 6:
+			buf4 = append(buf4, peer.IPPort...)
+		case 18:
+			buf6 = append(buf6, peer.IPPort...)
+		}
+	}
 
 	torrent.mu.RLock()
 	defer torrent.mu.RUnlock()
@@ -393,8 +425,8 @@ func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwan
 				if peer.UserID == userID || !peer.Visible {
 					continue
 				}
-				if len(peer.IPPort) == 6 {
-					peers = append(peers, peer.IPPort...)
+				if len(peer.IPPort) == 6 || len(peer.IPPort) == 18 {
+					appendPeer(peer)
 					found++
 					torrent.LastSelectedSeeder = key
 				}
@@ -409,8 +441,8 @@ func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwan
 				if peer.UserID == userID || !peer.Visible {
 					return true
 				}
-				if len(peer.IPPort) == 6 {
-					peers = append(peers, peer.IPPort...)
+				if len(peer.IPPort) == 6 || len(peer.IPPort) == 18 {
+					appendPeer(peer)
 					found++
 				}
 				return true
@@ -424,15 +456,32 @@ func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwan
 			if peer.UserID == userID || !peer.Visible {
 				return true
 			}
-			if len(peer.IPPort) == 6 {
-				peers = append(peers, peer.IPPort...)
+			if len(peer.IPPort) == 6 || len(peer.IPPort) == 18 {
+				appendPeer(peer)
 				found++
 			}
 			return true
 		})
 	}
 
-	return peers
+	// Copy results before returning buffers to pool.
+	if len(buf4) > 0 {
+		peers = make([]byte, len(buf4))
+		copy(peers, buf4)
+	} else {
+		peers = []byte{}
+	}
+	if len(buf6) > 0 {
+		peers6 = make([]byte, len(buf6))
+		copy(peers6, buf6)
+	}
+
+	*buf4ptr = buf4
+	*buf6ptr = buf6
+	peerBufPool.Put(buf4ptr)
+	peerBufPool.Put(buf6ptr)
+
+	return peers, peers6
 }
 
 func (w *Worker) findOrCreatePeer(peerList *PeerList, peerKey string, user *User) (*Peer, bool) {

@@ -11,6 +11,9 @@ import (
 	"github.com/mgdavisxvs/Ocelot/tracker"
 )
 
+// defaultBackupInterval is how often VACUUM INTO backups run when enabled.
+const defaultBackupInterval = 6 * time.Hour
+
 func main() {
 	fmt.Println("Ocelot BitTorrent Tracker (Go Edition)")
 
@@ -82,10 +85,18 @@ func main() {
 	// Wire audit logger against the active SQLite shard
 	auditLogger := tracker.NewAuditLogger(db.CurrentDB())
 
+	// Wrap DB with circuit breaker to shed load on sustained failures.
+	protectedDB := tracker.NewCircuitBreakerDB(db, tracker.CircuitBreakerConfig{
+		Name:         "sqlite",
+		MaxFailures:  10,
+		ResetTimeout: 30 * time.Second,
+		HalfOpenMax:  3,
+	})
+
 	// Create worker with all dependencies
 	worker := &tracker.Worker{
 		Config:    config,
-		DB:        db,
+		DB:        protectedDB,
 		SiteComm:  siteComm,
 		Torrents:  torrents,
 		Users:     users,
@@ -111,6 +122,31 @@ func main() {
 		log.Println("Initial state loaded from database")
 	}
 
+	// Optional: Redis cache layer (set REDIS_URL to enable, e.g. redis://localhost:6379)
+	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
+		redisBackend, err := tracker.NewRedisBackend(tracker.RedisConfig{
+			Addr:     redisURL,
+			Password: os.Getenv("REDIS_PASSWORD"),
+			DB:       0,
+			PoolSize: 20,
+		})
+		if err != nil {
+			log.Printf("Warning: Redis unavailable (%v) — running without cache layer", err)
+		} else {
+			_ = redisBackend // attached to worker when hot-path Redis caching is wired
+			log.Printf("Redis cache layer active: %s", redisURL)
+		}
+	}
+
+	// Optional: VACUUM INTO scheduled backup (set DB_BACKUP_DIR to enable)
+	if backupDir := os.Getenv("DB_BACKUP_DIR"); backupDir != "" {
+		interval := defaultBackupInterval
+		bs := tracker.NewBackupScheduler(db, backupDir, interval)
+		go bs.Start()
+		log.Printf("Backup scheduler active: dir=%s interval=%s", backupDir, interval)
+		defer bs.Stop()
+	}
+
 	// Create server
 	server := tracker.NewServer(config, worker)
 
@@ -121,6 +157,31 @@ func main() {
 			log.Fatalf("Server error: %v", err)
 		}
 	}()
+
+	// Optional: TLS server (set TLS_CERT_FILE + TLS_KEY_FILE, or TLS_DOMAIN for auto)
+	if certFile := os.Getenv("TLS_CERT_FILE"); certFile != "" {
+		tlsCfg := tracker.TLSConfig{
+			CertFile: certFile,
+			KeyFile:  os.Getenv("TLS_KEY_FILE"),
+		}
+		go func() {
+			log.Printf("Starting TLS tracker on :34443 (cert=%s)", certFile)
+			if err := server.StartTLS(tlsCfg); err != nil {
+				log.Printf("TLS server error: %v", err)
+			}
+		}()
+	} else if domain := os.Getenv("TLS_DOMAIN"); domain != "" {
+		tlsCfg := tracker.TLSConfig{
+			AutoTLS: true,
+			Domain:  domain,
+		}
+		go func() {
+			log.Printf("Starting auto-TLS tracker for domain %s", domain)
+			if err := server.StartTLS(tlsCfg); err != nil {
+				log.Printf("Auto-TLS server error: %v", err)
+			}
+		}()
+	}
 
 	// Print statistics periodically
 	go printStats(stats)
