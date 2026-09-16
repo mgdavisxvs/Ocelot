@@ -62,12 +62,19 @@ func (s *Server) ListenAndServe() error {
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
-	s.listener = listener
 
 	fmt.Printf("Ocelot tracker listening on %s (%s netpoller)\n",
 		s.config.ListenAddr, netpollerType())
 	fmt.Printf("GOMAXPROCS=%d\n", runtime.GOMAXPROCS(0))
 
+	return s.serveListener(listener)
+}
+
+// serveListener runs the accept loop on an already-bound listener.
+// Wrapping the listener with tls.NewListener before calling this is all
+// that is required for TLS support.
+func (s *Server) serveListener(listener net.Listener) error {
+	s.listener = listener
 	for {
 		conn, err := listener.Accept()
 		if err != nil {

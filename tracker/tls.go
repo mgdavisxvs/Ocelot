@@ -2,6 +2,8 @@ package tracker
 
 import (
 	"crypto/tls"
+	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -36,71 +38,44 @@ func (s *Server) StartTLS(config TLSConfig) error {
 	return s.startManualTLS(config.CertFile, config.KeyFile)
 }
 
-// startManualTLS starts with manual certificate files
+// startManualTLS loads a certificate pair and wraps the listener with TLS
+// before handing it to the shared accept loop. All tracker routes
+// (announce, scrape, update, stats, …) work identically over TLS.
 func (s *Server) startManualTLS(certFile, keyFile string) error {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return fmt.Errorf("load TLS certificate: %w", err)
+	}
 	tlsConfig := &tls.Config{
-		MinVersion: tls.VersionTLS13,
-		CipherSuites: []uint16{
-			tls.TLS_AES_128_GCM_SHA256,
-			tls.TLS_AES_256_GCM_SHA384,
-			tls.TLS_CHACHA20_POLY1305_SHA256,
-		},
-		PreferServerCipherSuites: true,
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13,
 	}
-
-	// Create HTTP handler (stub - would need integration)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/announce", func(w http.ResponseWriter, r *http.Request) {
-		// Stub handler
-		w.WriteHeader(http.StatusOK)
-	})
-
-	server := &http.Server{
-		Addr:         ":34443",
-		Handler:      mux,
-		TLSConfig:    tlsConfig,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  120 * time.Second,
+	ln, err := net.Listen("tcp", ":34443")
+	if err != nil {
+		return fmt.Errorf("listen :34443: %w", err)
 	}
-
-	return server.ListenAndServeTLS(certFile, keyFile)
+	return s.serveListener(tls.NewListener(ln, tlsConfig))
 }
 
-// startAutoTLS starts with automatic Let's Encrypt certificates
+// startAutoTLS obtains and renews a Let's Encrypt certificate for domain
+// and wraps the listener with TLS before handing it to the accept loop.
+// A plain-HTTP server on :80 handles ACME challenges.
 func (s *Server) startAutoTLS(domain string) error {
 	certManager := &autocert.Manager{
 		Prompt:      autocert.AcceptTOS,
 		HostPolicy:  autocert.HostWhitelist(domain),
 		Cache:       autocert.DirCache("/var/lib/ocelot/certs"),
-		RenewBefore: 30 * 24 * time.Hour, // Renew 30 days before expiry
+		RenewBefore: 30 * 24 * time.Hour,
 	}
-
-	tlsConfig := certManager.TLSConfig()
-	tlsConfig.MinVersion = tls.VersionTLS13
-
-	// Start HTTP redirect server for ACME challenges
+	// Serve ACME HTTP-01 challenges on port 80.
 	go func() {
 		http.ListenAndServe(":80", certManager.HTTPHandler(nil))
 	}()
-
-	// Create HTTP handler (stub - would need integration)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/announce", func(w http.ResponseWriter, r *http.Request) {
-		// Stub handler
-		w.WriteHeader(http.StatusOK)
-	})
-
-	server := &http.Server{
-		Addr:         ":443",
-		Handler:      mux,
-		TLSConfig:    tlsConfig,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  120 * time.Second,
+	ln, err := net.Listen("tcp", ":443")
+	if err != nil {
+		return fmt.Errorf("listen :443: %w", err)
 	}
-
-	return server.ListenAndServeTLS("", "")
+	return s.serveListener(tls.NewListener(ln, certManager.TLSConfig()))
 }
 
 // RedirectHTTPToHTTPS returns middleware to redirect HTTP to HTTPS

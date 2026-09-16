@@ -204,21 +204,55 @@ func (r *RedisBackend) Ping() error {
 	return r.client.Ping(r.ctx).Err()
 }
 
-// FlushExpiredPeers removes peers that haven't announced recently
+// FlushExpiredPeers removes peers that haven't announced within timeout.
+// Seeder/leecher counters are decremented for each removed peer.
 func (r *RedisBackend) FlushExpiredPeers(infoHash string, timeout time.Duration) error {
-	peers, err := r.GetPeers(infoHash)
+	key := fmt.Sprintf("torrent:%s:peers", infoHash)
+	peerMap, err := r.client.HGetAll(r.ctx, key).Result()
 	if err != nil {
 		return err
 	}
 
 	now := time.Now()
-	for _, peer := range peers {
+	var expired []string
+	var expiredSeeders, expiredLeechers int
+
+	for peerID, data := range peerMap {
+		var peer Peer
+		if err := json.Unmarshal([]byte(data), &peer); err != nil {
+			r.logger.Warn("skipping unparseable peer during flush", "peer_id", peerID)
+			continue
+		}
 		if now.Sub(peer.LastAnnounced) > timeout {
-			// Note: peerID would need to be tracked separately to delete
-			// This is a stub implementation
-			_ = peer
+			expired = append(expired, peerID)
+			if peer.Left == 0 {
+				expiredSeeders++
+			} else {
+				expiredLeechers++
+			}
 		}
 	}
 
+	if len(expired) == 0 {
+		return nil
+	}
+
+	if err := r.client.HDel(r.ctx, key, expired...).Err(); err != nil {
+		return err
+	}
+
+	for range expiredSeeders {
+		r.DecrementSeeders(infoHash)
+	}
+	for range expiredLeechers {
+		r.DecrementLeechers(infoHash)
+	}
+
+	r.logger.Info("flushed expired peers",
+		"info_hash", infoHash,
+		"removed", len(expired),
+		"seeders_removed", expiredSeeders,
+		"leechers_removed", expiredLeechers,
+	)
 	return nil
 }
