@@ -4,26 +4,52 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 )
 
 // HandleUpdate processes admin update requests from the Gazelle site.
-// Dispatches on the "action" query parameter.
+// Accepts both URL query-string params and a JSON request body; JSON body
+// values are merged in (booleans normalised to "1"/"0").
 func (w *Worker) HandleUpdate(req *http.Request) ([]byte, error) {
-	params := req.URL.Query()
-	action := params.Get("action")
+	params := make(map[string][]string)
+	for k, v := range req.URL.Query() {
+		params[k] = v
+	}
+	if req.Body != nil {
+		var body map[string]interface{}
+		if err := json.NewDecoder(req.Body).Decode(&body); err == nil {
+			for k, v := range body {
+				switch val := v.(type) {
+				case string:
+					params[k] = []string{val}
+				case bool:
+					if val {
+						params[k] = []string{"1"}
+					} else {
+						params[k] = []string{"0"}
+					}
+				default:
+					params[k] = []string{fmt.Sprintf("%v", val)}
+				}
+			}
+		}
+	}
+	action := getParam(params, "action")
 
 	switch action {
 	case "add_torrent":
 		return w.adminAddTorrent(params)
 	case "delete_torrent":
 		return w.adminDeleteTorrent(params)
-	case "update_torrent":
+	case "update_torrent", "change_freeleech":
 		return w.adminUpdateTorrent(params)
 	case "add_user":
 		return w.adminAddUser(params)
-	case "remove_user":
+	case "update_user":
+		return w.adminUpdateUser(params)
+	case "remove_user", "delete_user":
 		return w.adminRemoveUser(params)
 	case "change_passkey":
 		return w.adminChangePasskey(params)
@@ -43,10 +69,13 @@ func (w *Worker) HandleUpdate(req *http.Request) ([]byte, error) {
 }
 
 func (w *Worker) adminAddTorrent(params map[string][]string) ([]byte, error) {
-	idStr := getParam(params, "id")
+	idStr := getParam(params, "torrent_id")
+	if idStr == "" {
+		idStr = getParam(params, "id")
+	}
 	infoHash := getParam(params, "info_hash")
 	if idStr == "" || infoHash == "" {
-		return nil, fmt.Errorf("add_torrent requires id and info_hash")
+		return nil, fmt.Errorf("add_torrent requires torrent_id and info_hash")
 	}
 	id, err := parseUint32(idStr)
 	if err != nil {
@@ -102,10 +131,13 @@ func (w *Worker) adminUpdateTorrent(params map[string][]string) ([]byte, error) 
 }
 
 func (w *Worker) adminAddUser(params map[string][]string) ([]byte, error) {
-	idStr := getParam(params, "id")
+	idStr := getParam(params, "user_id")
+	if idStr == "" {
+		idStr = getParam(params, "id")
+	}
 	passkey := getParam(params, "passkey")
 	if idStr == "" || passkey == "" {
-		return nil, fmt.Errorf("add_user requires id and passkey")
+		return nil, fmt.Errorf("add_user requires user_id and passkey")
 	}
 	id, err := parseUint32(idStr)
 	if err != nil {
@@ -125,6 +157,27 @@ func (w *Worker) adminAddUser(params map[string][]string) ([]byte, error) {
 	return jsonOK("user added")
 }
 
+func (w *Worker) adminUpdateUser(params map[string][]string) ([]byte, error) {
+	passkey := getParam(params, "passkey")
+	if passkey == "" {
+		return nil, fmt.Errorf("update_user requires passkey")
+	}
+	u, ok := w.Users.Get(passkey)
+	if !ok {
+		return nil, fmt.Errorf("user not found")
+	}
+	if v := getParam(params, "can_leech"); v != "" {
+		u.CanLeech.Store(v != "0")
+	}
+	if v := getParam(params, "protect_ip"); v != "" {
+		u.ProtectIP.Store(v == "1")
+	}
+	if w.Audit != nil {
+		w.Audit.LogSuccess(context.Background(), "update_user", "user", passkey[:8]+"...")
+	}
+	return jsonOK("user updated")
+}
+
 func (w *Worker) adminRemoveUser(params map[string][]string) ([]byte, error) {
 	passkey := getParam(params, "passkey")
 	if passkey == "" {
@@ -139,9 +192,12 @@ func (w *Worker) adminRemoveUser(params map[string][]string) ([]byte, error) {
 
 func (w *Worker) adminChangePasskey(params map[string][]string) ([]byte, error) {
 	oldPasskey := getParam(params, "old_passkey")
+	if oldPasskey == "" {
+		oldPasskey = getParam(params, "passkey")
+	}
 	newPasskey := getParam(params, "new_passkey")
 	if oldPasskey == "" || newPasskey == "" {
-		return nil, fmt.Errorf("change_passkey requires old_passkey and new_passkey")
+		return nil, fmt.Errorf("change_passkey requires passkey and new_passkey")
 	}
 	u, ok := w.Users.Get(oldPasskey)
 	if !ok {
@@ -208,9 +264,12 @@ func (w *Worker) adminRemoveToken(params map[string][]string) ([]byte, error) {
 }
 
 func (w *Worker) adminAddWhitelist(params map[string][]string) ([]byte, error) {
-	prefix := getParam(params, "prefix")
+	prefix := getParam(params, "peer_id_prefix")
 	if prefix == "" {
-		return nil, fmt.Errorf("add_whitelist requires prefix")
+		prefix = getParam(params, "prefix")
+	}
+	if prefix == "" {
+		return nil, fmt.Errorf("add_whitelist requires peer_id_prefix")
 	}
 	w.Whitelist.Add(prefix)
 	if err := w.DB.AddWhitelistEntry(prefix); err != nil {
@@ -226,9 +285,12 @@ func (w *Worker) adminAddWhitelist(params map[string][]string) ([]byte, error) {
 }
 
 func (w *Worker) adminRemoveWhitelist(params map[string][]string) ([]byte, error) {
-	prefix := getParam(params, "prefix")
+	prefix := getParam(params, "peer_id_prefix")
 	if prefix == "" {
-		return nil, fmt.Errorf("remove_whitelist requires prefix")
+		prefix = getParam(params, "prefix")
+	}
+	if prefix == "" {
+		return nil, fmt.Errorf("remove_whitelist requires peer_id_prefix")
 	}
 	w.Whitelist.Remove(prefix)
 	if err := w.DB.RemoveWhitelistEntry(prefix); err != nil {
@@ -334,7 +396,7 @@ func (w *Worker) GetPeers(infoHash string, limit int) ([]byte, error) {
 		}
 		list = append(list, peerEntry{
 			UserID:     uint32(p.UserID),
-			IP:         p.IP.String(),
+			IP:         ipString(p.IP),
 			Port:       p.Port,
 			Uploaded:   p.Uploaded,
 			Downloaded: p.Downloaded,
@@ -375,6 +437,13 @@ func parseUint32(s string) (uint32, error) {
 	return v, err
 }
 
+func ipString(ip net.IP) string {
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
 func jsonOK(msg string) ([]byte, error) {
-	return json.Marshal(map[string]string{"status": "ok", "message": msg})
+	return json.Marshal(map[string]interface{}{"success": true, "message": msg})
 }

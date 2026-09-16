@@ -3,6 +3,7 @@ package tracker
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -279,11 +280,12 @@ func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool)
 }
 
 // handleUpdate processes admin update requests.
-// Fixed: original port had both branches returning jsonResponse.
+// Errors are returned as JSON so the PHP admin panel can parse them.
 func (s *Server) handleUpdate(req *http.Request, httpClose bool) []byte {
 	jsonData, err := s.worker.HandleUpdate(req)
 	if err != nil {
-		return s.errorResponse(err.Error(), httpClose)
+		body, _ := json.Marshal(map[string]interface{}{"success": false, "error": err.Error()})
+		return s.jsonResponse(body, httpClose)
 	}
 	return s.jsonResponse(jsonData, httpClose)
 }
