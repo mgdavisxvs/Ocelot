@@ -7,16 +7,19 @@ import (
 	"time"
 )
 
-// AuditLogger logs administrative actions for security auditing
+// AuditLogger logs administrative actions for security auditing.
+// dbFn is called on every write so the logger always targets the current shard
+// even after a rotation.
 type AuditLogger struct {
-	db     *sql.DB
+	dbFn   func() *sql.DB
 	logger *Logger
 }
 
-// NewAuditLogger creates a new audit logger
-func NewAuditLogger(db *sql.DB) *AuditLogger {
+// NewAuditLogger creates a new audit logger. Pass SQLiteShardManager.CurrentDB
+// as dbFn so writes always land in the active shard.
+func NewAuditLogger(dbFn func() *sql.DB) *AuditLogger {
 	return &AuditLogger{
-		db:     db,
+		dbFn:   dbFn,
 		logger: GetDefaultLogger(),
 	}
 }
@@ -57,7 +60,11 @@ func (al *AuditLogger) Log(ctx context.Context, action, resourceType, resourceID
 		(timestamp, user_id, action, resource_type, resource_id, ip_address, success, error_message, metadata)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, dbErr := al.db.Exec(query,
+	db := al.dbFn()
+	if db == nil {
+		return nil // DB not yet ready; silently skip
+	}
+	_, dbErr := db.Exec(query,
 		time.Now().Unix(),
 		userID,
 		action,
@@ -136,7 +143,7 @@ func (al *AuditLogger) Query(filters AuditFilters) ([]*AuditEntry, error) {
 	query += " ORDER BY timestamp DESC LIMIT ?"
 	args = append(args, filters.Limit)
 
-	rows, err := al.db.Query(query, args...)
+	rows, err := al.dbFn().Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -203,25 +210,3 @@ func (al *AuditLogger) getIPFromContext(ctx context.Context) string {
 	return ""
 }
 
-// CreateAuditLogTable creates the audit_log table
-func CreateAuditLogTable(db *sql.DB) error {
-	query := `CREATE TABLE IF NOT EXISTS audit_log (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		timestamp INTEGER NOT NULL,
-		user_id INTEGER,
-		action TEXT NOT NULL,
-		resource_type TEXT NOT NULL,
-		resource_id TEXT,
-		ip_address TEXT,
-		success BOOLEAN NOT NULL,
-		error_message TEXT,
-		metadata TEXT
-	);
-	CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
-	CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id);
-	CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
-	CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_log(resource_type, resource_id);`
-
-	_, err := db.Exec(query)
-	return err
-}

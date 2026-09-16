@@ -230,8 +230,33 @@ func (sm *SQLiteShardManager) initSchema(db *sql.DB) error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		prefix TEXT NOT NULL UNIQUE
 	);
+
+	-- Administrative action audit log.
+	CREATE TABLE IF NOT EXISTS audit_log (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		timestamp     INTEGER NOT NULL,
+		user_id       INTEGER,
+		action        TEXT NOT NULL,
+		resource_type TEXT NOT NULL,
+		resource_id   TEXT,
+		ip_address    TEXT,
+		success       INTEGER NOT NULL,
+		error_message TEXT,
+		metadata      TEXT
+	);
+	CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
+	CREATE INDEX IF NOT EXISTS idx_audit_action    ON audit_log(action);
+	CREATE INDEX IF NOT EXISTS idx_audit_resource  ON audit_log(resource_type, resource_id);
 	`)
 	return err
+}
+
+// CurrentDB returns the active shard's *sql.DB. Used by subsystems (e.g.,
+// audit logging) that need direct DB access and must follow shard rotations.
+func (sm *SQLiteShardManager) CurrentDB() *sql.DB {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.currentDB
 }
 
 func (sm *SQLiteShardManager) prepareStatements() error {
@@ -591,14 +616,6 @@ func (sm *SQLiteShardManager) GetDBStats() (currentSize int64, numHistorical int
 		}
 	}
 	return
-}
-
-// CurrentDB returns the active shard's underlying *sql.DB for auxiliary uses
-// such as audit logging. Callers must not close or retain it across rotations.
-func (sm *SQLiteShardManager) CurrentDB() *sql.DB {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	return sm.currentDB
 }
 
 func (sm *SQLiteShardManager) Close() error {

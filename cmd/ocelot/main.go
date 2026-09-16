@@ -66,6 +66,7 @@ func main() {
 		Users:     users,
 		Whitelist: whitelist,
 		Stats:     stats,
+		Audit:     tracker.NewAuditLogger(db.CurrentDB),
 	}
 
 	// ── Background subsystems ─────────────────────────────────────────────────

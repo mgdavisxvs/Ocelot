@@ -150,7 +150,13 @@ func (w *Worker) adminChangePasskey(params map[string][]string) ([]byte, error) 
 	w.Users.Delete(oldPasskey)
 	w.Users.Set(newPasskey, u)
 	if err := w.DB.RecordUserPasskey(u.ID, newPasskey, u.CanLeech.Load(), u.ProtectIP.Load()); err != nil {
+		if w.Audit != nil {
+			w.Audit.LogFailure(context.Background(), "change_passkey", "user", oldPasskey[:8]+"...", err)
+		}
 		return nil, fmt.Errorf("persist passkey change: %w", err)
+	}
+	if w.Audit != nil {
+		w.Audit.LogSuccess(context.Background(), "change_passkey", "user", oldPasskey[:8]+"...")
 	}
 	return jsonOK("passkey changed")
 }
@@ -172,6 +178,9 @@ func (w *Worker) adminAddToken(params map[string][]string) ([]byte, error) {
 	torrent.mu.Lock()
 	torrent.TokenedUsers[UserID(uid)] = struct{}{}
 	torrent.mu.Unlock()
+	if w.Audit != nil {
+		w.Audit.LogSuccess(context.Background(), "add_token", "torrent", infoHash[:8]+"...")
+	}
 	return jsonOK("token added")
 }
 
@@ -192,6 +201,9 @@ func (w *Worker) adminRemoveToken(params map[string][]string) ([]byte, error) {
 	torrent.mu.Lock()
 	delete(torrent.TokenedUsers, UserID(uid))
 	torrent.mu.Unlock()
+	if w.Audit != nil {
+		w.Audit.LogSuccess(context.Background(), "remove_token", "torrent", infoHash[:8]+"...")
+	}
 	return jsonOK("token removed")
 }
 
@@ -202,7 +214,13 @@ func (w *Worker) adminAddWhitelist(params map[string][]string) ([]byte, error) {
 	}
 	w.Whitelist.Add(prefix)
 	if err := w.DB.AddWhitelistEntry(prefix); err != nil {
+		if w.Audit != nil {
+			w.Audit.LogFailure(context.Background(), "add_whitelist", "whitelist", prefix, err)
+		}
 		return nil, fmt.Errorf("persist whitelist entry: %w", err)
+	}
+	if w.Audit != nil {
+		w.Audit.LogSuccess(context.Background(), "add_whitelist", "whitelist", prefix)
 	}
 	return jsonOK("whitelist entry added")
 }
@@ -214,7 +232,13 @@ func (w *Worker) adminRemoveWhitelist(params map[string][]string) ([]byte, error
 	}
 	w.Whitelist.Remove(prefix)
 	if err := w.DB.RemoveWhitelistEntry(prefix); err != nil {
+		if w.Audit != nil {
+			w.Audit.LogFailure(context.Background(), "remove_whitelist", "whitelist", prefix, err)
+		}
 		return nil, fmt.Errorf("persist whitelist removal: %w", err)
+	}
+	if w.Audit != nil {
+		w.Audit.LogSuccess(context.Background(), "remove_whitelist", "whitelist", prefix)
 	}
 	return jsonOK("whitelist entry removed")
 }

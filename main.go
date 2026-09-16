@@ -96,7 +96,7 @@ func main() {
 	}
 
 	// Wire audit logger against the active SQLite shard
-	auditLogger := tracker.NewAuditLogger(db.CurrentDB())
+	auditLogger := tracker.NewAuditLogger(db.CurrentDB)
 
 	// Wrap DB with circuit breaker to shed load on sustained failures.
 	protectedDB := tracker.NewCircuitBreakerDB(db, tracker.CircuitBreakerConfig{
