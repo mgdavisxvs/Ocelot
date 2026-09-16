@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/mgdavisxvs/Ocelot/ml"
 )
 
 // peerBufPool reduces GC pressure by reusing accumulation buffers in selectPeers.
@@ -59,6 +61,13 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	}
 	if !w.Whitelist.IsAllowed(req.PeerID) {
 		return nil, fmt.Errorf("your client is not on the whitelist")
+	}
+
+	// ML: client-identity anomaly detection (fast, stateless, before any DB or map access).
+	if w.ClientDetector != nil {
+		if blocked, reason := w.ClientDetector.DetectClientAnomaly(string(req.PeerID), userAgent); blocked {
+			return nil, fmt.Errorf("client rejected: %s", reason)
+		}
 	}
 
 	torrent, ok := w.Torrents.Get(req.InfoHash)
@@ -237,6 +246,21 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 
 	torrent.mu.Unlock()
 
+	// ML: behavioral anomaly detection — runs after state is computed but before DB writes.
+	if w.AnomalyDetector != nil {
+		behavior := &ml.PeerBehavior{
+			Uploaded:      req.Uploaded,
+			Downloaded:    req.Downloaded,
+			UploadSpeed:   float64(upSpeed),
+			TorrentSize:   req.Left + req.Downloaded, // approximate: remaining + already fetched
+			AnnounceCount: int(peer.Announces),
+			FirstSeen:     peer.FirstAnnounced,
+		}
+		if blocked, reason := w.AnomalyDetector.DetectAnomaly(behavior); blocked {
+			return nil, fmt.Errorf("announce rejected: %s", reason)
+		}
+	}
+
 	// DB writes after lock release — keeps lock scope minimal
 	if expireToken && recordTokenDownload > 0 {
 		w.DB.RecordToken(user.ID, torrent.ID, recordTokenDownload)
@@ -308,7 +332,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		numwant = 0
 	}
 
-	peers, peers6 := w.selectPeers(torrent, peer, user.ID, numwant, req.Left > 0)
+	peers, peers6 := w.selectPeers(torrent, peer, user.ID, numwant, req.Left > 0, ip)
 
 	w.Stats.SuccAnnouncements.Add(1)
 	if incLeechers {
@@ -372,7 +396,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 // separately. Leechers receive seeders first (round-robin), then leechers.
 // Seeders receive only leechers. sync.Pool reduces allocation pressure on the
 // accumulation buffers.
-func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool) (peers []byte, peers6 []byte) {
+func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool, requesterIP net.IP) (peers []byte, peers6 []byte) {
 	if numwant <= 0 {
 		return []byte{}, []byte{}
 	}
@@ -400,35 +424,69 @@ func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwan
 	if isLeecher {
 		seederCount := torrent.Seeders.Size()
 		if seederCount > 0 {
-			seederKeys := make([]string, 0, seederCount)
-			seederMap := make(map[string]*Peer, seederCount)
-			torrent.Seeders.ForEach(func(key string, peer *Peer) bool {
-				seederKeys = append(seederKeys, key)
-				seederMap[key] = peer
-				return true
-			})
-
-			startIdx := 0
-			if torrent.LastSelectedSeeder != "" {
-				for i, key := range seederKeys {
-					if key == torrent.LastSelectedSeeder {
-						startIdx = (i + 1) % len(seederKeys)
+			// ML-scored seeder selection: only pay scoring cost when we must choose a subset.
+			if w.PeerScorer != nil && seederCount > int(numwant) && requesterIP != nil {
+				peerInfos := make([]*ml.PeerInfo, 0, seederCount)
+				piToPeer := make(map[*ml.PeerInfo]*Peer, seederCount)
+				torrent.Seeders.ForEach(func(_ string, p *Peer) bool {
+					if p.UserID == userID || !p.Visible {
+						return true
+					}
+					pi := &ml.PeerInfo{
+						IP:           p.IP,
+						Port:         p.Port,
+						Uploaded:     p.Uploaded,
+						Downloaded:   p.Downloaded,
+						FirstSeen:    p.FirstAnnounced,
+						LastAnnounce: p.LastAnnounced,
+					}
+					peerInfos = append(peerInfos, pi)
+					piToPeer[pi] = p
+					return true
+				})
+				best := w.PeerScorer.SelectBest(peerInfos, requesterIP, int(numwant))
+				for _, pi := range best {
+					if found >= int(numwant) {
 						break
 					}
+					p := piToPeer[pi]
+					if len(p.IPPort) == 6 || len(p.IPPort) == 18 {
+						appendPeer(p)
+						found++
+					}
 				}
-			}
+			} else {
+				// Round-robin seeder selection (default when PeerScorer is nil or not needed).
+				seederKeys := make([]string, 0, seederCount)
+				seederMap := make(map[string]*Peer, seederCount)
+				torrent.Seeders.ForEach(func(key string, peer *Peer) bool {
+					seederKeys = append(seederKeys, key)
+					seederMap[key] = peer
+					return true
+				})
 
-			for i := 0; i < len(seederKeys) && found < int(numwant); i++ {
-				idx := (startIdx + i) % len(seederKeys)
-				key := seederKeys[idx]
-				peer := seederMap[key]
-				if peer.UserID == userID || !peer.Visible {
-					continue
+				startIdx := 0
+				if torrent.LastSelectedSeeder != "" {
+					for i, key := range seederKeys {
+						if key == torrent.LastSelectedSeeder {
+							startIdx = (i + 1) % len(seederKeys)
+							break
+						}
+					}
 				}
-				if len(peer.IPPort) == 6 || len(peer.IPPort) == 18 {
-					appendPeer(peer)
-					found++
-					torrent.LastSelectedSeeder = key
+
+				for i := 0; i < len(seederKeys) && found < int(numwant); i++ {
+					idx := (startIdx + i) % len(seederKeys)
+					key := seederKeys[idx]
+					peer := seederMap[key]
+					if peer.UserID == userID || !peer.Visible {
+						continue
+					}
+					if len(peer.IPPort) == 6 || len(peer.IPPort) == 18 {
+						appendPeer(peer)
+						found++
+						torrent.LastSelectedSeeder = key
+					}
 				}
 			}
 		}

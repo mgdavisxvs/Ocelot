@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mgdavisxvs/Ocelot/ml"
 )
 
 // Server is the high-performance tracker server.
@@ -496,6 +498,11 @@ type Worker struct {
 	Whitelist *Whitelist
 	Stats     *Stats
 	Audit     *AuditLogger // optional; nil disables audit logging
+
+	// ML components — all optional. nil disables the feature.
+	AnomalyDetector *ml.AnomalyDetector
+	ClientDetector  *ml.ClientAnomalyDetector
+	PeerScorer      *ml.PeerScorer
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.

@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mgdavisxvs/Ocelot/ml"
 	"github.com/mgdavisxvs/Ocelot/tracker"
 )
 
@@ -125,7 +126,12 @@ func main() {
 		Whitelist: whitelist,
 		Stats:     stats,
 		Audit:     tracker.NewAuditLogger(db.CurrentDB),
+
+		AnomalyDetector: ml.NewAnomalyDetector(),
+		ClientDetector:  ml.NewClientAnomalyDetector(),
+		PeerScorer:      ml.NewPeerScorer(),
 	}
+	log.Println("ML anomaly detection and peer scoring active")
 
 	// ── Background subsystems ─────────────────────────────────────────────────
 	reaper := tracker.NewReaper(torrents, config.ScheduleInterval, config.PeersTimeout)
