@@ -136,8 +136,15 @@ include 'includes/header.php';
     <?php endif; ?>
 
     <!-- Action Bar -->
-    <div class="mb-4 flex justify-between items-center">
-        <p class="text-sm text-gray-400"><?= number_format(count($users)) ?> registered users</p>
+    <div class="mb-4 flex flex-wrap gap-3 items-center">
+        <div class="relative flex-1 min-w-[200px]">
+            <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none"></i>
+            <input type="text" x-model="search" placeholder="Filter by user ID or passkey…"
+                   class="w-full pl-9 pr-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </div>
+        <p class="text-sm text-gray-400 whitespace-nowrap" id="userCount">
+            <?= number_format(count($users)) ?> users
+        </p>
         <button @click="showAdd = true"
                 class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700">
             <i data-lucide="user-plus" class="w-4 h-4"></i>Add User
@@ -161,7 +168,7 @@ include 'includes/header.php';
                         <th class="px-5 py-3 text-right text-xs text-gray-400 uppercase">Actions</th>
                     </tr>
                 </thead>
-                <tbody class="divide-y divide-gray-700">
+                <tbody class="divide-y divide-gray-700" id="userTableBody">
                     <?php if (empty($users)): ?>
                     <tr>
                         <td colspan="9" class="px-5 py-8 text-center text-gray-500">
@@ -174,7 +181,9 @@ include 'includes/header.php';
                         $ratioLabel = is_infinite($ratio) ? '∞' : number_format($ratio, 2);
                         $ratioColor = $ratio >= 1.0 ? 'text-green-400' : ($ratio >= 0.5 ? 'text-yellow-400' : 'text-red-400');
                     ?>
-                    <tr class="hover:bg-gray-750">
+                    <tr class="hover:bg-gray-750 user-row"
+                        data-uid="<?= $u['user_id'] ?>"
+                        data-passkey="<?= htmlspecialchars($u['passkey']) ?>">
                         <td class="px-5 py-3 font-mono text-white"><?= $u['user_id'] ?></td>
                         <td class="px-5 py-3 font-mono text-xs text-gray-400 group relative">
                             <span class="blur-sm group-hover:blur-none transition-all duration-200 select-all"
@@ -217,6 +226,9 @@ include 'includes/header.php';
                         </td>
                     </tr>
                     <?php endforeach; endif; ?>
+                    <tr id="noResultsRow" class="hidden">
+                        <td colspan="9" class="px-5 py-6 text-center text-gray-500">No users match the filter.</td>
+                    </tr>
                 </tbody>
             </table>
         </div>
@@ -387,6 +399,8 @@ function userMgmt() {
         showEdit:   false,
         showDelete: false,
         showRotate: false,
+        search:        '',
+        filtered:      [],
         newPasskey:    '',
         rotatePasskey: '',
         editId:        null,
@@ -394,6 +408,29 @@ function userMgmt() {
         editProtectIp: false,
         deleteId:      null,
         rotateId:      null,
+
+        init() {
+            this.filtered = Array.from(document.querySelectorAll('#userTableBody .user-row'));
+            this.$watch('search', v => this.filterRows(v));
+        },
+
+        filterRows(q) {
+            const term  = q.trim().toLowerCase();
+            const total = <?= count($users) ?>;
+            let visible = 0;
+            document.querySelectorAll('#userTableBody .user-row').forEach(row => {
+                const show = !term || row.dataset.uid.includes(term)
+                                   || row.dataset.passkey.toLowerCase().includes(term);
+                row.style.display = show ? '' : 'none';
+                if (show) visible++;
+            });
+            const noResults = document.getElementById('noResultsRow');
+            if (noResults) noResults.classList.toggle('hidden', visible > 0);
+            const lbl = document.getElementById('userCount');
+            if (lbl) lbl.textContent = term
+                ? `${visible} / ${total} users`
+                : `${total} users`;
+        },
 
         genPasskey() {
             const buf = new Uint8Array(16);

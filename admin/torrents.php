@@ -115,10 +115,17 @@ include 'includes/header.php';
     <?php endif; ?>
 
     <!-- Action Bar -->
-    <div class="mb-4 flex justify-between items-center">
-        <p class="text-sm text-gray-400">
-            <?= number_format(count($torrents)) ?> registered torrents
-            <span class="text-gray-600 ml-2">· peer counts reflect last 2 h</span>
+    <div class="mb-4 flex flex-wrap gap-3 items-center">
+        <div class="relative flex-1 min-w-[200px]">
+            <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none"></i>
+            <input type="text" x-model="search"
+                   @input="filterRows($event.target.value)"
+                   placeholder="Filter by torrent ID or info hash…"
+                   class="w-full pl-9 pr-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </div>
+        <p class="text-sm text-gray-400 whitespace-nowrap" id="torrentCount">
+            <?= number_format(count($torrents)) ?> torrents
+            <span class="text-gray-600">· peers: last 2 h</span>
         </p>
         <button @click="showAdd = true"
                 class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700">
@@ -142,7 +149,7 @@ include 'includes/header.php';
                         <th class="px-5 py-3 text-right text-xs text-gray-400 uppercase">Actions</th>
                     </tr>
                 </thead>
-                <tbody class="divide-y divide-gray-700">
+                <tbody class="divide-y divide-gray-700" id="torrentTableBody">
                     <?php if (empty($torrents)): ?>
                     <tr>
                         <td colspan="8" class="px-5 py-8 text-center text-gray-500">
@@ -158,7 +165,9 @@ include 'includes/header.php';
                             ? substr($t['info_hash'], 0, 8) . '…' . substr($t['info_hash'], -4)
                             : bin2hex(substr($t['info_hash'], 0, 4)) . '…';
                     ?>
-                    <tr class="hover:bg-gray-750">
+                    <tr class="hover:bg-gray-750 torrent-row"
+                        data-tid="<?= $t['torrent_id'] ?>"
+                        data-hash="<?= htmlspecialchars($t['info_hash']) ?>">
                         <td class="px-5 py-3 font-mono text-white"><?= $t['torrent_id'] ?></td>
                         <td class="px-5 py-3 font-mono text-xs text-gray-400" title="<?= htmlspecialchars($t['info_hash']) ?>">
                             <?= htmlspecialchars($hashDisplay) ?>
@@ -199,6 +208,9 @@ include 'includes/header.php';
                         </td>
                     </tr>
                     <?php endforeach; endif; ?>
+                    <tr id="torrentNoResults" class="hidden">
+                        <td colspan="8" class="px-5 py-6 text-center text-gray-500">No torrents match the filter.</td>
+                    </tr>
                 </tbody>
             </table>
         </div>
@@ -351,10 +363,29 @@ function torrentMgmt() {
         torrentInfo:   null,
         uploadError:   null,
         addInfoHash:   '',
+        search:        '',
         deleteHash:    '',
         deleteId:      null,
         freeleechHash: '',
         freeleechId:   null,
+
+        filterRows(q) {
+            const term  = q.trim().toLowerCase();
+            const total = <?= count($torrents) ?>;
+            let visible = 0;
+            document.querySelectorAll('#torrentTableBody .torrent-row').forEach(row => {
+                const show = !term || row.dataset.tid.includes(term)
+                                   || row.dataset.hash.toLowerCase().includes(term);
+                row.style.display = show ? '' : 'none';
+                if (show) visible++;
+            });
+            const nr = document.getElementById('torrentNoResults');
+            if (nr) nr.classList.toggle('hidden', visible > 0);
+            const lbl = document.getElementById('torrentCount');
+            if (lbl) lbl.innerHTML = term
+                ? `${visible} / ${total} torrents <span class="text-gray-600">· peers: last 2 h</span>`
+                : `${total} torrents <span class="text-gray-600">· peers: last 2 h</span>`;
+        },
 
         confirmDelete(hash, id) {
             this.deleteHash = hash;

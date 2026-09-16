@@ -5,68 +5,89 @@ requireAuth();
 $pageTitle = 'Dashboard';
 
 // Fetch live tracker stats (includes circuit breaker state)
-$trackerStats = TrackerAPI::getStats();
-$cbState = $trackerStats['circuit_breaker_state'] ?? null;
+$trackerStats  = TrackerAPI::getStats();
+$cbState       = $trackerStats['circuit_breaker_state'] ?? null;
 $trackerUptime = isset($trackerStats['uptime_seconds']) ? (int)$trackerStats['uptime_seconds'] : null;
 
-// Fetch recent statistics from database
+// --- Database queries, isolated so one failure doesn't zero everything ---
+$recentPeers    = ['total' => 0, 'seeders' => 0, 'leechers' => 0];
+$announceStats  = ['total_announces' => 0, 'active_users' => 0, 'active_torrents' => 0];
+$topUploaders   = [];
+$recentSnatches = [];
+$activityBuckets = [];
+$dbError = '';
+
 try {
     $db = OcelotDB::connect();
 
-    // Get peer counts from most recent records
+    // Peer counts (active in last 2 h)
     $recentPeers = $db->query("
         SELECT COUNT(*) as total,
                SUM(CASE WHEN torrent_left = 0 THEN 1 ELSE 0 END) as seeders,
                SUM(CASE WHEN torrent_left > 0 THEN 1 ELSE 0 END) as leechers
         FROM peers
-        WHERE timestamp > " . (time() - 7200) . "
-    ")->fetch();
+        WHERE timestamp > " . (time() - 7200)
+    )->fetch();
 
-    // Get announce counts
+    // Announce / user / torrent counts (last 1 h)
     $announceStats = $db->query("
         SELECT COUNT(*) as total_announces,
                COUNT(DISTINCT user_id) as active_users,
                COUNT(DISTINCT torrent_id) as active_torrents
         FROM peers
-        WHERE timestamp > " . (time() - 3600) . "
-    ")->fetch();
+        WHERE timestamp > " . (time() - 3600)
+    )->fetch();
 
-    // Get top uploaders
+    // Top uploaders — from users table (id, uploaded, downloaded)
     $topUploaders = $db->query("
-        SELECT user_id, SUM(uploaded) as total_uploaded
-        FROM user_stats
-        GROUP BY user_id
-        ORDER BY total_uploaded DESC
+        SELECT id as user_id, uploaded as total_uploaded
+        FROM users
+        WHERE uploaded > 0
+        ORDER BY uploaded DESC
         LIMIT 10
     ")->fetchAll();
 
-    // Get recent snatches
+    // Recent snatches
     $recentSnatches = $db->query("
-        SELECT torrent_id, user_id, timestamp, ip
+        SELECT torrent_id, user_id, snatched_time as timestamp
         FROM snatches
-        ORDER BY timestamp DESC
+        ORDER BY snatched_time DESC
         LIMIT 20
     ")->fetchAll();
 
+    // 5-minute announce buckets for last 1 h (12 data points)
+    $activityBuckets = $db->query("
+        SELECT (timestamp / 300) * 300 as bucket,
+               COUNT(*) as announces
+        FROM peers
+        WHERE timestamp > " . (time() - 3600) . "
+        GROUP BY bucket
+        ORDER BY bucket
+    ")->fetchAll();
+
 } catch (Exception $e) {
-    $error = $e->getMessage();
-    $recentPeers = ['total' => 0, 'seeders' => 0, 'leechers' => 0];
-    $announceStats = ['total_announces' => 0, 'active_users' => 0, 'active_torrents' => 0];
-    $topUploaders = [];
-    $recentSnatches = [];
+    $dbError = $e->getMessage();
+}
+
+// Fill gaps so chart always has 12 evenly-spaced points
+$now       = time();
+$bucketMap = [];
+foreach ($activityBuckets as $b) {
+    $bucketMap[(int)$b['bucket']] = (int)$b['announces'];
+}
+$chartPoints = [];
+for ($i = 11; $i >= 0; $i--) {
+    $ts = (int)(floor(($now - $i * 300) / 300) * 300);
+    $chartPoints[] = ['ts' => $ts, 'label' => date('H:i', $ts), 'announces' => $bucketMap[$ts] ?? 0];
 }
 
 include 'includes/header.php';
 ?>
 
-<?php if (isset($error)): ?>
-<div class="rounded-md bg-red-900 border border-red-700 p-4 mb-6">
-    <div class="flex">
-        <i data-lucide="alert-circle" class="h-5 w-5 text-red-400"></i>
-        <div class="ml-3">
-            <p class="text-sm text-red-200">Database Error: <?= htmlspecialchars($error) ?></p>
-        </div>
-    </div>
+<?php if ($dbError): ?>
+<div class="bg-red-900 border border-red-700 rounded-lg p-4 mb-6 flex items-center gap-3">
+    <i data-lucide="alert-circle" class="w-5 h-5 text-red-400 flex-shrink-0"></i>
+    <p class="text-sm text-red-200">Database error: <?= htmlspecialchars($dbError) ?></p>
 </div>
 <?php endif; ?>
 
@@ -110,257 +131,305 @@ include 'includes/header.php';
     <?php if (!empty($trackerStats['announcements'])): ?>
     <div class="flex items-center gap-2 px-3 py-2 rounded-md border bg-gray-800 border-gray-700 text-gray-300 text-sm">
         <i data-lucide="zap" class="w-4 h-4"></i>
-        <?= number_format($trackerStats['announcements']) ?> announces total
+        <?= number_format($trackerStats['announcements']) ?> total announces
+    </div>
+    <?php endif; ?>
+
+    <?php if (!empty($trackerStats['num_torrents'])): ?>
+    <div class="flex items-center gap-2 px-3 py-2 rounded-md border bg-gray-800 border-gray-700 text-gray-300 text-sm">
+        <i data-lucide="disc" class="w-4 h-4"></i>
+        <?= number_format($trackerStats['num_torrents']) ?> torrents loaded
     </div>
     <?php endif; ?>
 </div>
 
 <!-- Stats Grid -->
-<div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4 mb-8">
-    <!-- Total Peers -->
-    <div class="bg-gray-800 overflow-hidden shadow rounded-lg border border-gray-700">
-        <div class="p-5">
-            <div class="flex items-center">
-                <div class="flex-shrink-0">
-                    <i data-lucide="users" class="h-8 w-8 text-blue-400"></i>
-                </div>
-                <div class="ml-5 w-0 flex-1">
-                    <dl>
-                        <dt class="text-sm font-medium text-gray-400 truncate">Total Peers</dt>
-                        <dd class="text-3xl font-semibold text-white"><?= number_format($recentPeers['total']) ?></dd>
-                    </dl>
-                </div>
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+        <div class="flex items-center gap-3">
+            <i data-lucide="users" class="w-7 h-7 text-blue-400 flex-shrink-0"></i>
+            <div>
+                <p class="text-xs text-gray-400">Total Peers</p>
+                <p class="text-2xl font-bold text-white"><?= number_format($recentPeers['total']) ?></p>
+                <p class="text-xs text-gray-600">active 2 h</p>
             </div>
         </div>
     </div>
-
-    <!-- Seeders -->
-    <div class="bg-gray-800 overflow-hidden shadow rounded-lg border border-gray-700">
-        <div class="p-5">
-            <div class="flex items-center">
-                <div class="flex-shrink-0">
-                    <i data-lucide="arrow-up" class="h-8 w-8 text-green-400"></i>
-                </div>
-                <div class="ml-5 w-0 flex-1">
-                    <dl>
-                        <dt class="text-sm font-medium text-gray-400 truncate">Seeders</dt>
-                        <dd class="text-3xl font-semibold text-white"><?= number_format($recentPeers['seeders']) ?></dd>
-                    </dl>
-                </div>
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+        <div class="flex items-center gap-3">
+            <i data-lucide="arrow-up-circle" class="w-7 h-7 text-green-400 flex-shrink-0"></i>
+            <div>
+                <p class="text-xs text-gray-400">Seeders</p>
+                <p class="text-2xl font-bold text-white"><?= number_format($recentPeers['seeders']) ?></p>
+                <p class="text-xs text-gray-600">active 2 h</p>
             </div>
         </div>
     </div>
-
-    <!-- Leechers -->
-    <div class="bg-gray-800 overflow-hidden shadow rounded-lg border border-gray-700">
-        <div class="p-5">
-            <div class="flex items-center">
-                <div class="flex-shrink-0">
-                    <i data-lucide="arrow-down" class="h-8 w-8 text-yellow-400"></i>
-                </div>
-                <div class="ml-5 w-0 flex-1">
-                    <dl>
-                        <dt class="text-sm font-medium text-gray-400 truncate">Leechers</dt>
-                        <dd class="text-3xl font-semibold text-white"><?= number_format($recentPeers['leechers']) ?></dd>
-                    </dl>
-                </div>
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+        <div class="flex items-center gap-3">
+            <i data-lucide="arrow-down-circle" class="w-7 h-7 text-yellow-400 flex-shrink-0"></i>
+            <div>
+                <p class="text-xs text-gray-400">Leechers</p>
+                <p class="text-2xl font-bold text-white"><?= number_format($recentPeers['leechers']) ?></p>
+                <p class="text-xs text-gray-600">active 2 h</p>
             </div>
         </div>
     </div>
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+        <div class="flex items-center gap-3">
+            <i data-lucide="activity" class="w-7 h-7 text-purple-400 flex-shrink-0"></i>
+            <div>
+                <p class="text-xs text-gray-400">Announces</p>
+                <p class="text-2xl font-bold text-white"><?= number_format($announceStats['total_announces']) ?></p>
+                <p class="text-xs text-gray-600">last 1 h</p>
+            </div>
+        </div>
+    </div>
+</div>
 
-    <!-- Announces (1h) -->
-    <div class="bg-gray-800 overflow-hidden shadow rounded-lg border border-gray-700">
-        <div class="p-5">
-            <div class="flex items-center">
-                <div class="flex-shrink-0">
-                    <i data-lucide="activity" class="h-8 w-8 text-purple-400"></i>
-                </div>
-                <div class="ml-5 w-0 flex-1">
-                    <dl>
-                        <dt class="text-sm font-medium text-gray-400 truncate">Announces (1h)</dt>
-                        <dd class="text-3xl font-semibold text-white"><?= number_format($announceStats['total_announces']) ?></dd>
-                    </dl>
-                </div>
+<!-- Second row of stats -->
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+        <div class="flex items-center gap-3">
+            <i data-lucide="user-check" class="w-7 h-7 text-cyan-400 flex-shrink-0"></i>
+            <div>
+                <p class="text-xs text-gray-400">Active Users</p>
+                <p class="text-2xl font-bold text-white"><?= number_format($announceStats['active_users']) ?></p>
+                <p class="text-xs text-gray-600">last 1 h</p>
+            </div>
+        </div>
+    </div>
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+        <div class="flex items-center gap-3">
+            <i data-lucide="disc" class="w-7 h-7 text-indigo-400 flex-shrink-0"></i>
+            <div>
+                <p class="text-xs text-gray-400">Active Torrents</p>
+                <p class="text-2xl font-bold text-white"><?= number_format($announceStats['active_torrents']) ?></p>
+                <p class="text-xs text-gray-600">last 1 h</p>
+            </div>
+        </div>
+    </div>
+    <?php
+    $totalUp = array_sum(array_column($topUploaders, 'total_uploaded'));
+    $shards  = [];
+    try { $shards = OcelotDB::getAllShards(); } catch (Exception $e) {}
+    $totalShardSize = array_sum(array_map('filesize', $shards));
+    ?>
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+        <div class="flex items-center gap-3">
+            <i data-lucide="upload" class="w-7 h-7 text-green-400 flex-shrink-0"></i>
+            <div>
+                <p class="text-xs text-gray-400">Total Uploaded</p>
+                <p class="text-2xl font-bold text-white"><?= formatBytes($totalUp) ?></p>
+                <p class="text-xs text-gray-600">all time</p>
+            </div>
+        </div>
+    </div>
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+        <div class="flex items-center gap-3">
+            <i data-lucide="database" class="w-7 h-7 text-orange-400 flex-shrink-0"></i>
+            <div>
+                <p class="text-xs text-gray-400">DB Size</p>
+                <p class="text-2xl font-bold text-white"><?= formatBytes($totalShardSize) ?></p>
+                <p class="text-xs text-gray-600"><?= count($shards) ?> shard<?= count($shards) !== 1 ? 's' : '' ?></p>
             </div>
         </div>
     </div>
 </div>
 
 <!-- Charts Row -->
-<div class="grid grid-cols-1 gap-6 lg:grid-cols-2 mb-8">
-    <!-- Peer Distribution Chart -->
-    <div class="bg-gray-800 shadow rounded-lg border border-gray-700 p-6">
-        <h3 class="text-lg font-medium text-white mb-4">Peer Distribution</h3>
-        <div id="peerChart" class="h-64"></div>
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    <!-- Peer Distribution -->
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-5">
+        <h3 class="text-base font-semibold text-white mb-4">Peer Distribution</h3>
+        <div id="peerChart" style="height:220px;"></div>
     </div>
 
-    <!-- Activity Timeline -->
-    <div class="bg-gray-800 shadow rounded-lg border border-gray-700 p-6">
-        <h3 class="text-lg font-medium text-white mb-4">Activity Timeline (Last Hour)</h3>
-        <div id="activityChart" class="h-64"></div>
+    <!-- 5-min Activity Buckets -->
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-5">
+        <h3 class="text-base font-semibold text-white mb-4 flex items-center gap-2">
+            Announce Activity
+            <span class="text-xs text-gray-500 font-normal">last 60 min · 5 min buckets</span>
+        </h3>
+        <div id="activityChart" style="height:220px;"></div>
     </div>
 </div>
 
 <!-- Tables Row -->
-<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
     <!-- Top Uploaders -->
-    <div class="bg-gray-800 shadow rounded-lg border border-gray-700">
-        <div class="px-4 py-5 sm:px-6 border-b border-gray-700">
-            <h3 class="text-lg font-medium text-white">Top Uploaders</h3>
+    <div class="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
+        <div class="px-5 py-4 border-b border-gray-700 flex items-center gap-2">
+            <i data-lucide="trophy" class="w-4 h-4 text-yellow-400"></i>
+            <h3 class="text-sm font-semibold text-white">Top Uploaders</h3>
         </div>
-        <div class="overflow-hidden">
-            <table class="min-w-full divide-y divide-gray-700">
-                <thead class="bg-gray-900">
-                    <tr>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">User ID</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Uploaded</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-700">
-                    <?php if (empty($topUploaders)): ?>
-                    <tr>
-                        <td colspan="2" class="px-6 py-4 text-sm text-gray-400 text-center">No data available</td>
-                    </tr>
-                    <?php else: ?>
-                        <?php foreach ($topUploaders as $uploader): ?>
-                        <tr>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-white"><?= $uploader['user_id'] ?></td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-green-400"><?= formatBytes($uploader['total_uploaded']) ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </tbody>
-            </table>
-        </div>
+        <table class="min-w-full divide-y divide-gray-700 text-sm">
+            <thead class="bg-gray-900">
+                <tr>
+                    <th class="px-5 py-3 text-left text-xs text-gray-400 uppercase">#</th>
+                    <th class="px-5 py-3 text-left text-xs text-gray-400 uppercase">User</th>
+                    <th class="px-5 py-3 text-left text-xs text-gray-400 uppercase">Uploaded</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-700">
+                <?php if (empty($topUploaders)): ?>
+                <tr><td colspan="3" class="px-5 py-6 text-center text-gray-500">No data</td></tr>
+                <?php else: foreach ($topUploaders as $i => $u): ?>
+                <tr class="hover:bg-gray-750">
+                    <td class="px-5 py-3 text-gray-500 text-xs"><?= $i + 1 ?></td>
+                    <td class="px-5 py-3 text-blue-400 font-mono"><?= $u['user_id'] ?></td>
+                    <td class="px-5 py-3 text-green-400"><?= formatBytes($u['total_uploaded']) ?></td>
+                </tr>
+                <?php endforeach; endif; ?>
+            </tbody>
+        </table>
     </div>
 
     <!-- Recent Snatches -->
-    <div class="bg-gray-800 shadow rounded-lg border border-gray-700">
-        <div class="px-4 py-5 sm:px-6 border-b border-gray-700">
-            <h3 class="text-lg font-medium text-white">Recent Snatches</h3>
+    <div class="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
+        <div class="px-5 py-4 border-b border-gray-700 flex items-center gap-2">
+            <i data-lucide="download" class="w-4 h-4 text-purple-400"></i>
+            <h3 class="text-sm font-semibold text-white">Recent Snatches</h3>
         </div>
-        <div class="overflow-hidden">
-            <table class="min-w-full divide-y divide-gray-700">
-                <thead class="bg-gray-900">
-                    <tr>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Torrent</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">User</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Time</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-700">
-                    <?php if (empty($recentSnatches)): ?>
-                    <tr>
-                        <td colspan="3" class="px-6 py-4 text-sm text-gray-400 text-center">No snatches yet</td>
-                    </tr>
-                    <?php else: ?>
-                        <?php foreach (array_slice($recentSnatches, 0, 10) as $snatch): ?>
-                        <tr>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-white"><?= $snatch['torrent_id'] ?></td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-blue-400"><?= $snatch['user_id'] ?></td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400"><?= timeAgo($snatch['timestamp']) ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </tbody>
-            </table>
-        </div>
+        <table class="min-w-full divide-y divide-gray-700 text-sm">
+            <thead class="bg-gray-900">
+                <tr>
+                    <th class="px-5 py-3 text-left text-xs text-gray-400 uppercase">Torrent</th>
+                    <th class="px-5 py-3 text-left text-xs text-gray-400 uppercase">User</th>
+                    <th class="px-5 py-3 text-left text-xs text-gray-400 uppercase">When</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-700">
+                <?php if (empty($recentSnatches)): ?>
+                <tr><td colspan="3" class="px-5 py-6 text-center text-gray-500">No snatches yet</td></tr>
+                <?php else: foreach (array_slice($recentSnatches, 0, 15) as $s): ?>
+                <tr class="hover:bg-gray-750">
+                    <td class="px-5 py-3 text-white font-mono"><?= $s['torrent_id'] ?></td>
+                    <td class="px-5 py-3 text-blue-400"><?= $s['user_id'] ?></td>
+                    <td class="px-5 py-3 text-gray-400 text-xs"><?= timeAgo($s['timestamp']) ?></td>
+                </tr>
+                <?php endforeach; endif; ?>
+            </tbody>
+        </table>
     </div>
 </div>
 
 <script>
-// Peer Distribution Pie Chart
-const peerData = [
-    { label: 'Seeders', value: <?= $recentPeers['seeders'] ?>, color: '#4ade80' },
-    { label: 'Leechers', value: <?= $recentPeers['leechers'] ?>, color: '#fbbf24' }
-];
+// ---- Peer Distribution Donut ----
+(function() {
+    const seeders  = <?= (int)$recentPeers['seeders'] ?>;
+    const leechers = <?= (int)$recentPeers['leechers'] ?>;
+    const total    = seeders + leechers;
 
-const width = document.getElementById('peerChart').clientWidth;
-const height = 256;
-const radius = Math.min(width, height) / 2;
+    const el = document.getElementById('peerChart');
+    const w  = el.clientWidth;
+    const h  = 220;
+    const r  = Math.min(w, h) / 2 - 10;
 
-const svg = d3.select('#peerChart')
-    .append('svg')
-    .attr('width', width)
-    .attr('height', height)
-    .append('g')
-    .attr('transform', `translate(${width/2},${height/2})`);
+    const svg = d3.select(el).append('svg')
+        .attr('width', w).attr('height', h)
+        .append('g').attr('transform', `translate(${w/2},${h/2})`);
 
-const pie = d3.pie().value(d => d.value);
-const arc = d3.arc().innerRadius(0).outerRadius(radius - 10);
+    if (total === 0) {
+        svg.append('text').attr('text-anchor','middle').attr('fill','#6b7280')
+           .attr('dy','0.35em').text('No active peers');
+        return;
+    }
 
-const arcs = svg.selectAll('arc')
-    .data(pie(peerData))
-    .enter()
-    .append('g');
+    const data = [
+        { label: 'Seeders',  value: seeders,  color: '#4ade80' },
+        { label: 'Leechers', value: leechers, color: '#fbbf24' }
+    ];
 
-arcs.append('path')
-    .attr('d', arc)
-    .attr('fill', d => d.data.color)
-    .attr('stroke', '#1f2937')
-    .attr('stroke-width', 2);
+    const pie  = d3.pie().sort(null).value(d => d.value);
+    const arc  = d3.arc().innerRadius(r * 0.55).outerRadius(r);
+    const arcs = svg.selectAll('g').data(pie(data)).enter().append('g');
 
-arcs.append('text')
-    .attr('transform', d => `translate(${arc.centroid(d)})`)
-    .attr('text-anchor', 'middle')
-    .attr('fill', 'white')
-    .attr('font-size', '14px')
-    .text(d => d.data.value > 0 ? d.data.label : '');
+    arcs.append('path')
+        .attr('d', arc)
+        .attr('fill', d => d.data.color)
+        .attr('stroke', '#1f2937').attr('stroke-width', 2);
 
-// Activity Timeline (Mock data - replace with real data from API)
-const activityData = Array.from({length: 12}, (_, i) => ({
-    time: new Date(Date.now() - (11-i) * 5 * 60000),
-    announces: Math.floor(Math.random() * 100) + 20
-}));
+    // Center label
+    svg.append('text').attr('text-anchor','middle').attr('fill','white')
+       .attr('font-size','22px').attr('font-weight','bold').attr('dy','-0.1em')
+       .text(total.toLocaleString());
+    svg.append('text').attr('text-anchor','middle').attr('fill','#9ca3af')
+       .attr('font-size','11px').attr('dy','1.4em').text('peers');
 
-const margin = {top: 10, right: 30, bottom: 30, left: 40};
-const chartWidth = document.getElementById('activityChart').clientWidth - margin.left - margin.right;
-const chartHeight = 256 - margin.top - margin.bottom;
+    // Legend
+    const legend = d3.select(el).select('svg').append('g')
+        .attr('transform', `translate(10, ${h - 40})`);
+    data.forEach((d, i) => {
+        const g = legend.append('g').attr('transform', `translate(${i * 110}, 0)`);
+        g.append('rect').attr('width', 10).attr('height', 10).attr('rx', 2).attr('fill', d.color);
+        g.append('text').attr('x', 14).attr('y', 9).attr('fill', '#d1d5db')
+         .attr('font-size', '11px')
+         .text(`${d.label}: ${d.value}`);
+    });
+})();
 
-const timelineSvg = d3.select('#activityChart')
-    .append('svg')
-    .attr('width', chartWidth + margin.left + margin.right)
-    .attr('height', chartHeight + margin.top + margin.bottom)
-    .append('g')
-    .attr('transform', `translate(${margin.left},${margin.top})`);
+// ---- Announce Activity Bar Chart ----
+(function() {
+    const data = <?= json_encode($chartPoints) ?>;
+    const el   = document.getElementById('activityChart');
+    const margin = { top: 10, right: 20, bottom: 30, left: 45 };
+    const w = el.clientWidth - margin.left - margin.right;
+    const h = 220 - margin.top - margin.bottom;
 
-const x = d3.scaleTime()
-    .domain(d3.extent(activityData, d => d.time))
-    .range([0, chartWidth]);
+    const svg = d3.select(el).append('svg')
+        .attr('width',  w + margin.left + margin.right)
+        .attr('height', h + margin.top  + margin.bottom)
+        .append('g').attr('transform', `translate(${margin.left},${margin.top})`);
 
-const y = d3.scaleLinear()
-    .domain([0, d3.max(activityData, d => d.announces)])
-    .range([chartHeight, 0]);
+    const x = d3.scaleBand()
+        .domain(data.map(d => d.label))
+        .range([0, w]).padding(0.25);
 
-timelineSvg.append('g')
-    .attr('transform', `translate(0,${chartHeight})`)
-    .call(d3.axisBottom(x).ticks(6).tickFormat(d3.timeFormat('%H:%M')))
-    .attr('color', '#9ca3af');
+    const maxVal = d3.max(data, d => d.announces) || 10;
+    const y = d3.scaleLinear().domain([0, maxVal]).nice().range([h, 0]);
 
-timelineSvg.append('g')
-    .call(d3.axisLeft(y))
-    .attr('color', '#9ca3af');
+    // Grid lines
+    svg.append('g').call(
+        d3.axisLeft(y).tickSize(-w).tickFormat('')
+    ).selectAll('line').attr('stroke','#374151').attr('stroke-dasharray','2,2');
+    svg.select('.domain').remove();
 
-const line = d3.line()
-    .x(d => x(d.time))
-    .y(d => y(d.announces))
-    .curve(d3.curveMonotoneX);
+    // Axes
+    svg.append('g').attr('transform', `translate(0,${h})`)
+       .call(d3.axisBottom(x).tickValues(data.filter((_,i) => i % 3 === 0).map(d => d.label)))
+       .selectAll('text').attr('fill','#9ca3af').attr('font-size','10px');
+    svg.append('g').call(d3.axisLeft(y).ticks(4))
+       .selectAll('text').attr('fill','#9ca3af').attr('font-size','10px');
+    svg.selectAll('.domain').attr('stroke','#374151');
 
-timelineSvg.append('path')
-    .datum(activityData)
-    .attr('fill', 'none')
-    .attr('stroke', '#8b5cf6')
-    .attr('stroke-width', 2)
-    .attr('d', line);
+    // Bars
+    svg.selectAll('.bar').data(data).enter().append('rect')
+        .attr('class','bar')
+        .attr('x', d => x(d.label))
+        .attr('y', d => y(d.announces))
+        .attr('width', x.bandwidth())
+        .attr('height', d => h - y(d.announces))
+        .attr('fill', '#8b5cf6').attr('rx', 2).attr('opacity', 0.85)
+        .on('mouseover', function(event, d) {
+            d3.select(this).attr('opacity', 1);
+            tooltip.style('display','block')
+                   .html(`<span class="font-mono text-xs">${d.label}</span><br>${d.announces} announces`)
+                   .style('left', (event.pageX + 8) + 'px')
+                   .style('top',  (event.pageY - 28) + 'px');
+        })
+        .on('mouseout', function() {
+            d3.select(this).attr('opacity', 0.85);
+            tooltip.style('display','none');
+        });
 
-timelineSvg.selectAll('dot')
-    .data(activityData)
-    .enter()
-    .append('circle')
-    .attr('cx', d => x(d.time))
-    .attr('cy', d => y(d.announces))
-    .attr('r', 3)
-    .attr('fill', '#8b5cf6');
+    const tooltip = d3.select('body').append('div')
+        .style('position','absolute').style('display','none')
+        .style('background','#1f2937').style('border','1px solid #374151')
+        .style('color','#f3f4f6').style('padding','6px 10px')
+        .style('border-radius','6px').style('pointer-events','none')
+        .style('font-size','12px').style('z-index','100');
+})();
 </script>
 
 <?php include 'includes/footer.php'; ?>
