@@ -45,10 +45,10 @@ func TestHandleUpdate_AddTorrent(t *testing.T) {
 	if _, ok := w.Torrents.Get("testhash000000000001"); !ok {
 		t.Error("torrent not added to TorrentList")
 	}
-	var resp map[string]string
+	var resp map[string]interface{}
 	json.Unmarshal(data, &resp)
-	if resp["status"] != "ok" {
-		t.Errorf("status = %q, want \"ok\"", resp["status"])
+	if resp["success"] != true {
+		t.Errorf("success = %v, want true", resp["success"])
 	}
 
 	// Verify FreeType was set
