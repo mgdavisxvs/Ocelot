@@ -356,9 +356,32 @@ func TestGetStats_Fields(t *testing.T) {
 	checkFloat("seeders", 5)
 	checkFloat("leechers", 3)
 	checkFloat("announcements", 100)
+	checkFloat("client_rejections", 0)
+	checkFloat("anomaly_rejections", 0)
 
 	if _, ok := m["uptime_seconds"]; !ok {
 		t.Error("missing uptime_seconds")
+	}
+}
+
+func TestGetStats_MLCounters_IncrementCorrectly(t *testing.T) {
+	w := newAdminWorker()
+	w.Stats.ClientRejections.Store(7)
+	w.Stats.AnomalyRejections.Store(3)
+
+	data, err := w.GetStats()
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("JSON unmarshal: %v", err)
+	}
+	if m["client_rejections"].(float64) != 7 {
+		t.Errorf("client_rejections = %v, want 7", m["client_rejections"])
+	}
+	if m["anomaly_rejections"].(float64) != 3 {
+		t.Errorf("anomaly_rejections = %v, want 3", m["anomaly_rejections"])
 	}
 }
 

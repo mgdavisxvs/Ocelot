@@ -66,6 +66,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	// ML: client-identity anomaly detection (fast, stateless, before any DB or map access).
 	if w.ClientDetector != nil {
 		if blocked, reason := w.ClientDetector.DetectClientAnomaly(string(req.PeerID), userAgent); blocked {
+			w.Stats.ClientRejections.Add(1)
 			return nil, fmt.Errorf("client rejected: %s", reason)
 		}
 	}
@@ -257,6 +258,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 			FirstSeen:     peer.FirstAnnounced,
 		}
 		if blocked, reason := w.AnomalyDetector.DetectAnomaly(behavior); blocked {
+			w.Stats.AnomalyRejections.Add(1)
 			return nil, fmt.Errorf("announce rejected: %s", reason)
 		}
 	}

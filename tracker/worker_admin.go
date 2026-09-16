@@ -127,6 +127,9 @@ func (w *Worker) adminUpdateTorrent(params map[string][]string) ([]byte, error) 
 		t.FreeType = FreeType(v)
 		t.mu.Unlock()
 	}
+	if w.Audit != nil {
+		w.Audit.LogSuccess(context.Background(), "update_torrent", "torrent", infoHash)
+	}
 	return jsonOK("torrent updated")
 }
 
@@ -327,6 +330,8 @@ func (w *Worker) GetStats() ([]byte, error) {
 		"torrent_count":       w.Torrents.Size(),
 		"user_count":          w.Users.Size(),
 		"whitelist_count":     len(w.Whitelist.GetAll()),
+		"client_rejections":   w.Stats.ClientRejections.Load(),
+		"anomaly_rejections":  w.Stats.AnomalyRejections.Load(),
 	}
 	type cbStater interface{ CBState() string }
 	if cb, ok := w.DB.(cbStater); ok {

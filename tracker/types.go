@@ -274,6 +274,10 @@ type Stats struct {
 	BytesRead         atomic.Uint64
 	BytesWritten      atomic.Uint64
 	StartTime         time.Time
+
+	// ML security counters — incremented when anomaly/client detectors fire.
+	ClientRejections  atomic.Uint64 // known_malicious_client, suspicious_client_id_pattern
+	AnomalyRejections atomic.Uint64 // ratio_cheating, impossible_upload_speed, ddos_pattern, …
 }
 
 // Whitelist is a concurrent-safe list of allowed BitTorrent client peer_id prefixes.
