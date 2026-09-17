@@ -278,8 +278,10 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 }
 
 func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool) []byte {
+	scrapeStart := time.Now()
 	_, ok := s.worker.Users.Get(passkey)
 	if !ok {
+		GetMetricsRecorder().RecordScrape("error", time.Since(scrapeStart))
 		return s.errorResponse("Passkey not found", httpClose)
 	}
 
@@ -305,6 +307,7 @@ func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool)
 			seeders, leechers, completed))
 	}
 	b.WriteString("ee")
+	GetMetricsRecorder().RecordScrape("success", time.Since(scrapeStart))
 	return s.response(b.String(), httpClose, false)
 }
 

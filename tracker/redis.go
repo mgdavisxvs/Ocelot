@@ -11,10 +11,9 @@ import (
 
 // RedisBackend provides Redis-based shared state for multi-instance deployment
 type RedisBackend struct {
-	client  *redis.Client
-	ctx     context.Context
-	logger  *Logger
-	metrics *MetricsRecorder
+	client *redis.Client
+	ctx    context.Context
+	logger *Logger
 }
 
 // RedisConfig holds Redis configuration
@@ -45,28 +44,27 @@ func NewRedisBackend(config RedisConfig) (*RedisBackend, error) {
 	}
 
 	return &RedisBackend{
-		client:  client,
-		ctx:     ctx,
-		logger:  GetDefaultLogger(),
-		metrics: GetMetricsRecorder(),
+		client: client,
+		ctx:    ctx,
+		logger: GetDefaultLogger(),
 	}, nil
 }
 
 // AddPeer stores a peer in Redis with TTL
 func (r *RedisBackend) AddPeer(infoHash string, peerID string, peer *Peer, ttl time.Duration) error {
+	_, span := TraceRedisOp(r.ctx, "add_peer")
+	defer span.End()
+
 	key := fmt.Sprintf("torrent:%s:peers", infoHash)
 	peerData, err := json.Marshal(peer)
 	if err != nil {
 		return err
 	}
 
-	// Use HSET to store peer in hash
 	err = r.client.HSet(r.ctx, key, peerID, peerData).Err()
 	if err != nil {
 		return err
 	}
-
-	// Set TTL on the hash
 	r.client.Expire(r.ctx, key, ttl)
 
 	r.logger.Debug("peer added to Redis",
@@ -80,9 +78,10 @@ func (r *RedisBackend) AddPeer(infoHash string, peerID string, peer *Peer, ttl t
 
 // GetPeers retrieves all peers for a torrent from Redis
 func (r *RedisBackend) GetPeers(infoHash string) ([]*Peer, error) {
-	key := fmt.Sprintf("torrent:%s:peers", infoHash)
+	_, span := TraceRedisOp(r.ctx, "get_peers")
+	defer span.End()
 
-	// Get all peers from hash
+	key := fmt.Sprintf("torrent:%s:peers", infoHash)
 	peerMap, err := r.client.HGetAll(r.ctx, key).Result()
 	if err != nil {
 		return nil, err
@@ -103,12 +102,18 @@ func (r *RedisBackend) GetPeers(infoHash string) ([]*Peer, error) {
 
 // RemovePeer removes a peer from Redis
 func (r *RedisBackend) RemovePeer(infoHash string, peerID []byte) error {
+	_, span := TraceRedisOp(r.ctx, "remove_peer")
+	defer span.End()
+
 	key := fmt.Sprintf("torrent:%s:peers", infoHash)
 	return r.client.HDel(r.ctx, key, string(peerID)).Err()
 }
 
 // GetTorrent retrieves torrent metadata from Redis cache
 func (r *RedisBackend) GetTorrent(infoHash string) (*Torrent, error) {
+	_, span := TraceRedisOp(r.ctx, "get_torrent")
+	defer span.End()
+
 	key := "torrent:" + infoHash
 	data, err := r.client.Get(r.ctx, key).Result()
 	if err == redis.Nil {
@@ -128,6 +133,9 @@ func (r *RedisBackend) GetTorrent(infoHash string) (*Torrent, error) {
 
 // CacheTorrent stores torrent metadata in Redis with TTL
 func (r *RedisBackend) CacheTorrent(infoHash string, torrent *Torrent, ttl time.Duration) error {
+	_, span := TraceRedisOp(r.ctx, "cache_torrent")
+	defer span.End()
+
 	key := "torrent:" + infoHash
 	data, err := json.Marshal(torrent)
 	if err != nil {
@@ -184,6 +192,9 @@ func (r *RedisBackend) GetSwarmStats(infoHash string) (seeders, leechers int64, 
 
 // PublishUpdate publishes an update event to all tracker instances
 func (r *RedisBackend) PublishUpdate(channel string, message interface{}) error {
+	_, span := TraceRedisOp(r.ctx, "publish")
+	defer span.End()
+
 	data, err := json.Marshal(message)
 	if err != nil {
 		return err

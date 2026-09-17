@@ -38,6 +38,7 @@ func NewSSEHub(bus *Bus) *SSEHub {
 	bus.Subscribe("infra.bus_drop", h.forward)
 	bus.Subscribe("torrent.completed", h.forward)
 	bus.Subscribe("swarm.updated", h.forward)
+	bus.Subscribe("announce.success", h.forward)
 	return h
 }
 

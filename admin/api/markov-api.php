@@ -49,14 +49,6 @@ class MarkovAPI {
         return self::get('/chain/torrent');
     }
 
-    public static function torrent(int $id): ?array {
-        return self::get('/torrent/' . $id);
-    }
-
-    public static function userAnomaly(int $uid): ?array {
-        return self::get('/user/' . $uid . '/anomaly');
-    }
-
     public static function freeleech(): ?array {
         return self::get('/freeleech');
     }

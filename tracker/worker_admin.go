@@ -92,6 +92,7 @@ func (w *Worker) adminAddTorrent(params map[string][]string) ([]byte, error) {
 	t := NewTorrent(TorrentID(id))
 	t.FreeType = ft
 	w.Torrents.Set(infoHash, t)
+	GetMetricsRecorder().UpdateTorrentCount(w.Torrents.Size())
 	if err := w.DB.RecordTorrentHash(TorrentID(id), infoHash); err != nil {
 		return nil, fmt.Errorf("persist torrent hash: %w", err)
 	}
@@ -107,6 +108,7 @@ func (w *Worker) adminDeleteTorrent(params map[string][]string) ([]byte, error) 
 		return nil, fmt.Errorf("delete_torrent requires info_hash")
 	}
 	w.Torrents.Delete(infoHash)
+	GetMetricsRecorder().UpdateTorrentCount(w.Torrents.Size())
 	if w.Audit != nil {
 		w.Audit.LogSuccess(context.Background(), "delete_torrent", "torrent", infoHash)
 	}

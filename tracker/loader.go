@@ -23,6 +23,7 @@ func (l *Loader) LoadAll() error {
 	if err := l.loadTorrents(); err != nil {
 		return fmt.Errorf("load torrents: %w", err)
 	}
+	GetMetricsRecorder().UpdateTorrentCount(l.torrents.Size())
 	if err := l.loadUsers(); err != nil {
 		return fmt.Errorf("load users: %w", err)
 	}

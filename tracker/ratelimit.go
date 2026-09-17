@@ -105,6 +105,7 @@ func RateLimitMiddleware(limiter *RateLimiter) func(http.Handler) http.Handler {
 					"ip", ip,
 					"path", r.URL.Path,
 				)
+				rateLimitExceeded.WithLabelValues(ip).Inc()
 				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
 				return
 			}

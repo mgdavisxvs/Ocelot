@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -418,6 +419,10 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 			req.Uploaded, req.Downloaded, req.Left, seederCount, leecherCount))
 	}
 
+	m := GetMetricsRecorder()
+	m.RecordAnnounce(req.Event, "success", time.Since(now))
+	m.UpdatePeerCounts(int(w.Stats.Seeders.Load()), int(w.Stats.Leechers.Load()))
+
 	return response, nil
 }
 
@@ -430,6 +435,9 @@ func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwan
 	if numwant <= 0 {
 		return []byte{}, []byte{}
 	}
+
+	_, selSpan := TracePeerSelection(context.Background(), strconv.FormatUint(uint64(torrent.ID), 10), int(numwant))
+	defer selSpan.End()
 
 	// Borrow accumulators from pool; copy results; return accumulators.
 	buf4ptr := peerBufPool.Get().(*[]byte)
