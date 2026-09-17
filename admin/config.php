@@ -54,8 +54,8 @@ class OcelotDB {
             throw new Exception("Database directory not found: $shardDir");
         }
 
-        // Find most recent shard
-        $shards = glob($shardDir . '/ocelot_*.db');
+        // Find most recent shard — Go names shards ocelot-YYYY-MM.db (hyphen)
+        $shards = glob($shardDir . '/ocelot-*.db');
         if (empty($shards)) {
             throw new Exception("No database shards found");
         }
@@ -85,7 +85,7 @@ class OcelotDB {
 
     public static function getAllShards() {
         $shardDir = DB_PATH;
-        $shards = glob($shardDir . '/ocelot_*.db');
+        $shards = glob($shardDir . '/ocelot-*.db'); // hyphen matches Go shard names
         rsort($shards);
         return $shards;
     }

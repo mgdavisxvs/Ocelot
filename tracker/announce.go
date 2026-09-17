@@ -67,8 +67,16 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	if w.ClientDetector != nil {
 		if blocked, reason := w.ClientDetector.DetectClientAnomaly(string(req.PeerID), userAgent); blocked {
 			w.Stats.ClientRejections.Add(1)
+			if w.Bus != nil {
+				w.Bus.Publish(NewClientAnomalyEvent("", user.ID, 0, string(req.PeerID), userAgent, reason))
+			}
 			return nil, fmt.Errorf("client rejected: %s", reason)
 		}
+	}
+
+	// Fraud gate: block banned users before torrent lookup.
+	if user.Deleted.Load() {
+		return nil, fmt.Errorf("account disabled")
 	}
 
 	torrent, ok := w.Torrents.Get(req.InfoHash)
@@ -259,6 +267,9 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		}
 		if blocked, reason := w.AnomalyDetector.DetectAnomaly(behavior); blocked {
 			w.Stats.AnomalyRejections.Add(1)
+			if w.Bus != nil {
+				w.Bus.Publish(NewBehaviourAnomalyEvent("", user.ID, torrent.ID, reason, req.Uploaded, req.Downloaded))
+			}
 			return nil, fmt.Errorf("announce rejected: %s", reason)
 		}
 	}
@@ -378,8 +389,13 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		return nil, fmt.Errorf("access denied, leeching forbidden")
 	}
 
+	baseInterval := w.Config.AnnounceInterval + minInt(600, seederCount)
+	if w.IntervalCache != nil {
+		baseInterval = w.IntervalCache.GetOrDefault(torrent.ID, baseInterval)
+	}
+
 	response := &AnnounceResponse{
-		Interval:    int32(w.Config.AnnounceInterval + minInt(600, seederCount)),
+		Interval:    int32(baseInterval),
 		MinInterval: int32(w.Config.AnnounceInterval),
 		Complete:    int32(seederCount),
 		Incomplete:  int32(leecherCount),
@@ -388,6 +404,11 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	}
 	if invalidIP {
 		response.Warning = "Invalid IP address"
+	}
+
+	if w.Bus != nil {
+		w.Bus.Publish(NewAnnounceEvent("", user.ID, torrent.ID, req.Event,
+			req.Uploaded, req.Downloaded, req.Left, seederCount, leecherCount))
 	}
 
 	return response, nil

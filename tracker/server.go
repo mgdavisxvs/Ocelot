@@ -503,6 +503,11 @@ type Worker struct {
 	AnomalyDetector *ml.AnomalyDetector
 	ClientDetector  *ml.ClientAnomalyDetector
 	PeerScorer      *ml.PeerScorer
+
+	// EventBus components — all optional. nil disables the feature.
+	Bus           *Bus
+	FraudEnforcer *FraudEnforcer
+	IntervalCache *IntervalCache
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.
@@ -537,4 +542,5 @@ type DatabaseInterface interface {
 // SiteCommInterface abstracts communication back to the Gazelle web application.
 type SiteCommInterface interface {
 	ExpireToken(torrentID TorrentID, userID UserID)
+	GrantFreeleech(torrentID TorrentID)
 }

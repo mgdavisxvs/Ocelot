@@ -22,6 +22,10 @@ type Engine struct {
 	snatchWatermark int64
 
 	pollCount int // incremented on each poll; used for decay scheduling
+
+	// EventBus publishing — both optional; nil disables Redis event publishing.
+	eventPub        *EventPublisher
+	baseIntervalSec int
 }
 
 // New creates and initializes an Engine, loading persisted state from the DB.
@@ -241,6 +245,10 @@ func (e *Engine) persist(ctx context.Context) {
 	if err := e.db.UpsertFreeleechCandidates(ctx, candidateRecs); err != nil {
 		slog.Error("UpsertFreeleechCandidates", "err", err)
 	}
+
+	// Publish events to Redis for tracker EventBus consumption.
+	e.publishAnomalyEvents(ctx, anomalies)
+	e.publishPredictionEvents(predictions, candidates)
 
 	slog.Info("persist complete",
 		"predictions", len(predictions),

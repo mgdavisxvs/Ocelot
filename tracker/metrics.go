@@ -193,6 +193,36 @@ func StartMetricsServer(addr string) error {
 	return http.ListenAndServe(addr, nil)
 }
 
+// EventBus-sourced security counters.
+var (
+	clientAnomaliesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ocelot_client_anomalies_total",
+		Help: "Total client anomaly rejections from EventBus.",
+	})
+	behaviourAnomaliesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ocelot_behaviour_anomalies_total",
+		Help: "Total behaviour anomaly rejections from EventBus.",
+	})
+	usersBannedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ocelot_users_banned_total",
+		Help: "Total users banned by fraud enforcer.",
+	})
+	freeleechGrantedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ocelot_freeleech_granted_total",
+		Help: "Total freeleech grants issued via EventBus.",
+	})
+	busDropsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ocelot_eventbus_drops_total",
+		Help: "Total events dropped by the in-process EventBus.",
+	})
+)
+
+func (m *MetricsRecorder) RecordClientAnomaly()    { clientAnomaliesTotal.Inc() }
+func (m *MetricsRecorder) RecordBehaviourAnomaly() { behaviourAnomaliesTotal.Inc() }
+func (m *MetricsRecorder) RecordUserBanned()        { usersBannedTotal.Inc() }
+func (m *MetricsRecorder) RecordFreeleechGranted()  { freeleechGrantedTotal.Inc() }
+func (m *MetricsRecorder) RecordBusDrop()           { busDropsTotal.Inc() }
+
 // Global metrics recorder
 var defaultMetrics = &MetricsRecorder{}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -116,6 +117,22 @@ func main() {
 		HalfOpenMax:  3,
 	})
 
+	// ── EventBus ──────────────────────────────────────────────────────────────
+	bus := tracker.NewBus(0)
+	defer bus.Stop()
+
+	audit := tracker.NewAuditLogger(db.CurrentDB)
+	audit.SetShardsFn(db.AllDBs)
+
+	intervalCache := tracker.NewIntervalCache(bus)
+	fraudEnforcer := tracker.NewFraudEnforcer(bus, users)
+	_ = fraudEnforcer // subscribed via constructor
+	_ = tracker.NewFreeleechActuator(bus, siteComm)
+	_ = tracker.NewAuditSubscriber(bus, audit)
+	_ = tracker.NewMetricsSubscriber(bus, tracker.GetMetricsRecorder())
+
+	log.Println("EventBus active: fraud enforcer, interval cache, freeleech actuator, audit subscriber, metrics subscriber")
+
 	// ── Worker ────────────────────────────────────────────────────────────────
 	worker := &tracker.Worker{
 		Config:    config,
@@ -125,11 +142,14 @@ func main() {
 		Users:     users,
 		Whitelist: whitelist,
 		Stats:     stats,
-		Audit:     tracker.NewAuditLogger(db.CurrentDB),
+		Audit:     audit,
 
 		AnomalyDetector: ml.NewAnomalyDetector(),
 		ClientDetector:  ml.NewClientAnomalyDetector(),
 		PeerScorer:      ml.NewPeerScorer(),
+
+		Bus:           bus,
+		IntervalCache: intervalCache,
 	}
 	log.Println("ML anomaly detection and peer scoring active")
 
@@ -142,7 +162,7 @@ func main() {
 	scheduler.Start()
 	defer scheduler.Stop()
 
-	// ── Optional: Redis cache layer ───────────────────────────────────────────
+	// ── Optional: Redis EventBus bridge + SSE hub ────────────────────────────
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
 		redisBackend, err := tracker.NewRedisBackend(tracker.RedisConfig{
 			Addr:     redisURL,
@@ -151,11 +171,28 @@ func main() {
 			PoolSize: 20,
 		})
 		if err != nil {
-			log.Printf("Warning: Redis unavailable (%v) — running without cache layer", err)
+			log.Printf("Warning: Redis unavailable (%v) — running without EventBus Redis bridge", err)
 		} else {
-			_ = redisBackend
-			log.Printf("Redis cache layer active: %s", redisURL)
+			bridge := tracker.NewRedisBridge(redisBackend.Client(), bus)
+			bridge.Start()
+			defer bridge.Stop()
+			log.Printf("Redis EventBus bridge active: %s", redisURL)
 		}
+	}
+
+	// ── Optional: SSE hub for admin dashboard live events ─────────────────
+	sseHub := tracker.NewSSEHub(bus)
+	if sseAddr := os.Getenv("SSE_ADDR"); sseAddr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/events", sseHub)
+		sseServer := &http.Server{Addr: sseAddr, Handler: mux}
+		go func() {
+			log.Printf("SSE hub listening on %s", sseAddr)
+			if err := sseServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("SSE server error: %v", err)
+			}
+		}()
+		defer sseServer.Shutdown(context.Background())
 	}
 
 	// ── Optional: scheduled VACUUM INTO backup ────────────────────────────────

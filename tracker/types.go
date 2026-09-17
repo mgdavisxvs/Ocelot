@@ -254,6 +254,19 @@ func (ul *UserList) ForEach(fn func(passkey string, u *User) bool) {
 	}
 }
 
+// GetByID returns the first user matching the given UserID.
+// Linear scan — only use off the hot path (e.g. fraud enforcement).
+func (ul *UserList) GetByID(id UserID) (*User, bool) {
+	ul.mu.RLock()
+	defer ul.mu.RUnlock()
+	for _, u := range ul.users {
+		if u.ID == id {
+			return u, true
+		}
+	}
+	return nil, false
+}
+
 // Reset clears all users. Used during full list reloads.
 func (ul *UserList) Reset() {
 	ul.mu.Lock()

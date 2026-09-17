@@ -42,6 +42,17 @@ func (g *GazelleSiteComm) ExpireToken(torrentID TorrentID, userID UserID) {
 	}
 }
 
+// GrantFreeleech notifies Gazelle to enable freeleech for a torrent.
+func (g *GazelleSiteComm) GrantFreeleech(torrentID TorrentID) {
+	params := url.Values{
+		"action":    {"grant_freeleech"},
+		"torrentid": {fmt.Sprintf("%d", torrentID)},
+	}
+	if err := g.post(params); err != nil {
+		log.Printf("site_comm: grant_freeleech torrent=%d: %v", torrentID, err)
+	}
+}
+
 func (g *GazelleSiteComm) post(params url.Values) error {
 	params.Set("password", g.password)
 	resp, err := g.client.PostForm(g.baseURL, params)
@@ -61,4 +72,8 @@ type NoOpSiteComm struct{}
 
 func (n *NoOpSiteComm) ExpireToken(torrentID TorrentID, userID UserID) {
 	log.Printf("site_comm (noop): expire_token torrent=%d user=%d", torrentID, userID)
+}
+
+func (n *NoOpSiteComm) GrantFreeleech(torrentID TorrentID) {
+	log.Printf("site_comm (noop): grant_freeleech torrent=%d", torrentID)
 }

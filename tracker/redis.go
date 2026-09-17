@@ -25,6 +25,9 @@ type RedisConfig struct {
 	PoolSize int
 }
 
+// Client returns the underlying Redis client for use by other subsystems.
+func (r *RedisBackend) Client() *redis.Client { return r.client }
+
 // NewRedisBackend creates a new Redis backend
 func NewRedisBackend(config RedisConfig) (*RedisBackend, error) {
 	client := redis.NewClient(&redis.Options{

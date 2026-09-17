@@ -259,6 +259,19 @@ func (sm *SQLiteShardManager) CurrentDB() *sql.DB {
 	return sm.currentDB
 }
 
+// AllDBs returns a snapshot of all known shard DBs (current + historical).
+// Used by cross-shard audit queries and the AuditLogger.SetShardsFn.
+func (sm *SQLiteShardManager) AllDBs() []*sql.DB {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	out := make([]*sql.DB, 0, 1+len(sm.historicalDBs))
+	out = append(out, sm.currentDB)
+	for _, db := range sm.historicalDBs {
+		out = append(out, db)
+	}
+	return out
+}
+
 func (sm *SQLiteShardManager) prepareStatements() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()

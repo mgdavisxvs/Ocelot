@@ -432,4 +432,126 @@ include 'includes/header.php';
 })();
 </script>
 
+<!-- Live Event Stream (SSE) — anomaly toasts and live counters -->
+<div id="anomaly-toast-container"
+     class="fixed bottom-4 right-4 flex flex-col gap-2 z-50 max-w-sm"
+     x-data="liveEvents()"
+     x-init="start()">
+    <template x-for="toast in toasts" :key="toast.id">
+        <div class="rounded-lg border p-3 shadow-lg text-sm flex items-start gap-2 transition-all"
+             :class="toastClass(toast)"
+             x-show="true"
+             x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 translate-y-2"
+             x-transition:enter-end="opacity-100 translate-y-0">
+            <i :data-lucide="toastIcon(toast)" class="w-4 h-4 flex-shrink-0 mt-0.5"></i>
+            <div class="flex-1 min-w-0">
+                <p class="font-medium" x-text="toast.title"></p>
+                <p class="text-xs opacity-75 truncate" x-text="toast.detail"></p>
+            </div>
+            <button @click="dismiss(toast.id)" class="opacity-50 hover:opacity-100 ml-1">
+                <i data-lucide="x" class="w-3 h-3"></i>
+            </button>
+        </div>
+    </template>
+</div>
+
+<!-- Live counter pills -->
+<div id="live-counters"
+     class="fixed top-4 right-4 flex gap-2 z-40"
+     x-data="liveCounters"
+     x-cloak>
+    <span class="px-2 py-1 rounded text-xs bg-gray-800 border border-gray-700 text-orange-400"
+          x-show="clientAnomaly > 0">
+        <i data-lucide="wifi-off" class="inline w-3 h-3 mr-1"></i>
+        <span x-text="clientAnomaly"></span> client
+    </span>
+    <span class="px-2 py-1 rounded text-xs bg-gray-800 border border-gray-700 text-red-400"
+          x-show="behaviourAnomaly > 0">
+        <i data-lucide="alert-triangle" class="inline w-3 h-3 mr-1"></i>
+        <span x-text="behaviourAnomaly"></span> anomaly
+    </span>
+    <span class="px-2 py-1 rounded text-xs bg-gray-800 border border-gray-700 text-green-400"
+          x-show="freeleechGranted > 0">
+        <i data-lucide="gift" class="inline w-3 h-3 mr-1"></i>
+        <span x-text="freeleechGranted"></span> freeleech
+    </span>
+</div>
+
+<script>
+// Live counters shared state
+const liveCounters = Alpine.reactive({
+    clientAnomaly:    0,
+    behaviourAnomaly: 0,
+    freeleechGranted: 0,
+});
+
+function liveEvents() {
+    return {
+        toasts: [],
+        nextId: 0,
+        es: null,
+
+        start() {
+            if (!window.EventSource) return;
+            this.es = new EventSource('sse.php');
+
+            this.es.onmessage = (ev) => {
+                try {
+                    const msg = JSON.parse(ev.data);
+                    this.handleEvent(msg);
+                } catch (_) {}
+            };
+
+            this.es.onerror = () => {
+                // Exponential back-off handled by browser; no action needed.
+            };
+        },
+
+        handleEvent(msg) {
+            const topic = msg.topic || '';
+
+            if (topic === 'anomaly.client') {
+                liveCounters.clientAnomaly++;
+                this.push('Client Anomaly', `User ${msg.data?.UserID ?? '?'}: ${msg.data?.Reason ?? ''}`, 'warn');
+            } else if (topic === 'anomaly.behaviour') {
+                liveCounters.behaviourAnomaly++;
+                this.push('Behaviour Anomaly', `User ${msg.data?.UserID ?? '?'}: ${msg.data?.Reason ?? ''}`, 'error');
+            } else if (topic === 'user.flagged') {
+                this.push('User Flagged', `User ${msg.data?.UserID ?? '?'} score=${(msg.data?.Score ?? 0).toFixed(3)}`, 'warn');
+            } else if (topic === 'user.banned') {
+                this.push('User Banned', `User ${msg.data?.UserID ?? '?'}`, 'error');
+            } else if (topic === 'freeleech.granted') {
+                liveCounters.freeleechGranted++;
+                this.push('Freeleech Granted', `Torrent ${msg.data?.TorrentID ?? '?'}`, 'success');
+            }
+        },
+
+        push(title, detail, type) {
+            const id = ++this.nextId;
+            this.toasts.unshift({ id, title, detail, type });
+            if (this.toasts.length > 5) this.toasts.pop();
+            setTimeout(() => this.dismiss(id), 8000);
+            if (window.lucide) lucide.createIcons();
+        },
+
+        dismiss(id) {
+            this.toasts = this.toasts.filter(t => t.id !== id);
+        },
+
+        toastClass(t) {
+            return {
+                'bg-red-900 border-red-700 text-red-200':     t.type === 'error',
+                'bg-yellow-900 border-yellow-700 text-yellow-200': t.type === 'warn',
+                'bg-green-900 border-green-700 text-green-200': t.type === 'success',
+            };
+        },
+
+        toastIcon(t) {
+            return { error: 'x-circle', warn: 'alert-triangle', success: 'check-circle' }[t.type] ?? 'info';
+        },
+    };
+}
+</script>
+
 <?php include 'includes/footer.php'; ?>
