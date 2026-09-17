@@ -508,6 +508,7 @@ type Worker struct {
 	Bus           *Bus
 	FraudEnforcer *FraudEnforcer
 	IntervalCache *IntervalCache
+	SSEHub        *SSEHub
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.

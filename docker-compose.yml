@@ -11,13 +11,13 @@ services:
     environment:
       - DB_PATH=/data/db
       - LOG_LEVEL=info
-      - REDIS_ADDR=redis:6379
+      - REDIS_URL=redis:6379
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=tracker
       - POSTGRES_PASSWORD=changeme
       - POSTGRES_DB=ocelot
-      - METRICS_PORT=9090
+      - METRICS_ADDR=:9090
     volumes:
       - tracker-data:/data
     depends_on:

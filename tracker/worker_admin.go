@@ -338,6 +338,12 @@ func (w *Worker) GetStats() ([]byte, error) {
 	if cb, ok := w.DB.(cbStater); ok {
 		data["circuit_breaker_state"] = cb.CBState()
 	}
+	if w.Bus != nil {
+		data["bus_drops"] = w.Bus.Drops()
+	}
+	if w.SSEHub != nil {
+		data["sse_clients"] = w.SSEHub.ClientCount()
+	}
 	return json.Marshal(data)
 }
 

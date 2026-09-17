@@ -316,6 +316,9 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		torrent.mu.Lock()
 		torrent.Completed++
 		torrent.mu.Unlock()
+		if w.Bus != nil {
+			w.Bus.Publish(NewTorrentCompletedEvent("", user.ID, torrent.ID))
+		}
 
 		ipStr := ""
 		if !user.ProtectIP.Load() {
@@ -384,6 +387,10 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	seederCount := torrent.Seeders.Size()
 	leecherCount := torrent.Leechers.Size()
 	torrent.mu.Unlock()
+
+	if w.Bus != nil {
+		w.Bus.Publish(NewSwarmUpdatedEvent("", torrent.ID, seederCount, leecherCount))
+	}
 
 	if !user.CanLeech.Load() && req.Left > 0 {
 		return nil, fmt.Errorf("access denied, leeching forbidden")

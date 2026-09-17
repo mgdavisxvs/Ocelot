@@ -228,6 +228,49 @@ include 'includes/header.php';
     </div>
 </div>
 
+<!-- EventBus & System Health -->
+<div class="bg-gray-800 shadow rounded-lg border border-gray-700 p-6 mb-6">
+    <h2 class="text-xl font-semibold text-white mb-4">
+        <i data-lucide="activity" class="inline w-5 h-5"></i>
+        EventBus & System Health
+    </h2>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="text-center p-4 bg-gray-900 rounded-lg">
+            <div class="text-2xl font-bold text-yellow-400">
+                <?= $trackerStats !== null ? number_format((int)($trackerStats['bus_drops'] ?? 0)) : '—' ?>
+            </div>
+            <div class="text-sm text-gray-400">Bus Drops</div>
+            <div class="text-xs text-gray-500 mt-1">Overflow-discarded events</div>
+        </div>
+        <div class="text-center p-4 bg-gray-900 rounded-lg">
+            <div class="text-2xl font-bold text-cyan-400">
+                <?= $trackerStats !== null ? number_format((int)($trackerStats['sse_clients'] ?? 0)) : '—' ?>
+            </div>
+            <div class="text-sm text-gray-400">SSE Clients</div>
+            <div class="text-xs text-gray-500 mt-1">Live admin dashboard connections</div>
+        </div>
+        <div class="text-center p-4 bg-gray-900 rounded-lg">
+            <?php
+                $cbState = $trackerStats['circuit_breaker_state'] ?? null;
+                $cbColor = match($cbState) { 'open' => 'red', 'half-open' => 'yellow', default => 'green' };
+            ?>
+            <div class="flex items-center justify-center gap-2 mb-1">
+                <span class="inline-block w-2.5 h-2.5 rounded-full bg-<?= $cbColor ?>-400"></span>
+                <span class="text-lg font-bold text-<?= $cbColor ?>-400 capitalize">
+                    <?= $cbState !== null ? htmlspecialchars($cbState) : '—' ?>
+                </span>
+            </div>
+            <div class="text-sm text-gray-400">DB Circuit Breaker</div>
+        </div>
+        <div class="text-center p-4 bg-gray-900 rounded-lg">
+            <div class="text-2xl font-bold text-purple-400">
+                <?= $trackerStats !== null ? number_format((int)($trackerStats['open_connections'] ?? 0)) : '—' ?>
+            </div>
+            <div class="text-sm text-gray-400">Open Connections</div>
+        </div>
+    </div>
+</div>
+
 <!-- System Information -->
 <div class="bg-gray-800 shadow rounded-lg border border-gray-700 p-6">
     <h2 class="text-xl font-semibold text-white mb-4">

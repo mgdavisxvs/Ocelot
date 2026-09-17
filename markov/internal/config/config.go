@@ -37,6 +37,11 @@ type Config struct {
 
 	// HTTP API
 	ListenAddr string `json:"listen_addr"` // e.g. ":9090"
+
+	// Optional Redis EventBus bridge — publishes flagged users / freeleech / interval events.
+	// If empty, event publishing is disabled. Overridden by REDIS_URL env var.
+	RedisURL      string `json:"redis_url"`
+	RedisPassword string `json:"redis_password"` // overridden by REDIS_PASSWORD env var
 }
 
 func Load(path string) (*Config, error) {

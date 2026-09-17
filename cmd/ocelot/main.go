@@ -126,7 +126,6 @@ func main() {
 
 	intervalCache := tracker.NewIntervalCache(bus)
 	fraudEnforcer := tracker.NewFraudEnforcer(bus, users)
-	_ = fraudEnforcer // subscribed via constructor
 	_ = tracker.NewFreeleechActuator(bus, siteComm)
 	_ = tracker.NewAuditSubscriber(bus, audit)
 	_ = tracker.NewMetricsSubscriber(bus, tracker.GetMetricsRecorder())
@@ -149,6 +148,7 @@ func main() {
 		PeerScorer:      ml.NewPeerScorer(),
 
 		Bus:           bus,
+		FraudEnforcer: fraudEnforcer,
 		IntervalCache: intervalCache,
 	}
 	log.Println("ML anomaly detection and peer scoring active")
@@ -182,6 +182,7 @@ func main() {
 
 	// ── Optional: SSE hub for admin dashboard live events ─────────────────
 	sseHub := tracker.NewSSEHub(bus)
+	worker.SSEHub = sseHub
 	if sseAddr := os.Getenv("SSE_ADDR"); sseAddr != "" {
 		mux := http.NewServeMux()
 		mux.Handle("/events", sseHub)
@@ -193,6 +194,16 @@ func main() {
 			}
 		}()
 		defer sseServer.Shutdown(context.Background())
+	}
+
+	// ── Optional: Prometheus metrics server ──────────────────────────────────
+	if metricsAddr := os.Getenv("METRICS_ADDR"); metricsAddr != "" {
+		go func() {
+			log.Printf("Prometheus metrics on %s", metricsAddr)
+			if err := tracker.StartMetricsServer(metricsAddr); err != nil {
+				log.Printf("Metrics server error: %v", err)
+			}
+		}()
 	}
 
 	// ── Optional: scheduled VACUUM INTO backup ────────────────────────────────
