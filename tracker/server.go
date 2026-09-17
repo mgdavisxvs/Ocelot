@@ -26,6 +26,11 @@ type Server struct {
 	shutdownCancel context.CancelFunc
 	wg             sync.WaitGroup
 	stats          *Stats
+
+	// adapters maps action verb → DomainAdapter for vocab-driven routing.
+	// Built via RegisterAdapter; the legacy BT routes remain as fast paths.
+	adaptersMu sync.RWMutex
+	adapters   map[string]DomainAdapter // key: action verb (e.g. "checkin")
 }
 
 // Config holds server and tracker configuration.
@@ -54,6 +59,19 @@ func NewServer(config *Config, worker *Worker) *Server {
 		shutdownCtx:    ctx,
 		shutdownCancel: cancel,
 		stats:          worker.Stats,
+		adapters:       make(map[string]DomainAdapter),
+	}
+}
+
+// RegisterAdapter registers a DomainAdapter for its EventAction (and QueryAction
+// if non-empty). Custom domains route through handleDomainRequest instead of
+// the legacy BitTorrent fast paths.
+func (s *Server) RegisterAdapter(a DomainAdapter) {
+	s.adaptersMu.Lock()
+	defer s.adaptersMu.Unlock()
+	s.adapters[a.EventAction()] = a
+	if q := a.QueryAction(); q != "" && q != a.EventAction() {
+		s.adapters[q] = a
 	}
 }
 
@@ -215,8 +233,88 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
 	default:
+		// Try registered domain adapters before giving up.
+		s.adaptersMu.RLock()
+		adapter, ok := s.adapters[action]
+		s.adaptersMu.RUnlock()
+		if ok {
+			return s.handleDomainRequest(req, passkey, clientIP, httpClose, adapter), httpClose
+		}
 		return s.response("Nothing to see here", httpClose, false), httpClose
 	}
+}
+
+// handleDomainRequest dispatches to a DomainAdapter for non-BT domains.
+func (s *Server) handleDomainRequest(req *http.Request, passkey string, clientIP net.IP, httpClose bool, a DomainAdapter) []byte {
+	user, ok := s.worker.Users.Get(passkey)
+	if !ok {
+		return a.FormatError("Passkey not found", httpClose)
+	}
+
+	opts := ClientOpts{
+		Passkey:   passkey,
+		UserAgent: req.Header.Get("User-Agent"),
+		ClientIP:  clientIP,
+	}
+
+	action := strings.TrimPrefix(req.URL.Path, "/")
+	parts := strings.SplitN(action, "/", 3)
+	verb := ""
+	if len(parts) >= 2 {
+		verb = parts[1]
+	}
+
+	if verb == a.QueryAction() && a.QueryAction() != "" {
+		keys, err := a.ParseQuery(req, opts)
+		if err != nil {
+			return a.FormatError(err.Error(), httpClose)
+		}
+		qresp := &QueryResponse{}
+		for _, key := range keys {
+			torrent, exists := s.worker.Torrents.Get(key)
+			if !exists {
+				continue
+			}
+			torrent.mu.RLock()
+			qresp.Entries = append(qresp.Entries, QueryEntry{
+				ResourceKey: key,
+				Providers:   int32(torrent.Seeders.Size()),
+				Consumers:   int32(torrent.Leechers.Size()),
+				Completed:   torrent.Completed,
+			})
+			torrent.mu.RUnlock()
+		}
+		return a.FormatQueryResponse(qresp, httpClose)
+	}
+
+	event, err := a.ParseEvent(req, opts)
+	if err != nil {
+		return a.FormatError(err.Error(), httpClose)
+	}
+
+	if !a.ValidateAgent(event.AgentID) {
+		return a.FormatError("agent not on allowlist", httpClose)
+	}
+
+	// Handle X-Forwarded-For override.
+	if event.IP == nil || event.IP.IsUnspecified() {
+		if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
+			if i := strings.Index(xff, ","); i > 0 {
+				event.IP = net.ParseIP(strings.TrimSpace(xff[:i]))
+			} else {
+				event.IP = net.ParseIP(xff)
+			}
+		}
+	}
+
+	announceReq := EventToAnnounceRequest(event, nil)
+	announceResp, err := s.worker.Announce(announceReq, user, clientIP, opts.UserAgent)
+	if err != nil {
+		return a.FormatError(err.Error(), httpClose)
+	}
+
+	s.stats.Announcements.Add(1)
+	return a.FormatEventResponse(EventResponseFromAnnounce(announceResp), httpClose)
 }
 
 func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.IP, httpClose bool) []byte {

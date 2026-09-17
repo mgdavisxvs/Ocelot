@@ -1,0 +1,49 @@
+{
+  "domain": "planning",
+  "display_name": "100-Day Planning Cycle Tracker",
+  "actions": {
+    "event": "checkpoint",
+    "query": "progress"
+  },
+  "resource": {
+    "noun": "initiative",
+    "plural": "initiatives",
+    "key_param": "initiative_id"
+  },
+  "participant": {
+    "noun": "contributor",
+    "plural": "contributors"
+  },
+  "roles": {
+    "consumer": "participant",
+    "provider": "owner"
+  },
+  "delta": {
+    "produced": "points_earned",
+    "consumed": "points_spent",
+    "remaining": "points_pending",
+    "corrupt": "points_rejected"
+  },
+  "event_types": {
+    "join": "enrolled",
+    "progress": "checked_in",
+    "complete": "graduated",
+    "withdraw": "withdrew",
+    "heartbeat": "keepalive"
+  },
+  "policy": {
+    "open": "open_enrollment",
+    "restricted": "invite_only",
+    "blocked": "suspended"
+  },
+  "auth": {
+    "strategy": "none",
+    "passkey_length": 32
+  },
+  "wire_format": {
+    "format": "json"
+  },
+  "metrics": {
+    "domain_label": "planning"
+  }
+}

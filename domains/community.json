@@ -1,0 +1,49 @@
+{
+  "domain": "community",
+  "display_name": "Community Presence Server",
+  "actions": {
+    "event": "checkin",
+    "query": "status"
+  },
+  "resource": {
+    "noun": "channel",
+    "plural": "channels",
+    "key_param": "channel_id"
+  },
+  "participant": {
+    "noun": "member",
+    "plural": "members"
+  },
+  "roles": {
+    "consumer": "reader",
+    "provider": "author"
+  },
+  "delta": {
+    "produced": "posts_written",
+    "consumed": "posts_read",
+    "remaining": "unread",
+    "corrupt": "flagged"
+  },
+  "event_types": {
+    "join": "joined",
+    "progress": "active",
+    "complete": "finished",
+    "withdraw": "left",
+    "heartbeat": "ping"
+  },
+  "policy": {
+    "open": "public",
+    "restricted": "members_only",
+    "blocked": "banned"
+  },
+  "auth": {
+    "strategy": "none",
+    "passkey_length": 32
+  },
+  "wire_format": {
+    "format": "json"
+  },
+  "metrics": {
+    "domain_label": "community"
+  }
+}

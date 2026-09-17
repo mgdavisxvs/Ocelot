@@ -146,8 +146,30 @@ func main() {
 		}
 	}()
 
-	// ── Server ────────────────────────────────────────────────────────────────
+	// ── Domain adapters ───────────────────────────────────────────────────────
+	// Load any vocab configs from the domains/ directory (relative to the
+	// config file's location) and register a ConfiguredAdapter for each.
+	// The built-in BT announce/scrape fast paths remain unchanged; adapters
+	// with conflicting action names are silently skipped to protect them.
 	server := tracker.NewServer(config, worker)
+
+	domainsDir := "domains"
+	vocabConfigs, err := tracker.LoadAllVocabConfigs(domainsDir)
+	if err != nil {
+		log.Printf("Warning: failed to load domain configs from %q: %v", domainsDir, err)
+	} else {
+		btActions := map[string]bool{"announce": true, "scrape": true,
+			"update": true, "stats": true, "torrents": true, "peers": true, "whitelist": true}
+		for _, vc := range vocabConfigs {
+			if btActions[vc.Actions.Event] || btActions[vc.Actions.Query] {
+				continue // never override built-in BT routes
+			}
+			adapter := tracker.NewConfiguredAdapter(vc, whitelist, server)
+			server.RegisterAdapter(adapter)
+			log.Printf("Domain adapter registered: %s (event=%s, query=%s, format=%s)",
+				vc.Domain, vc.Actions.Event, vc.Actions.Query, vc.WireFormat.Format)
+		}
+	}
 
 	shutdownCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)

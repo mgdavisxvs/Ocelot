@@ -1,0 +1,49 @@
+{
+  "domain": "bittorrent",
+  "display_name": "BitTorrent Tracker",
+  "actions": {
+    "event": "announce",
+    "query": "scrape"
+  },
+  "resource": {
+    "noun": "torrent",
+    "plural": "torrents",
+    "key_param": "info_hash"
+  },
+  "participant": {
+    "noun": "peer",
+    "plural": "peers"
+  },
+  "roles": {
+    "consumer": "leecher",
+    "provider": "seeder"
+  },
+  "delta": {
+    "produced": "uploaded",
+    "consumed": "downloaded",
+    "remaining": "left",
+    "corrupt": "corrupt"
+  },
+  "event_types": {
+    "join": "started",
+    "progress": "",
+    "complete": "completed",
+    "withdraw": "stopped",
+    "heartbeat": ""
+  },
+  "policy": {
+    "open": "open",
+    "restricted": "restricted",
+    "blocked": "blocked"
+  },
+  "auth": {
+    "strategy": "prefix_trie",
+    "passkey_length": 32
+  },
+  "wire_format": {
+    "format": "bencode"
+  },
+  "metrics": {
+    "domain_label": "bittorrent"
+  }
+}
