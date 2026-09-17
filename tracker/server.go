@@ -35,19 +35,25 @@ type Server struct {
 
 // Config holds server and tracker configuration.
 type Config struct {
-	ListenAddr       string
-	AnnounceInterval int
-	PeersTimeout     int
-	MaxMiddlemen     int
-	NumWantLimit     int
-	KeepaliveTimeout time.Duration
-	SitePassword     string
-	ReportPassword   string
-	ReadTimeout      time.Duration
-	WriteTimeout     time.Duration
-	ScheduleInterval int
-	GazelleURL       string
-	MetricsPort      string
+	ListenAddr        string
+	AnnounceInterval  int
+	PeersTimeout      int
+	MaxMiddlemen      int
+	NumWantLimit      int
+	KeepaliveTimeout  time.Duration
+	SitePassword      string
+	ReportPassword    string
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	ScheduleInterval  int
+	ReapPeersInterval int
+	GazelleURL        string
+	MetricsPort       string
+	// RateLimiter config — 0 disables rate limiting.
+	RateLimitRPS   int
+	RateLimitBurst int
+	// BatchBufferCap is the async write queue capacity for BufferedDB.
+	BatchBufferCap int
 }
 
 func NewServer(config *Config, worker *Worker) *Server {
@@ -176,6 +182,20 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 			httpClose = true
 		} else {
 			httpClose = strings.ToLower(req.Header.Get("Connection")) == "close"
+		}
+	}
+
+	// Per-IP rate limiting — checked before any authentication or routing.
+	if s.worker.RateLimiter != nil {
+		ipStr := ""
+		if clientIP != nil {
+			ipStr = clientIP.String()
+		}
+		if ipStr == "" {
+			ipStr = req.RemoteAddr
+		}
+		if !s.worker.RateLimiter.Allow(ipStr) {
+			return s.rateLimitResponse(httpClose), httpClose
 		}
 	}
 
@@ -480,6 +500,23 @@ func (s *Server) errorResponse(msg string, httpClose bool) []byte {
 	return s.response(resp, httpClose, false)
 }
 
+func (s *Server) rateLimitResponse(httpClose bool) []byte {
+	body := "d14:failure reason21:Rate limit exceedede"
+	var b strings.Builder
+	b.WriteString("HTTP/1.1 429 Too Many Requests\r\n")
+	b.WriteString("Content-Type: text/plain\r\n")
+	b.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(body)))
+	b.WriteString("Retry-After: 60\r\n")
+	if httpClose {
+		b.WriteString("Connection: close\r\n")
+	} else {
+		b.WriteString("Connection: keep-alive\r\n")
+	}
+	b.WriteString("\r\n")
+	b.WriteString(body)
+	return []byte(b.String())
+}
+
 func (s *Server) response(content string, httpClose bool, html bool) []byte {
 	var b strings.Builder
 	b.WriteString("HTTP/1.1 200 OK\r\n")
@@ -573,6 +610,42 @@ type Worker struct {
 	CircuitBreak *CircuitBreaker
 	AuditLog     *AuditLogger
 	Metrics      *MetricsRecorder
+	Detector     BehaviorDetector // anomaly detection; nil disables
+	reaper       *Reaper          // created by Start()
+}
+
+// Start initialises subsystems that depend on Worker fields being populated:
+//   - RateLimiter (if RateLimitRPS > 0 and none was injected)
+//   - Reaper goroutine
+func (w *Worker) Start() {
+	if w.RateLimiter == nil && w.Config.RateLimitRPS > 0 {
+		burst := w.Config.RateLimitBurst
+		if burst <= 0 {
+			burst = w.Config.RateLimitRPS * 2
+		}
+		w.RateLimiter = NewRateLimiter(w.Config.RateLimitRPS, burst, 50_000)
+	}
+
+	interval := w.Config.ReapPeersInterval
+	if interval <= 0 {
+		interval = 1800
+	}
+	timeout := w.Config.PeersTimeout
+	if timeout <= 0 {
+		timeout = 7200
+	}
+	w.reaper = NewReaper(w.Torrents, w.Stats, interval, timeout)
+	w.reaper.Start()
+}
+
+// Stop shuts down the Reaper and flushes any buffered DB writes.
+func (w *Worker) Stop() {
+	if w.reaper != nil {
+		w.reaper.Stop()
+	}
+	if bdb, ok := w.DB.(*BufferedDB); ok {
+		bdb.Flush()
+	}
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.

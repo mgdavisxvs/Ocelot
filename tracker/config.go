@@ -32,6 +32,11 @@ type FileConfig struct {
 	DBDir             string
 	GazelleURL        string // optional Gazelle callback endpoint
 	MetricsPort       string // Prometheus metrics listen address, e.g. ":9090"
+	// Rate limiting (0 = disabled)
+	RateLimitRPS   int
+	RateLimitBurst int
+	// Async write queue capacity for BufferedDB (0 = default 4096)
+	BatchBufferCap int
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -52,10 +57,13 @@ func DefaultFileConfig() *FileConfig {
 		PeersTimeout:      7200,
 		DelReasonLifetime: 86400,
 		ReapPeersInterval: 1800,
-		ScheduleInterval:  3,
+		ScheduleInterval:  300, // 5-minute WAL checkpoint interval
 		Readonly:          false,
 		DBDir:             "./data/db",
 		MetricsPort:       ":9090",
+		RateLimitRPS:      100,
+		RateLimitBurst:    200,
+		BatchBufferCap:    4096,
 	}
 }
 
@@ -135,6 +143,12 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.GazelleURL = val
 		case "metrics_port":
 			cfg.MetricsPort = val
+		case "rate_limit_rps":
+			cfg.RateLimitRPS = parseIntVal(val, cfg.RateLimitRPS)
+		case "rate_limit_burst":
+			cfg.RateLimitBurst = parseIntVal(val, cfg.RateLimitBurst)
+		case "batch_buffer_cap":
+			cfg.BatchBufferCap = parseIntVal(val, cfg.BatchBufferCap)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -147,17 +161,22 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 func (fc *FileConfig) ToTrackerConfig() *Config {
 	readTimeout := time.Duration(fc.ConnectionTimeout) * time.Second
 	return &Config{
-		ListenAddr:       fmt.Sprintf(":%d", fc.ListenPort),
-		AnnounceInterval: fc.AnnounceInterval,
-		PeersTimeout:     fc.PeersTimeout,
-		MaxMiddlemen:     fc.MaxMiddlemen,
-		NumWantLimit:     fc.NumWantLimit,
-		KeepaliveTimeout: time.Duration(fc.KeepaliveTimeout) * time.Second,
-		SitePassword:     fc.SitePassword,
-		ReportPassword:   fc.ReportPassword,
-		ReadTimeout:      readTimeout,
-		WriteTimeout:     readTimeout,
-		MetricsPort:      fc.MetricsPort,
+		ListenAddr:        fmt.Sprintf(":%d", fc.ListenPort),
+		AnnounceInterval:  fc.AnnounceInterval,
+		PeersTimeout:      fc.PeersTimeout,
+		MaxMiddlemen:      fc.MaxMiddlemen,
+		NumWantLimit:      fc.NumWantLimit,
+		KeepaliveTimeout:  time.Duration(fc.KeepaliveTimeout) * time.Second,
+		SitePassword:      fc.SitePassword,
+		ReportPassword:    fc.ReportPassword,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      readTimeout,
+		ScheduleInterval:  fc.ScheduleInterval,
+		ReapPeersInterval: fc.ReapPeersInterval,
+		MetricsPort:       fc.MetricsPort,
+		RateLimitRPS:      fc.RateLimitRPS,
+		RateLimitBurst:    fc.RateLimitBurst,
+		BatchBufferCap:    fc.BatchBufferCap,
 	}
 }
 

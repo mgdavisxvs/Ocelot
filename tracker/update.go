@@ -229,21 +229,32 @@ type StatsResponse struct {
 	Scrapes       uint64  `json:"scrapes"`
 	BytesRead     uint64  `json:"bytes_read"`
 	BytesWritten  uint64  `json:"bytes_written"`
+	// Subsystem health counters
+	EvictedPeers      uint64 `json:"evicted_peers"`
+	AnomalyDetections uint64 `json:"anomaly_detections"`
+	DBQueueDepth      int    `json:"db_queue_depth"`
+	DBDroppedOps      uint64 `json:"db_dropped_ops"`
 }
 
 // GetStats returns current tracker statistics as JSON.
 func (w *Worker) GetStats() ([]byte, error) {
 	stats := StatsResponse{
-		UptimeSeconds: time.Since(w.Stats.StartTime).Seconds(),
-		TorrentCount:  w.Torrents.Size(),
-		UserCount:     w.Users.Size(),
-		Seeders:       w.Stats.Seeders.Load(),
-		Leechers:      w.Stats.Leechers.Load(),
-		Connections:   w.Stats.OpenConnections.Load(),
-		Announcements: w.Stats.Announcements.Load(),
-		Scrapes:       w.Stats.Scrapes.Load(),
-		BytesRead:     w.Stats.BytesRead.Load(),
-		BytesWritten:  w.Stats.BytesWritten.Load(),
+		UptimeSeconds:     time.Since(w.Stats.StartTime).Seconds(),
+		TorrentCount:      w.Torrents.Size(),
+		UserCount:         w.Users.Size(),
+		Seeders:           w.Stats.Seeders.Load(),
+		Leechers:          w.Stats.Leechers.Load(),
+		Connections:       w.Stats.OpenConnections.Load(),
+		Announcements:     w.Stats.Announcements.Load(),
+		Scrapes:           w.Stats.Scrapes.Load(),
+		BytesRead:         w.Stats.BytesRead.Load(),
+		BytesWritten:      w.Stats.BytesWritten.Load(),
+		EvictedPeers:      w.Stats.EvictedPeers.Load(),
+		AnomalyDetections: w.Stats.AnomalyDetections.Load(),
+	}
+	if bdb, ok := w.DB.(*BufferedDB); ok {
+		stats.DBQueueDepth = bdb.QueueDepth()
+		stats.DBDroppedOps = bdb.DroppedOps()
 	}
 	return json.Marshal(stats)
 }

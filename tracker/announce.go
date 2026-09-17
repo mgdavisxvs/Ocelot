@@ -224,6 +224,26 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 
 	torrent.mu.Unlock()
 
+	// Anomaly detection — runs after the lock is released to avoid holding it
+	// during a potentially-logging-heavy detection pass.
+	if w.Detector != nil {
+		if isAnomaly, reason := w.Detector.Detect(peer, upSpeed, downSpeed); isAnomaly {
+			w.Stats.AnomalyDetections.Add(1)
+			_ = w.SiteComm.ReportAnomaly(int64(user.ID), 1.0)
+			_ = w.SiteComm.BanUser(int64(user.ID))
+			torrent.mu.Lock()
+			torrent.Leechers.Delete(peerKey)
+			torrent.Seeders.Delete(peerKey)
+			torrent.mu.Unlock()
+			GetDefaultLogger().Warn("anomaly detected, peer banned",
+				"user_id", user.ID,
+				"torrent_id", torrent.ID,
+				"reason", reason,
+			)
+			return nil, fmt.Errorf("anomalous activity detected: %s", reason)
+		}
+	}
+
 	if peerChanged {
 		announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
 		ipStr := ""

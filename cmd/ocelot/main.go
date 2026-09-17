@@ -105,7 +105,7 @@ func main() {
 	}
 
 	// ── Background subsystems ─────────────────────────────────────────────────
-	reaper := tracker.NewReaper(torrents, config.ScheduleInterval, config.PeersTimeout)
+	reaper := tracker.NewReaper(torrents, stats, config.ReapPeersInterval, config.PeersTimeout)
 	reaper.Start()
 	defer reaper.Stop()
 

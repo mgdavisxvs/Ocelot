@@ -273,6 +273,10 @@ type Stats struct {
 	Scrapes           atomic.Uint64
 	BytesRead         atomic.Uint64
 	BytesWritten      atomic.Uint64
+	// EvictedPeers is incremented by the Reaper each time a stale peer is removed.
+	EvictedPeers atomic.Uint64
+	// AnomalyDetections is incremented each time the BehaviorDetector fires.
+	AnomalyDetections atomic.Uint64
 	StartTime         time.Time
 }
 
