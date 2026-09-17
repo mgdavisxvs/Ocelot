@@ -13,7 +13,8 @@ $page               = max(1, (int)($_GET['page'] ?? 1));
 $limit              = 100;
 $offset             = ($page - 1) * $limit;
 
-$since = time() - ($filterDays * 86400);
+// Timestamps stored as UnixNano; compare in nanoseconds.
+$since = (time() - ($filterDays * 86400)) * 1000000000;
 
 // Build WHERE clauses
 $wheres = ['timestamp >= ?'];
@@ -181,8 +182,9 @@ include 'includes/header.php';
                     $isSuccess = (bool)$e['success'];
                 ?>
                 <tr class="hover:bg-gray-750" x-data="{ open: false }">
-                    <td class="px-4 py-2 whitespace-nowrap text-gray-400 font-mono text-xs" title="<?= date('Y-m-d H:i:s', $e['timestamp']) ?>">
-                        <?= timeAgo($e['timestamp']) ?>
+                    <?php $ts = intdiv($e['timestamp'], 1000000000); ?>
+                    <td class="px-4 py-2 whitespace-nowrap text-gray-400 font-mono text-xs" title="<?= date('Y-m-d H:i:s', $ts) ?>">
+                        <?= timeAgo($ts) ?>
                     </td>
                     <td class="px-4 py-2 whitespace-nowrap">
                         <span class="px-2 py-0.5 rounded text-xs font-medium bg-indigo-900 text-indigo-300">

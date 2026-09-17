@@ -5,6 +5,8 @@ requireAuth();
 $pageTitle = 'Statistics & Analytics';
 
 // Fetch comprehensive statistics
+$trackerStats = TrackerAPI::getStats();
+
 try {
     $db = OcelotDB::connect();
 
@@ -186,6 +188,46 @@ include 'includes/header.php';
     </div>
 </div>
 
+<!-- ML Security -->
+<div class="bg-gray-800 shadow rounded-lg border border-gray-700 p-6 mb-6">
+    <h2 class="text-xl font-semibold text-white mb-4">
+        <i data-lucide="shield" class="inline w-5 h-5"></i>
+        ML Security
+    </h2>
+    <?php if ($trackerStats === null): ?>
+    <div class="flex items-center gap-2 text-yellow-400 text-sm mb-4">
+        <i data-lucide="wifi-off" class="w-4 h-4"></i>
+        Tracker offline — live ML stats unavailable
+    </div>
+    <?php endif; ?>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div class="text-center p-4 bg-gray-900 rounded-lg">
+            <?php $armed = $trackerStats['ml_armed'] ?? false; ?>
+            <div class="flex items-center justify-center gap-2 mb-1">
+                <span class="inline-block w-2.5 h-2.5 rounded-full <?= $armed ? 'bg-green-400' : 'bg-red-500' ?>"></span>
+                <span class="text-2xl font-bold <?= $armed ? 'text-green-400' : 'text-red-400' ?>">
+                    <?= $armed ? 'Armed' : 'Disabled' ?>
+                </span>
+            </div>
+            <div class="text-sm text-gray-400">ML Anomaly Detection</div>
+        </div>
+        <div class="text-center p-4 bg-gray-900 rounded-lg">
+            <div class="text-3xl font-bold text-orange-400">
+                <?= $trackerStats !== null ? number_format((int)($trackerStats['client_rejections'] ?? 0)) : '—' ?>
+            </div>
+            <div class="text-sm text-gray-400">Client Rejections</div>
+            <div class="text-xs text-gray-500 mt-1">Blocked by client anomaly detector</div>
+        </div>
+        <div class="text-center p-4 bg-gray-900 rounded-lg">
+            <div class="text-3xl font-bold text-red-400">
+                <?= $trackerStats !== null ? number_format((int)($trackerStats['anomaly_rejections'] ?? 0)) : '—' ?>
+            </div>
+            <div class="text-sm text-gray-400">Anomaly Rejections</div>
+            <div class="text-xs text-gray-500 mt-1">Blocked by peer anomaly scorer</div>
+        </div>
+    </div>
+</div>
+
 <!-- System Information -->
 <div class="bg-gray-800 shadow rounded-lg border border-gray-700 p-6">
     <h2 class="text-xl font-semibold text-white mb-4">
@@ -212,97 +254,98 @@ include 'includes/header.php';
 </div>
 
 <script>
-// Hourly Activity Chart
+// Hourly Activity Chart — responsive with resize redraw
 const activityData = <?= json_encode($hourlyActivity) ?>;
 
 const margin = {top: 20, right: 30, bottom: 50, left: 60};
-const width = document.getElementById('activityChart').clientWidth - margin.left - margin.right;
-const height = 300 - margin.top - margin.bottom;
+const chartHeight = 300 - margin.top - margin.bottom;
 
-const svg = d3.select('#activityChart')
-    .append('svg')
-    .attr('width', width + margin.left + margin.right)
-    .attr('height', height + margin.top + margin.bottom)
-    .append('g')
-    .attr('transform', `translate(${margin.left},${margin.top})`);
+function drawActivityChart() {
+    const container = document.getElementById('activityChart');
+    d3.select(container).selectAll('svg').remove();
 
-// Scales
-const x = d3.scaleBand()
-    .domain(activityData.map(d => d.hour))
-    .range([0, width])
-    .padding(0.1);
+    const width = container.clientWidth - margin.left - margin.right;
 
-const y = d3.scaleLinear()
-    .domain([0, d3.max(activityData, d => d.announces) || 100])
-    .nice()
-    .range([height, 0]);
+    const svg = d3.select(container)
+        .append('svg')
+        .attr('width', width + margin.left + margin.right)
+        .attr('height', chartHeight + margin.top + margin.bottom)
+        .append('g')
+        .attr('transform', `translate(${margin.left},${margin.top})`);
 
-// Axes
-svg.append('g')
-    .attr('transform', `translate(0,${height})`)
-    .call(d3.axisBottom(x))
-    .selectAll('text')
-    .attr('fill', '#9ca3af')
-    .attr('transform', 'rotate(-45)')
-    .style('text-anchor', 'end');
+    const x = d3.scaleBand()
+        .domain(activityData.map(d => d.hour))
+        .range([0, width])
+        .padding(0.1);
 
-svg.append('g')
-    .call(d3.axisLeft(y))
-    .selectAll('text')
-    .attr('fill', '#9ca3af');
+    const y = d3.scaleLinear()
+        .domain([0, d3.max(activityData, d => d.announces) || 100])
+        .nice()
+        .range([chartHeight, 0]);
 
-// Grid lines
-svg.append('g')
-    .attr('class', 'grid')
-    .call(d3.axisLeft(y)
-        .tickSize(-width)
-        .tickFormat('')
-    )
-    .selectAll('line')
-    .attr('stroke', '#374151')
-    .attr('stroke-dasharray', '2,2');
+    svg.append('g')
+        .attr('transform', `translate(0,${chartHeight})`)
+        .call(d3.axisBottom(x))
+        .selectAll('text')
+        .attr('fill', '#9ca3af')
+        .attr('transform', 'rotate(-45)')
+        .style('text-anchor', 'end');
 
-// Bars
-svg.selectAll('.bar')
-    .data(activityData)
-    .enter()
-    .append('rect')
-    .attr('class', 'bar')
-    .attr('x', d => x(d.hour))
-    .attr('y', d => y(d.announces))
-    .attr('width', x.bandwidth())
-    .attr('height', d => height - y(d.announces))
-    .attr('fill', '#8b5cf6')
-    .attr('opacity', 0.8)
-    .on('mouseover', function() {
-        d3.select(this).attr('opacity', 1);
-    })
-    .on('mouseout', function() {
-        d3.select(this).attr('opacity', 0.8);
-    });
+    svg.append('g')
+        .call(d3.axisLeft(y))
+        .selectAll('text')
+        .attr('fill', '#9ca3af');
 
-// Labels on bars
-svg.selectAll('.label')
-    .data(activityData)
-    .enter()
-    .append('text')
-    .attr('class', 'label')
-    .attr('x', d => x(d.hour) + x.bandwidth() / 2)
-    .attr('y', d => y(d.announces) - 5)
-    .attr('text-anchor', 'middle')
-    .attr('fill', '#e5e7eb')
-    .attr('font-size', '10px')
-    .text(d => d.announces > 0 ? d.announces : '');
+    svg.append('g')
+        .attr('class', 'grid')
+        .call(d3.axisLeft(y).tickSize(-width).tickFormat(''))
+        .selectAll('line')
+        .attr('stroke', '#374151')
+        .attr('stroke-dasharray', '2,2');
 
-// Y-axis label
-svg.append('text')
-    .attr('transform', 'rotate(-90)')
-    .attr('y', 0 - margin.left)
-    .attr('x', 0 - (height / 2))
-    .attr('dy', '1em')
-    .style('text-anchor', 'middle')
-    .attr('fill', '#9ca3af')
-    .text('Announce Count');
+    svg.selectAll('.bar')
+        .data(activityData)
+        .enter()
+        .append('rect')
+        .attr('class', 'bar')
+        .attr('x', d => x(d.hour))
+        .attr('y', d => y(d.announces))
+        .attr('width', x.bandwidth())
+        .attr('height', d => chartHeight - y(d.announces))
+        .attr('fill', '#8b5cf6')
+        .attr('opacity', 0.8)
+        .on('mouseover', function() { d3.select(this).attr('opacity', 1); })
+        .on('mouseout',  function() { d3.select(this).attr('opacity', 0.8); });
+
+    svg.selectAll('.label')
+        .data(activityData)
+        .enter()
+        .append('text')
+        .attr('class', 'label')
+        .attr('x', d => x(d.hour) + x.bandwidth() / 2)
+        .attr('y', d => y(d.announces) - 5)
+        .attr('text-anchor', 'middle')
+        .attr('fill', '#e5e7eb')
+        .attr('font-size', '10px')
+        .text(d => d.announces > 0 ? d.announces : '');
+
+    svg.append('text')
+        .attr('transform', 'rotate(-90)')
+        .attr('y', 0 - margin.left)
+        .attr('x', 0 - (chartHeight / 2))
+        .attr('dy', '1em')
+        .style('text-anchor', 'middle')
+        .attr('fill', '#9ca3af')
+        .text('Announce Count');
+}
+
+drawActivityChart();
+
+let resizeTimer;
+window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(drawActivityChart, 150);
+});
 </script>
 
 <?php include 'includes/footer.php'; ?>
