@@ -338,6 +338,16 @@ func (w *Worker) GetStats() ([]byte, error) {
 	if cb, ok := w.DB.(cbStater); ok {
 		data["circuit_breaker_state"] = cb.CBState()
 	}
+	type dbStater interface {
+		GetDBStats() (int64, int, int64, error)
+	}
+	if dbs, ok := w.DB.(dbStater); ok {
+		if cur, n, total, err := dbs.GetDBStats(); err == nil {
+			data["db_current_shard_bytes"] = cur
+			data["db_historical_shards"] = n
+			data["db_total_bytes"] = total
+		}
+	}
 	if w.Bus != nil {
 		data["bus_drops"] = w.Bus.Drops()
 	}

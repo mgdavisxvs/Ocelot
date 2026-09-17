@@ -36,6 +36,8 @@ func NewSSEHub(bus *Bus) *SSEHub {
 	bus.Subscribe("user.banned", h.forward)
 	bus.Subscribe("freeleech.granted", h.forward)
 	bus.Subscribe("infra.bus_drop", h.forward)
+	bus.Subscribe("torrent.completed", h.forward)
+	bus.Subscribe("swarm.updated", h.forward)
 	return h
 }
 

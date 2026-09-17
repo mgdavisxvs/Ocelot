@@ -139,3 +139,15 @@ func (c *CircuitBreakerDB) Close() error {
 func (c *CircuitBreakerDB) CBState() string {
 	return c.cb.GetStateString()
 }
+
+// GetDBStats delegates to the underlying DB if it supports the call.
+// Returns (currentShardBytes, numHistoricalShards, totalBytes, error).
+func (c *CircuitBreakerDB) GetDBStats() (int64, int, int64, error) {
+	type dbStater interface {
+		GetDBStats() (int64, int, int64, error)
+	}
+	if dbs, ok := c.db.(dbStater); ok {
+		return dbs.GetDBStats()
+	}
+	return 0, 0, 0, nil
+}

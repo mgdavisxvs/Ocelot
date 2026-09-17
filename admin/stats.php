@@ -294,6 +294,25 @@ include 'includes/header.php';
             <p class="text-sm text-gray-500">84GB auto-rotation</p>
         </div>
     </div>
+    <?php if ($trackerStats !== null && isset($trackerStats['db_total_bytes'])): ?>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-4 pt-4 border-t border-gray-700">
+        <div>
+            <h3 class="text-sm font-medium text-gray-400 mb-2">Current Shard Size</h3>
+            <p class="text-white"><?= formatBytes((int)$trackerStats['db_current_shard_bytes']) ?></p>
+            <p class="text-sm text-gray-500"><?= number_format(((int)$trackerStats['db_current_shard_bytes'] / (84 * 1024 ** 3)) * 100, 1) ?>% of 84 GB limit</p>
+        </div>
+        <div>
+            <h3 class="text-sm font-medium text-gray-400 mb-2">Historical Shards</h3>
+            <p class="text-white"><?= (int)$trackerStats['db_historical_shards'] ?></p>
+            <p class="text-sm text-gray-500">Archived shards (read-only)</p>
+        </div>
+        <div>
+            <h3 class="text-sm font-medium text-gray-400 mb-2">Total DB Size</h3>
+            <p class="text-white"><?= formatBytes((int)$trackerStats['db_total_bytes']) ?></p>
+            <p class="text-sm text-gray-500">All shards combined</p>
+        </div>
+    </div>
+    <?php endif; ?>
 </div>
 
 <script>
