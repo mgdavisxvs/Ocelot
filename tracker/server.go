@@ -229,14 +229,19 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 }
 
 func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.IP, httpClose bool) []byte {
+	q := req.URL.Query()
+	ctx, span := TraceAnnounce(context.Background(), q.Get("info_hash"), q.Get("peer_id"))
+	defer span.End()
+
 	user, ok := s.worker.Users.Get(passkey)
 	if !ok {
+		AddSpanError(ctx, fmt.Errorf("passkey not found"))
 		return s.errorResponse("Passkey not found", httpClose)
 	}
 
-	params := req.URL.Query()
-	announceReq, err := ParseAnnounceParams(params, clientIP)
+	announceReq, err := ParseAnnounceParams(q, clientIP)
 	if err != nil {
+		AddSpanError(ctx, err)
 		return s.errorResponse(err.Error(), httpClose)
 	}
 
@@ -253,6 +258,7 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 	userAgent := req.Header.Get("User-Agent")
 	announceResp, err := s.worker.Announce(announceReq, user, clientIP, userAgent)
 	if err != nil {
+		AddSpanError(ctx, err)
 		return s.errorResponse(err.Error(), httpClose)
 	}
 
@@ -266,6 +272,8 @@ func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool)
 	}
 
 	infoHashes := req.URL.Query()["info_hash"]
+	_, scrapeSpan := TraceScrape(context.Background(), infoHashes)
+	defer scrapeSpan.End()
 	var b strings.Builder
 	b.WriteString("d5:filesd")
 
