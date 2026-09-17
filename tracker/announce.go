@@ -420,109 +420,155 @@ func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwan
 		}
 	}
 
+	// Snapshot all peers we need from the torrent under a single read lock, then
+	// release before ML scoring (T-1 fix: scoring must not hold the torrent lock).
+	type leecherEntry struct{ ipPort []byte }
+	var (
+		mlPeerInfos   []*ml.PeerInfo  // seeder snapshots for ML path
+		rrSeederKeys  []string        // round-robin seeder keys
+		rrSeederIPPort map[string][]byte
+		rrLastKey     string
+		leecherIPPorts []leecherEntry
+		seederCountSnap int
+		leecherCountSnap int
+		useML         bool
+	)
+
 	torrent.mu.RLock()
-	defer torrent.mu.RUnlock()
+	seederCountSnap = torrent.Seeders.Size()
+	leecherCountSnap = torrent.Leechers.Size()
+	useML = w.PeerScorer != nil && seederCountSnap > int(numwant) && requesterIP != nil && isLeecher
 
-	if isLeecher {
-		seederCount := torrent.Seeders.Size()
-		if seederCount > 0 {
-			// ML-scored seeder selection: only pay scoring cost when we must choose a subset.
-			if w.PeerScorer != nil && seederCount > int(numwant) && requesterIP != nil {
-				peerInfos := make([]*ml.PeerInfo, 0, seederCount)
-				piToPeer := make(map[*ml.PeerInfo]*Peer, seederCount)
-				torrent.Seeders.ForEach(func(_ string, p *Peer) bool {
-					if p.UserID == userID || !p.Visible {
-						return true
-					}
-					pi := &ml.PeerInfo{
-						IP:           p.IP,
-						Port:         p.Port,
-						Uploaded:     p.Uploaded,
-						Downloaded:   p.Downloaded,
-						FirstSeen:    p.FirstAnnounced,
-						LastAnnounce: p.LastAnnounced,
-					}
-					peerInfos = append(peerInfos, pi)
-					piToPeer[pi] = p
-					return true
-				})
-				best := w.PeerScorer.SelectBest(peerInfos, requesterIP, int(numwant))
-				for _, pi := range best {
-					if found >= int(numwant) {
-						break
-					}
-					p := piToPeer[pi]
-					if len(p.IPPort) == 6 || len(p.IPPort) == 18 {
-						appendPeer(p)
-						found++
-					}
-				}
-			} else {
-				// Round-robin seeder selection (default when PeerScorer is nil or not needed).
-				seederKeys := make([]string, 0, seederCount)
-				seederMap := make(map[string]*Peer, seederCount)
-				torrent.Seeders.ForEach(func(key string, peer *Peer) bool {
-					seederKeys = append(seederKeys, key)
-					seederMap[key] = peer
-					return true
-				})
-
-				startIdx := 0
-				if torrent.LastSelectedSeeder != "" {
-					for i, key := range seederKeys {
-						if key == torrent.LastSelectedSeeder {
-							startIdx = (i + 1) % len(seederKeys)
-							break
-						}
-					}
-				}
-
-				for i := 0; i < len(seederKeys) && found < int(numwant); i++ {
-					idx := (startIdx + i) % len(seederKeys)
-					key := seederKeys[idx]
-					peer := seederMap[key]
-					if peer.UserID == userID || !peer.Visible {
-						continue
-					}
-					if len(peer.IPPort) == 6 || len(peer.IPPort) == 18 {
-						appendPeer(peer)
-						found++
-						torrent.LastSelectedSeeder = key
-					}
-				}
-			}
-		}
-
-		if found < int(numwant) && torrent.Leechers.Size() > 1 {
-			torrent.Leechers.ForEach(func(_ string, peer *Peer) bool {
-				if found >= int(numwant) {
-					return false
-				}
-				if peer.UserID == userID || !peer.Visible {
+	if isLeecher && seederCountSnap > 0 {
+		if useML {
+			mlPeerInfos = make([]*ml.PeerInfo, 0, seederCountSnap)
+			torrent.Seeders.ForEach(func(_ string, p *Peer) bool {
+				if p.UserID == userID || !p.Visible {
 					return true
 				}
-				if len(peer.IPPort) == 6 || len(peer.IPPort) == 18 {
-					appendPeer(peer)
-					found++
+				ipPortCopy := make([]byte, len(p.IPPort))
+				copy(ipPortCopy, p.IPPort)
+				pi := &ml.PeerInfo{
+					IP:           p.IP,
+					Port:         p.Port,
+					Uploaded:     p.Uploaded,
+					Downloaded:   p.Downloaded,
+					FirstSeen:    p.FirstAnnounced,
+					LastAnnounce: p.LastAnnounced,
+					IPPort:       ipPortCopy,
 				}
+				mlPeerInfos = append(mlPeerInfos, pi)
 				return true
 			})
+		} else {
+			rrSeederIPPort = make(map[string][]byte, seederCountSnap)
+			rrSeederKeys = make([]string, 0, seederCountSnap)
+			torrent.Seeders.ForEach(func(key string, p *Peer) bool {
+				if p.UserID == userID || !p.Visible {
+					return true
+				}
+				if len(p.IPPort) != 6 && len(p.IPPort) != 18 {
+					return true
+				}
+				rrSeederKeys = append(rrSeederKeys, key)
+				ipPortCopy := make([]byte, len(p.IPPort))
+				copy(ipPortCopy, p.IPPort)
+				rrSeederIPPort[key] = ipPortCopy
+				return true
+			})
+			rrLastKey = torrent.LastSelectedSeeder
 		}
-	} else {
-		torrent.Leechers.ForEach(func(_ string, peer *Peer) bool {
+	}
+
+	if isLeecher && leecherCountSnap > 1 {
+		leecherIPPorts = make([]leecherEntry, 0, leecherCountSnap)
+		torrent.Leechers.ForEach(func(_ string, p *Peer) bool {
+			if p.UserID == userID || !p.Visible {
+				return true
+			}
+			if len(p.IPPort) == 6 || len(p.IPPort) == 18 {
+				ipPortCopy := make([]byte, len(p.IPPort))
+				copy(ipPortCopy, p.IPPort)
+				leecherIPPorts = append(leecherIPPorts, leecherEntry{ipPortCopy})
+			}
+			return true
+		})
+	}
+
+	if !isLeecher {
+		torrent.Leechers.ForEach(func(_ string, p *Peer) bool {
 			if found >= int(numwant) {
 				return false
 			}
-			if peer.UserID == userID || !peer.Visible {
+			if p.UserID == userID || !p.Visible {
 				return true
 			}
-			if len(peer.IPPort) == 6 || len(peer.IPPort) == 18 {
-				appendPeer(peer)
+			if len(p.IPPort) == 6 || len(p.IPPort) == 18 {
+				appendPeer(p)
 				found++
 			}
 			return true
 		})
 	}
+	torrent.mu.RUnlock() // release before ML scoring — T-1 fix
+
+	// Build response from snapshots (no lock held from here).
+	if isLeecher {
+		if useML && len(mlPeerInfos) > 0 {
+			best := w.PeerScorer.SelectBest(mlPeerInfos, requesterIP, int(numwant))
+			for _, pi := range best {
+				if found >= int(numwant) {
+					break
+				}
+				switch len(pi.IPPort) {
+				case 6:
+					buf4 = append(buf4, pi.IPPort...)
+					found++
+				case 18:
+					buf6 = append(buf6, pi.IPPort...)
+					found++
+				}
+			}
+		} else if len(rrSeederKeys) > 0 {
+			startIdx := 0
+			if rrLastKey != "" {
+				for i, key := range rrSeederKeys {
+					if key == rrLastKey {
+						startIdx = (i + 1) % len(rrSeederKeys)
+						break
+					}
+				}
+			}
+			for i := 0; i < len(rrSeederKeys) && found < int(numwant); i++ {
+				key := rrSeederKeys[(startIdx+i)%len(rrSeederKeys)]
+				ipPort := rrSeederIPPort[key]
+				if len(ipPort) == 6 || len(ipPort) == 18 {
+					switch len(ipPort) {
+					case 6:
+						buf4 = append(buf4, ipPort...)
+					case 18:
+						buf6 = append(buf6, ipPort...)
+					}
+					found++
+				}
+			}
+		}
+
+		for _, le := range leecherIPPorts {
+			if found >= int(numwant) {
+				break
+			}
+			switch len(le.ipPort) {
+			case 6:
+				buf4 = append(buf4, le.ipPort...)
+			case 18:
+				buf6 = append(buf6, le.ipPort...)
+			}
+			found++
+		}
+	}
+	_ = seederCountSnap
+	_ = leecherCountSnap
 
 	// Copy results before returning buffers to pool.
 	if len(buf4) > 0 {
@@ -583,10 +629,19 @@ func ParseAnnounceParams(params url.Values, clientIP net.IP) (*AnnounceRequest, 
 	}
 	req.Port = uint16(port)
 
-	req.Uploaded = parseInt64(params.Get("uploaded"))
-	req.Downloaded = parseInt64(params.Get("downloaded"))
-	req.Left = parseInt64(params.Get("left"))
-	req.Corrupt = parseInt64(params.Get("corrupt"))
+	var statErr error
+	if req.Uploaded, statErr = parseNonNegInt64(params.Get("uploaded")); statErr != nil {
+		return nil, fmt.Errorf("invalid uploaded: %w", statErr)
+	}
+	if req.Downloaded, statErr = parseNonNegInt64(params.Get("downloaded")); statErr != nil {
+		return nil, fmt.Errorf("invalid downloaded: %w", statErr)
+	}
+	if req.Left, statErr = parseNonNegInt64(params.Get("left")); statErr != nil {
+		return nil, fmt.Errorf("invalid left: %w", statErr)
+	}
+	if req.Corrupt, statErr = parseNonNegInt64(params.Get("corrupt")); statErr != nil {
+		return nil, fmt.Errorf("invalid corrupt: %w", statErr)
+	}
 
 	req.Event = params.Get("event")
 	req.Compact = params.Get("compact") == "1"
@@ -613,6 +668,22 @@ func parseInt64(s string) int64 {
 		return 0
 	}
 	return val
+}
+
+// parseNonNegInt64 parses a decimal string and returns an error if the value
+// is explicitly negative. Empty string is treated as 0 (field omitted).
+func parseNonNegInt64(s string) (int64, error) {
+	if s == "" {
+		return 0, nil
+	}
+	val, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("not a valid integer")
+	}
+	if val < 0 {
+		return 0, fmt.Errorf("negative values not permitted")
+	}
+	return val, nil
 }
 
 func minInt(a, b int) int {

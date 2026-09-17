@@ -8,6 +8,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $password = $_POST['password'] ?? '';
 
     if ($username === ADMIN_USER && password_verify($password, ADMIN_PASS)) {
+        session_regenerate_id(true); // prevent session fixation (SEC-3 fix)
         $_SESSION['authenticated'] = true;
         $_SESSION['username'] = $username;
         header('Location: index.php');

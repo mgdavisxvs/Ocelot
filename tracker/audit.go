@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"sort"
 	"time"
 )
 
@@ -11,8 +12,9 @@ import (
 // dbFn is called on every write so the logger always targets the current shard
 // even after a rotation.
 type AuditLogger struct {
-	dbFn   func() *sql.DB
-	logger *Logger
+	dbFn     func() *sql.DB
+	shardsFn func() []*sql.DB // optional; enables cross-shard queries (M3 fix)
+	logger   *Logger
 }
 
 // NewAuditLogger creates a new audit logger. Pass SQLiteShardManager.CurrentDB
@@ -22,6 +24,12 @@ func NewAuditLogger(dbFn func() *sql.DB) *AuditLogger {
 		dbFn:   dbFn,
 		logger: GetDefaultLogger(),
 	}
+}
+
+// SetShardsFn registers a function that returns all known DB shards so that
+// QueryAllShards can search historical audit entries beyond the current shard.
+func (al *AuditLogger) SetShardsFn(fn func() []*sql.DB) {
+	al.shardsFn = fn
 }
 
 // AuditEntry represents a single audit log entry
@@ -65,7 +73,7 @@ func (al *AuditLogger) Log(ctx context.Context, action, resourceType, resourceID
 		return nil // DB not yet ready; silently skip
 	}
 	_, dbErr := db.Exec(query,
-		time.Now().Unix(),
+		time.Now().UnixNano(), // nanosecond precision (S5 fix)
 		userID,
 		action,
 		resourceType,
@@ -107,8 +115,60 @@ func (al *AuditLogger) LogFailure(ctx context.Context, action, resourceType, res
 	return al.Log(ctx, action, resourceType, resourceID, false, err)
 }
 
-// Query retrieves audit logs with filters
+
+// QueryAllShards queries audit logs across every known DB shard and merges the
+// results in descending timestamp order. Falls back to the current shard if no
+// shardsFn has been registered. Duplicate IDs from the same shard are not
+// possible but IDs are shard-local and may overlap between shards; entries are
+// identified by (shard, id) in practice but only Timestamp + fields are returned.
+func (al *AuditLogger) QueryAllShards(filters AuditFilters) ([]*AuditEntry, error) {
+	var dbs []*sql.DB
+	if al.shardsFn != nil {
+		dbs = al.shardsFn()
+	}
+	if len(dbs) == 0 {
+		// Fallback: query only the current shard (same as Query).
+		if db := al.dbFn(); db != nil {
+			dbs = []*sql.DB{db}
+		}
+	}
+
+	var all []*AuditEntry
+	for _, db := range dbs {
+		if db == nil {
+			continue
+		}
+		entries, err := al.queryDB(db, filters)
+		if err != nil {
+			al.logger.Error("audit shard query failed", err)
+			continue
+		}
+		all = append(all, entries...)
+	}
+
+	// Merge sort by timestamp descending.
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].Timestamp.After(all[j].Timestamp)
+	})
+
+	if filters.Limit > 0 && len(all) > filters.Limit {
+		all = all[:filters.Limit]
+	}
+	return all, nil
+}
+
+// Query retrieves audit logs from the current shard only.
+// Use QueryAllShards to search across all historical shards.
 func (al *AuditLogger) Query(filters AuditFilters) ([]*AuditEntry, error) {
+	db := al.dbFn()
+	if db == nil {
+		return []*AuditEntry{}, nil
+	}
+	return al.queryDB(db, filters)
+}
+
+// queryDB executes a filtered audit query against a specific *sql.DB.
+func (al *AuditLogger) queryDB(db *sql.DB, filters AuditFilters) ([]*AuditEntry, error) {
 	query := `SELECT id, timestamp, user_id, action, resource_type, resource_id,
 		ip_address, success, error_message, metadata
 		FROM audit_log WHERE 1=1`
@@ -119,70 +179,53 @@ func (al *AuditLogger) Query(filters AuditFilters) ([]*AuditEntry, error) {
 		query += " AND user_id = ?"
 		args = append(args, *filters.UserID)
 	}
-
 	if filters.Action != "" {
 		query += " AND action = ?"
 		args = append(args, filters.Action)
 	}
-
 	if filters.ResourceType != "" {
 		query += " AND resource_type = ?"
 		args = append(args, filters.ResourceType)
 	}
-
 	if filters.StartTime != nil {
 		query += " AND timestamp >= ?"
-		args = append(args, filters.StartTime.Unix())
+		args = append(args, filters.StartTime.UnixNano())
 	}
-
 	if filters.EndTime != nil {
 		query += " AND timestamp <= ?"
-		args = append(args, filters.EndTime.Unix())
+		args = append(args, filters.EndTime.UnixNano())
 	}
-
 	query += " ORDER BY timestamp DESC LIMIT ?"
 	args = append(args, filters.Limit)
 
-	rows, err := al.dbFn().Query(query, args...)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	entries := []*AuditEntry{}
+	var entries []*AuditEntry
 	for rows.Next() {
 		var entry AuditEntry
-		var timestampUnix int64
+		var timestampNano int64
 		var userIDPtr *int
 		var metadataJSON string
 
-		err := rows.Scan(
-			&entry.ID,
-			&timestampUnix,
-			&userIDPtr,
-			&entry.Action,
-			&entry.ResourceType,
-			&entry.ResourceID,
-			&entry.IPAddress,
-			&entry.Success,
-			&entry.ErrorMessage,
-			&metadataJSON,
-		)
-
-		if err != nil {
+		if err := rows.Scan(
+			&entry.ID, &timestampNano, &userIDPtr,
+			&entry.Action, &entry.ResourceType, &entry.ResourceID,
+			&entry.IPAddress, &entry.Success, &entry.ErrorMessage, &metadataJSON,
+		); err != nil {
 			continue
 		}
 
-		entry.Timestamp = time.Unix(timestampUnix, 0)
+		entry.Timestamp = time.Unix(0, timestampNano)
 		entry.UserID = userIDPtr
-
 		if metadataJSON != "" {
 			json.Unmarshal([]byte(metadataJSON), &entry.Metadata)
 		}
-
 		entries = append(entries, &entry)
 	}
-
 	return entries, nil
 }
 

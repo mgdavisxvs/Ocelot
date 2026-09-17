@@ -332,6 +332,7 @@ func (w *Worker) GetStats() ([]byte, error) {
 		"whitelist_count":     len(w.Whitelist.GetAll()),
 		"client_rejections":   w.Stats.ClientRejections.Load(),
 		"anomaly_rejections":  w.Stats.AnomalyRejections.Load(),
+		"ml_armed":            w.AnomalyDetector != nil && w.ClientDetector != nil && w.PeerScorer != nil,
 	}
 	type cbStater interface{ CBState() string }
 	if cb, ok := w.DB.(cbStater); ok {

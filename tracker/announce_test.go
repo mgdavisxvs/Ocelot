@@ -199,21 +199,47 @@ func TestParseAnnounceParams_InvalidPort(t *testing.T) {
 	}
 }
 
-func TestParseAnnounceParams_NegativeValues_ClampedToZero(t *testing.T) {
-	params := url.Values{
-		"info_hash":  {"00000000000000000000"},
-		"peer_id":    {"-qB40000000000000000"},
-		"port":       {"6881"},
-		"uploaded":   {"-100"},
-		"downloaded": {"-200"},
-		"left":       {"-50"},
+func TestParseAnnounceParams_NegativeValues_Rejected(t *testing.T) {
+	// Negative stat values are rejected outright (H-1/SEC-5 fix).
+	cases := []struct {
+		name   string
+		params url.Values
+	}{
+		{
+			"negative uploaded",
+			url.Values{
+				"info_hash": {"00000000000000000000"},
+				"peer_id":   {"-qB40000000000000000"},
+				"port":      {"6881"},
+				"uploaded":  {"-100"},
+			},
+		},
+		{
+			"negative downloaded",
+			url.Values{
+				"info_hash":  {"00000000000000000000"},
+				"peer_id":    {"-qB40000000000000000"},
+				"port":       {"6881"},
+				"downloaded": {"-200"},
+			},
+		},
+		{
+			"negative left",
+			url.Values{
+				"info_hash": {"00000000000000000000"},
+				"peer_id":   {"-qB40000000000000000"},
+				"port":      {"6881"},
+				"left":      {"-50"},
+			},
+		},
 	}
-	req, err := ParseAnnounceParams(params, nil)
-	if err != nil {
-		t.Fatalf("ParseAnnounceParams: %v", err)
-	}
-	if req.Uploaded != 0 || req.Downloaded != 0 || req.Left != 0 {
-		t.Error("negative values should clamp to 0")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseAnnounceParams(tc.params, nil)
+			if err == nil {
+				t.Error("expected error for negative stat value, got nil")
+			}
+		})
 	}
 }
 
