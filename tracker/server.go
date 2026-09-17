@@ -223,6 +223,18 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 		}
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
+	case "audit":
+		if s.checkAdminAuth(req, passkey) {
+			return s.handleAuditAPI(req, httpClose), httpClose
+		}
+		return s.errorResponse("Authentication failure", httpClose), httpClose
+
+	case "users":
+		if s.checkAdminAuth(req, passkey) {
+			return s.handleUsersAPI(req, httpClose), httpClose
+		}
+		return s.errorResponse("Authentication failure", httpClose), httpClose
+
 	default:
 		return s.response("Nothing to see here", httpClose, false), httpClose
 	}
@@ -339,6 +351,22 @@ func (s *Server) handlePeersAPI(req *http.Request, httpClose bool) []byte {
 
 func (s *Server) handleWhitelistAPI(httpClose bool) []byte {
 	jsonData, err := s.worker.GetWhitelist()
+	if err != nil {
+		return s.errorResponse(err.Error(), httpClose)
+	}
+	return s.jsonResponse(jsonData, httpClose)
+}
+
+func (s *Server) handleAuditAPI(req *http.Request, httpClose bool) []byte {
+	jsonData, err := s.worker.GetAuditLog(req)
+	if err != nil {
+		return s.errorResponse(err.Error(), httpClose)
+	}
+	return s.jsonResponse(jsonData, httpClose)
+}
+
+func (s *Server) handleUsersAPI(req *http.Request, httpClose bool) []byte {
+	jsonData, err := s.worker.GetUserStats(req)
 	if err != nil {
 		return s.errorResponse(err.Error(), httpClose)
 	}

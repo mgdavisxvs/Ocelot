@@ -282,6 +282,8 @@ func (m *MockSiteComm) ExpireToken(torrentID TorrentID, userID UserID) {
 	m.Expired = append(m.Expired, tokenExpiry{TorrentID: UserID(torrentID), UserID: userID})
 }
 
+func (m *MockSiteComm) GrantFreeleech(_ TorrentID) {}
+
 func (m *MockSiteComm) reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -151,3 +151,14 @@ func (c *CircuitBreakerDB) GetDBStats() (int64, int, int64, error) {
 	}
 	return 0, 0, 0, nil
 }
+
+// GetUserStats delegates to the underlying DB if it supports the call.
+func (c *CircuitBreakerDB) GetUserStats(userID uint32) (int64, int64, error) {
+	type userStater interface {
+		GetUserStats(uint32) (int64, int64, error)
+	}
+	if us, ok := c.db.(userStater); ok {
+		return us.GetUserStats(userID)
+	}
+	return 0, 0, nil
+}

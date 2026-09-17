@@ -72,7 +72,8 @@ func (m *mockDB) Close() error         { return nil }
 
 type mockSiteComm struct{ expired int }
 
-func (m *mockSiteComm) ExpireToken(_ TorrentID, _ UserID) { m.expired++ }
+func (m *mockSiteComm) ExpireToken(_ TorrentID, _ UserID)  { m.expired++ }
+func (m *mockSiteComm) GrantFreeleech(_ TorrentID)         {}
 
 // ── Helper: build a minimal Worker ───────────────────────────────────────────
 

@@ -307,4 +307,55 @@ class TrackerAPI {
 
         return json_decode($response, true);
     }
+
+    /**
+     * Query audit log entries across all shards.
+     *
+     * @param string $action    Filter by action (empty = all)
+     * @param string $resType   Filter by resource_type (empty = all)
+     * @param int|null $userID  Filter by user_id (null = all)
+     * @param int $limit        Maximum entries to return (default 100)
+     * @param bool $allShards   Search historical shards (default true)
+     * @return array|null       Array of audit entries, or null on error
+     */
+    public static function getAuditLog($action = '', $resType = '', $userID = null, $limit = 100, $allShards = true) {
+        self::init();
+        $params = http_build_query(array_filter([
+            'action'        => $action,
+            'resource_type' => $resType,
+            'user_id'       => $userID,
+            'limit'         => $limit,
+            'all_shards'    => $allShards ? '1' : '0',
+        ], fn($v) => $v !== null && $v !== ''));
+        $url = self::$trackerUrl . '/' . self::$sitePassword . '/audit' . ($params ? '?' . $params : '');
+
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+
+        $response = curl_exec($ch);
+        curl_close($ch);
+
+        return json_decode($response, true);
+    }
+
+    /**
+     * Get cross-shard upload/download totals for a user.
+     *
+     * @param int $userID  The user's numeric ID
+     * @return array|null  {'user_id', 'uploaded', 'downloaded'} or null on error
+     */
+    public static function getUserStats($userID) {
+        self::init();
+        $url = self::$trackerUrl . '/' . self::$sitePassword . '/users?user_id=' . (int)$userID;
+
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+
+        $response = curl_exec($ch);
+        curl_close($ch);
+
+        return json_decode($response, true);
+    }
 }

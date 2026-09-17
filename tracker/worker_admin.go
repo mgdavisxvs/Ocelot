@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -442,6 +443,69 @@ func (w *Worker) GetPeers(infoHash string, limit int) ([]byte, error) {
 // GetWhitelist returns the current peer_id prefix whitelist as JSON.
 func (w *Worker) GetWhitelist() ([]byte, error) {
 	return json.Marshal(w.Whitelist.GetAll())
+}
+
+// GetAuditLog queries the audit log across all shards and returns JSON.
+// Accepted query parameters: action, resource_type, user_id, limit (default 100),
+// all_shards (default true; set to "0" to query only the current shard).
+func (w *Worker) GetAuditLog(req *http.Request) ([]byte, error) {
+	if w.Audit == nil {
+		return json.Marshal(map[string]interface{}{"error": "audit not configured"})
+	}
+	q := req.URL.Query()
+	filters := AuditFilters{Limit: queryInt(req, "limit", 100)}
+	if action := q.Get("action"); action != "" {
+		filters.Action = action
+	}
+	if rt := q.Get("resource_type"); rt != "" {
+		filters.ResourceType = rt
+	}
+	if uidStr := q.Get("user_id"); uidStr != "" {
+		if uid, err := strconv.Atoi(uidStr); err == nil {
+			filters.UserID = &uid
+		}
+	}
+	var (
+		entries []*AuditEntry
+		err     error
+	)
+	if q.Get("all_shards") == "0" {
+		entries, err = w.Audit.Query(filters)
+	} else {
+		entries, err = w.Audit.QueryAllShards(filters)
+	}
+	if err != nil {
+		return json.Marshal(map[string]interface{}{"error": err.Error()})
+	}
+	return json.Marshal(entries)
+}
+
+// GetUserStats returns cross-shard upload/download totals for a user.
+func (w *Worker) GetUserStats(req *http.Request) ([]byte, error) {
+	type userStater interface {
+		GetUserStats(uint32) (int64, int64, error)
+	}
+	uidStr := req.URL.Query().Get("user_id")
+	if uidStr == "" {
+		return json.Marshal(map[string]interface{}{"error": "user_id required"})
+	}
+	uid64, err := strconv.ParseUint(uidStr, 10, 32)
+	if err != nil {
+		return json.Marshal(map[string]interface{}{"error": "invalid user_id"})
+	}
+	us, ok := w.DB.(userStater)
+	if !ok {
+		return json.Marshal(map[string]interface{}{"error": "user stats not available"})
+	}
+	uploaded, downloaded, err := us.GetUserStats(uint32(uid64))
+	if err != nil {
+		return json.Marshal(map[string]interface{}{"error": err.Error()})
+	}
+	return json.Marshal(map[string]interface{}{
+		"user_id":    uint32(uid64),
+		"uploaded":   uploaded,
+		"downloaded": downloaded,
+	})
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
