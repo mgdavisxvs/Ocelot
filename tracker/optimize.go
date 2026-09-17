@@ -164,11 +164,11 @@ func AdaptiveInterval(seederCount, leecherCount int, baseInterval int) int32 {
 	totalPeers := seederCount + leecherCount
 
 	if totalPeers < 10 {
-		return 600 // 10 minutes
+		return 600 // 10 minutes — high churn, need frequent updates
 	} else if totalPeers < 100 {
-		return 1200 // 20 minutes
+		return 1200 // 20 minutes — balanced
 	} else {
-		return 2400 // 40 minutes
+		return 2400 // 40 minutes — large swarms have low churn
 	}
 }
 

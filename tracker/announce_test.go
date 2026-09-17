@@ -72,7 +72,12 @@ func (m *mockDB) Close() error         { return nil }
 
 type mockSiteComm struct{ expired int }
 
-func (m *mockSiteComm) ExpireToken(_ TorrentID, _ UserID) { m.expired++ }
+func (m *mockSiteComm) ExpireToken(_ TorrentID, _ UserID)              { m.expired++ }
+func (m *mockSiteComm) BanUser(_ int64) error                          { return nil }
+func (m *mockSiteComm) UnbanUser(_ int64) error                        { return nil }
+func (m *mockSiteComm) NotifyFreeleech(_ int64, _ int) error           { return nil }
+func (m *mockSiteComm) ReportAnomaly(_ int64, _ float64) error         { return nil }
+func (m *mockSiteComm) UpdateStats(_ int64, _ int64, _ int64) error    { return nil }
 
 // ── Helper: build a minimal Worker ───────────────────────────────────────────
 

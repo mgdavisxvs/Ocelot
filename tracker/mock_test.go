@@ -282,6 +282,12 @@ func (m *MockSiteComm) ExpireToken(torrentID TorrentID, userID UserID) {
 	m.Expired = append(m.Expired, tokenExpiry{TorrentID: UserID(torrentID), UserID: userID})
 }
 
+func (m *MockSiteComm) BanUser(_ int64) error                          { return nil }
+func (m *MockSiteComm) UnbanUser(_ int64) error                        { return nil }
+func (m *MockSiteComm) NotifyFreeleech(_ int64, _ int) error           { return nil }
+func (m *MockSiteComm) ReportAnomaly(_ int64, _ float64) error         { return nil }
+func (m *MockSiteComm) UpdateStats(_ int64, _ int64, _ int64) error    { return nil }
+
 func (m *MockSiteComm) reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -4,401 +4,254 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 )
 
-// UpdateRequest represents a tracker update request from the admin panel
-type UpdateRequest struct {
-	Action string `json:"action"`
-	// Torrent-related fields
-	TorrentID int    `json:"torrent_id,omitempty"`
-	InfoHash  string `json:"info_hash,omitempty"`
-	Reason    string `json:"reason,omitempty"`
-	FreeType  int    `json:"free_type,omitempty"`
-	// User-related fields
-	UserID      int    `json:"user_id,omitempty"`
-	Passkey     string `json:"passkey,omitempty"`
-	CanLeech    *bool  `json:"can_leech,omitempty"`
-	ProtectIP   *bool  `json:"protect_ip,omitempty"`
-	NewPasskey  string `json:"new_passkey,omitempty"`
-	// Token-related fields
-	Downloaded int64 `json:"downloaded,omitempty"`
-	// Whitelist-related fields
-	PeerIDPrefix string `json:"peer_id_prefix,omitempty"`
-}
-
-// UpdateResponse represents the tracker's response to an update
-type UpdateResponse struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
-	Error   string `json:"error,omitempty"`
-}
-
-// HandleUpdate processes tracker update requests from the admin panel
-// This replaces the stub at server.go:352
-// Equivalent to C++ worker::update() (worker.cpp:768-996)
+// HandleUpdate processes tracker update requests from the admin panel.
+// Requests arrive as GET with URL query parameters.
+// Equivalent to C++ worker::update() (worker.cpp:768-996).
 func (w *Worker) HandleUpdate(req *http.Request) ([]byte, error) {
-	// Parse JSON body
-	var updateReq UpdateRequest
-	if err := json.NewDecoder(req.Body).Decode(&updateReq); err != nil {
-		return w.updateError("Invalid JSON: " + err.Error())
-	}
+	params := req.URL.Query()
+	action := params.Get("action")
 
-	// Route to appropriate handler based on action
-	switch updateReq.Action {
+	switch action {
 	case "add_torrent":
-		return w.addTorrent(updateReq)
+		return w.addTorrent(params)
 	case "update_torrent":
-		return w.updateTorrent(updateReq)
+		return w.updateTorrent(params)
 	case "delete_torrent":
-		return w.deleteTorrent(updateReq)
-	case "change_freeleech":
-		return w.changeFreeleech(updateReq)
+		return w.deleteTorrent(params)
 	case "add_user":
-		return w.addUser(updateReq)
-	case "update_user":
-		return w.updateUser(updateReq)
-	case "delete_user":
-		return w.deleteUser(updateReq)
+		return w.addUser(params)
+	case "remove_user", "delete_user":
+		return w.removeUser(params)
 	case "change_passkey":
-		return w.changePasskey(updateReq)
-	case "add_token":
-		return w.addToken(updateReq)
-	case "remove_token":
-		return w.removeToken(updateReq)
+		return w.changePasskey(params)
 	case "add_whitelist":
-		return w.addWhitelist(updateReq)
+		return w.addWhitelist(params)
 	case "remove_whitelist":
-		return w.removeWhitelist(updateReq)
+		return w.removeWhitelist(params)
 	default:
-		return w.updateError(fmt.Sprintf("Unknown action: %s", updateReq.Action))
+		return w.updateError(fmt.Sprintf("unknown action: %s", action))
 	}
 }
 
-// addTorrent adds a new torrent to the tracker
-func (w *Worker) addTorrent(req UpdateRequest) ([]byte, error) {
-	if req.TorrentID <= 0 {
-		return w.updateError("Invalid torrent_id")
-	}
-	if req.InfoHash == "" {
-		return w.updateError("Missing info_hash")
-	}
-	if len(req.InfoHash) != 20 && len(req.InfoHash) != 40 {
-		return w.updateError("info_hash must be 20 or 40 characters")
-	}
+// ── update helpers ──────────────────────────────────────────────────────────
 
-	// Check if torrent already exists
-	if _, ok := w.Torrents.Get(req.InfoHash); ok {
-		return w.updateError("Torrent already exists")
+type queryParams = map[string][]string
+
+func qpGet(p queryParams, key string) string {
+	if vals, ok := p[key]; ok && len(vals) > 0 {
+		return vals[0]
 	}
-
-	// Create new torrent
-	torrent := NewTorrent(TorrentID(req.TorrentID))
-	w.Torrents.Set(req.InfoHash, torrent)
-
-	return w.updateSuccess(fmt.Sprintf("Added torrent %d", req.TorrentID))
+	return ""
 }
 
-// updateTorrent updates an existing torrent's properties
-func (w *Worker) updateTorrent(req UpdateRequest) ([]byte, error) {
-	if req.InfoHash == "" {
-		return w.updateError("Missing info_hash")
+func qpInt(p queryParams, key string) int {
+	v := qpGet(p, key)
+	if v == "" {
+		return 0
 	}
-
-	torrent, ok := w.Torrents.Get(req.InfoHash)
-	if !ok {
-		return w.updateError("Torrent not found")
-	}
-
-	// Update fields (currently only supports balance updates)
-	torrent.mu.Lock()
-	defer torrent.mu.Unlock()
-
-	return w.updateSuccess(fmt.Sprintf("Updated torrent %s", req.InfoHash))
+	n, _ := strconv.Atoi(v)
+	return n
 }
 
-// deleteTorrent removes a torrent from the tracker
-func (w *Worker) deleteTorrent(req UpdateRequest) ([]byte, error) {
-	if req.InfoHash == "" && req.TorrentID <= 0 {
-		return w.updateError("Missing info_hash or torrent_id")
+// ── admin actions ───────────────────────────────────────────────────────────
+
+func (w *Worker) addTorrent(p queryParams) ([]byte, error) {
+	idStr := qpGet(p, "id")
+	if idStr == "" {
+		return w.updateError("missing id")
+	}
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		return w.updateError("invalid id")
 	}
 
-	// If only torrent_id provided, find by ID
-	if req.InfoHash == "" {
-		// Linear search through torrents (acceptable for delete operations)
-		found := false
-		w.Torrents.mu.Lock()
-		for hash, torrent := range w.Torrents.torrents {
-			if torrent.ID == TorrentID(req.TorrentID) {
-				delete(w.Torrents.torrents, hash)
-				found = true
-				break
-			}
+	infoHash := qpGet(p, "info_hash")
+	if infoHash == "" {
+		return w.updateError("missing info_hash")
+	}
+	if _, ok := w.Torrents.Get(infoHash); ok {
+		return w.updateError("torrent already exists")
+	}
+
+	torrent := NewTorrent(TorrentID(id))
+	if ft := qpGet(p, "free_type"); ft != "" {
+		n, _ := strconv.Atoi(ft)
+		if n >= 0 && n <= 2 {
+			torrent.FreeType = FreeType(n)
 		}
-		w.Torrents.mu.Unlock()
-
-		if !found {
-			return w.updateError("Torrent not found")
-		}
-		return w.updateSuccess(fmt.Sprintf("Deleted torrent %d", req.TorrentID))
 	}
-
-	// Delete by info_hash
-	w.Torrents.mu.Lock()
-	delete(w.Torrents.torrents, req.InfoHash)
-	w.Torrents.mu.Unlock()
-
-	return w.updateSuccess(fmt.Sprintf("Deleted torrent %s", req.InfoHash))
+	w.Torrents.Set(infoHash, torrent)
+	return w.updateOK()
 }
 
-// changeFreeleech changes a torrent's freeleech status
-func (w *Worker) changeFreeleech(req UpdateRequest) ([]byte, error) {
-	if req.InfoHash == "" {
-		return w.updateError("Missing info_hash")
+func (w *Worker) updateTorrent(p queryParams) ([]byte, error) {
+	infoHash := qpGet(p, "info_hash")
+	if infoHash == "" {
+		return w.updateError("missing info_hash")
 	}
 
-	torrent, ok := w.Torrents.Get(req.InfoHash)
+	torrent, ok := w.Torrents.Get(infoHash)
 	if !ok {
-		return w.updateError("Torrent not found")
-	}
-
-	// Validate FreeType
-	if req.FreeType < 0 || req.FreeType > 2 {
-		return w.updateError("Invalid free_type (0=normal, 1=free, 2=neutral)")
+		return w.updateError("torrent not found")
 	}
 
 	torrent.mu.Lock()
-	torrent.FreeType = FreeType(req.FreeType)
+	if ft := qpGet(p, "free_type"); ft != "" {
+		n, _ := strconv.Atoi(ft)
+		if n >= 0 && n <= 2 {
+			torrent.FreeType = FreeType(n)
+		}
+	}
 	torrent.mu.Unlock()
-
-	freeTypeNames := []string{"normal", "free", "neutral"}
-	return w.updateSuccess(fmt.Sprintf("Set torrent to %s", freeTypeNames[req.FreeType]))
+	return w.updateOK()
 }
 
-// addUser adds a new user to the tracker
-func (w *Worker) addUser(req UpdateRequest) ([]byte, error) {
-	if req.UserID <= 0 {
-		return w.updateError("Invalid user_id")
+func (w *Worker) deleteTorrent(p queryParams) ([]byte, error) {
+	infoHash := qpGet(p, "info_hash")
+	if infoHash == "" {
+		return w.updateError("missing info_hash")
 	}
-	if req.Passkey == "" {
-		return w.updateError("Missing passkey")
+	if _, ok := w.Torrents.Get(infoHash); !ok {
+		return w.updateError("torrent not found")
 	}
-	if len(req.Passkey) != 32 {
-		return w.updateError("Passkey must be 32 characters")
-	}
-
-	// Check if user already exists
-	if _, ok := w.Users.Get(req.Passkey); ok {
-		return w.updateError("Passkey already exists")
-	}
-
-	// Default privileges
-	canLeech := true
-	protectIP := false
-	if req.CanLeech != nil {
-		canLeech = *req.CanLeech
-	}
-	if req.ProtectIP != nil {
-		protectIP = *req.ProtectIP
-	}
-
-	// Create new user
-	user := NewUser(UserID(req.UserID), canLeech, protectIP)
-	w.Users.Set(req.Passkey, user)
-
-	return w.updateSuccess(fmt.Sprintf("Added user %d", req.UserID))
+	w.Torrents.Delete(infoHash)
+	return w.updateOK()
 }
 
-// updateUser updates an existing user's privileges
-func (w *Worker) updateUser(req UpdateRequest) ([]byte, error) {
-	if req.Passkey == "" {
-		return w.updateError("Missing passkey")
+func (w *Worker) addUser(p queryParams) ([]byte, error) {
+	idStr := qpGet(p, "id")
+	if idStr == "" {
+		return w.updateError("missing id")
+	}
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		return w.updateError("invalid id")
 	}
 
-	user, ok := w.Users.Get(req.Passkey)
+	passkey := qpGet(p, "passkey")
+	if passkey == "" {
+		return w.updateError("missing passkey")
+	}
+	if len(passkey) != 32 {
+		return w.updateError("passkey must be 32 characters")
+	}
+
+	if _, ok := w.Users.Get(passkey); ok {
+		return w.updateError("passkey already exists")
+	}
+
+	canLeech := qpGet(p, "can_leech") != "0"
+	protectIP := qpGet(p, "protect_ip") == "1"
+
+	user := NewUser(UserID(id), canLeech, protectIP)
+	w.Users.Set(passkey, user)
+	return w.updateOK()
+}
+
+func (w *Worker) removeUser(p queryParams) ([]byte, error) {
+	passkey := qpGet(p, "passkey")
+	if passkey == "" {
+		return w.updateError("missing passkey")
+	}
+	if _, ok := w.Users.Get(passkey); !ok {
+		return w.updateError("user not found")
+	}
+	w.Users.Delete(passkey)
+	return w.updateOK()
+}
+
+func (w *Worker) changePasskey(p queryParams) ([]byte, error) {
+	oldPasskey := qpGet(p, "old_passkey")
+	newPasskey := qpGet(p, "new_passkey")
+	if oldPasskey == "" || newPasskey == "" {
+		return w.updateError("missing old_passkey or new_passkey")
+	}
+
+	user, ok := w.Users.Get(oldPasskey)
 	if !ok {
-		return w.updateError("User not found")
+		return w.updateError("user not found")
+	}
+	if _, ok := w.Users.Get(newPasskey); ok {
+		return w.updateError("new passkey already exists")
 	}
 
-	// Update privileges
-	if req.CanLeech != nil {
-		user.CanLeech.Store(*req.CanLeech)
-	}
-	if req.ProtectIP != nil {
-		user.ProtectIP.Store(*req.ProtectIP)
-	}
-
-	return w.updateSuccess(fmt.Sprintf("Updated user %d", user.ID))
-}
-
-// deleteUser removes a user from the tracker
-func (w *Worker) deleteUser(req UpdateRequest) ([]byte, error) {
-	if req.Passkey == "" {
-		return w.updateError("Missing passkey")
-	}
-
-	user, ok := w.Users.Get(req.Passkey)
-	if !ok {
-		return w.updateError("User not found")
-	}
-
-	// Mark as deleted (don't actually remove to preserve peer history)
-	user.Deleted.Store(true)
-
-	return w.updateSuccess(fmt.Sprintf("Deleted user %d", user.ID))
-}
-
-// changePasskey changes a user's passkey
-func (w *Worker) changePasskey(req UpdateRequest) ([]byte, error) {
-	if req.Passkey == "" || req.NewPasskey == "" {
-		return w.updateError("Missing passkey or new_passkey")
-	}
-	if len(req.NewPasskey) != 32 {
-		return w.updateError("New passkey must be 32 characters")
-	}
-
-	user, ok := w.Users.Get(req.Passkey)
-	if !ok {
-		return w.updateError("User not found")
-	}
-
-	// Check if new passkey already exists
-	if _, ok := w.Users.Get(req.NewPasskey); ok {
-		return w.updateError("New passkey already exists")
-	}
-
-	// Update passkey mapping
 	w.Users.mu.Lock()
-	delete(w.Users.users, req.Passkey)
-	w.Users.users[req.NewPasskey] = user
+	delete(w.Users.users, oldPasskey)
+	w.Users.users[newPasskey] = user
 	w.Users.mu.Unlock()
-
-	return w.updateSuccess(fmt.Sprintf("Changed passkey for user %d", user.ID))
+	return w.updateOK()
 }
 
-// addToken grants a freeleech token to a user for a torrent
-func (w *Worker) addToken(req UpdateRequest) ([]byte, error) {
-	if req.UserID <= 0 {
-		return w.updateError("Invalid user_id")
+func (w *Worker) addWhitelist(p queryParams) ([]byte, error) {
+	prefix := qpGet(p, "prefix")
+	if prefix == "" {
+		return w.updateError("missing prefix")
 	}
-	if req.InfoHash == "" {
-		return w.updateError("Missing info_hash")
-	}
-
-	torrent, ok := w.Torrents.Get(req.InfoHash)
-	if !ok {
-		return w.updateError("Torrent not found")
-	}
-
-	torrent.mu.Lock()
-	torrent.TokenedUsers[UserID(req.UserID)] = struct{}{}
-	torrent.mu.Unlock()
-
-	return w.updateSuccess(fmt.Sprintf("Added token for user %d", req.UserID))
+	w.Whitelist.Add(prefix)
+	return w.updateOK()
 }
 
-// removeToken removes a freeleech token from a user
-func (w *Worker) removeToken(req UpdateRequest) ([]byte, error) {
-	if req.UserID <= 0 {
-		return w.updateError("Invalid user_id")
+func (w *Worker) removeWhitelist(p queryParams) ([]byte, error) {
+	prefix := qpGet(p, "prefix")
+	if prefix == "" {
+		return w.updateError("missing prefix")
 	}
-	if req.InfoHash == "" {
-		return w.updateError("Missing info_hash")
-	}
-
-	torrent, ok := w.Torrents.Get(req.InfoHash)
-	if !ok {
-		return w.updateError("Torrent not found")
-	}
-
-	torrent.mu.Lock()
-	delete(torrent.TokenedUsers, UserID(req.UserID))
-	torrent.mu.Unlock()
-
-	return w.updateSuccess(fmt.Sprintf("Removed token for user %d", req.UserID))
+	w.Whitelist.Remove(prefix)
+	return w.updateOK()
 }
 
-// addWhitelist adds a peer_id prefix to the whitelist
-func (w *Worker) addWhitelist(req UpdateRequest) ([]byte, error) {
-	if req.PeerIDPrefix == "" {
-		return w.updateError("Missing peer_id_prefix")
-	}
+// ── response helpers ────────────────────────────────────────────────────────
 
-	w.Whitelist.Add(req.PeerIDPrefix)
-
-	return w.updateSuccess(fmt.Sprintf("Added whitelist prefix: %s", req.PeerIDPrefix))
+func (w *Worker) updateOK() ([]byte, error) {
+	return json.Marshal(map[string]string{"status": "ok"})
 }
 
-// removeWhitelist removes a peer_id prefix from the whitelist
-func (w *Worker) removeWhitelist(req UpdateRequest) ([]byte, error) {
-	if req.PeerIDPrefix == "" {
-		return w.updateError("Missing peer_id_prefix")
-	}
-
-	w.Whitelist.Remove(req.PeerIDPrefix)
-
-	return w.updateSuccess(fmt.Sprintf("Removed whitelist prefix: %s", req.PeerIDPrefix))
+func (w *Worker) updateError(msg string) ([]byte, error) {
+	data, _ := json.Marshal(map[string]string{"error": msg})
+	return data, fmt.Errorf("%s", msg)
 }
 
-// updateSuccess returns a success JSON response
-func (w *Worker) updateSuccess(message string) ([]byte, error) {
-	resp := UpdateResponse{
-		Success: true,
-		Message: message,
-	}
-	return json.Marshal(resp)
-}
+// ── Stats / Torrents / Peers / Whitelist JSON APIs ──────────────────────────
 
-// updateError returns an error JSON response
-func (w *Worker) updateError(errMsg string) ([]byte, error) {
-	resp := UpdateResponse{
-		Success: false,
-		Error:   errMsg,
-	}
-	data, _ := json.Marshal(resp)
-	return data, fmt.Errorf(errMsg)
-}
-
-// StatsResponse contains live tracker statistics for JSON API
+// StatsResponse contains live tracker statistics for the JSON API.
 type StatsResponse struct {
-	Uptime       string `json:"uptime"`
-	Torrents     int    `json:"torrents"`
-	Users        int    `json:"users"`
-	Seeders      uint32 `json:"seeders"`
-	Leechers     uint32 `json:"leechers"`
-	Connections  uint32 `json:"connections"`
-	Announces    uint64 `json:"announces"`
-	SuccAnnounces uint64 `json:"successful_announces"`
-	Scrapes      uint64 `json:"scrapes"`
-	BytesRead    uint64 `json:"bytes_read"`
-	BytesWritten uint64 `json:"bytes_written"`
+	UptimeSeconds float64 `json:"uptime_seconds"`
+	TorrentCount  int     `json:"torrent_count"`
+	UserCount     int     `json:"user_count"`
+	Seeders       uint32  `json:"seeders"`
+	Leechers      uint32  `json:"leechers"`
+	Connections   uint32  `json:"connections"`
+	Announcements uint64  `json:"announcements"`
+	Scrapes       uint64  `json:"scrapes"`
+	BytesRead     uint64  `json:"bytes_read"`
+	BytesWritten  uint64  `json:"bytes_written"`
 }
 
-// GetStats returns current tracker statistics as JSON
+// GetStats returns current tracker statistics as JSON.
 func (w *Worker) GetStats() ([]byte, error) {
-	uptime := time.Since(w.Stats.StartTime)
-
 	stats := StatsResponse{
-		Uptime:        uptime.Round(time.Second).String(),
-		Torrents:      w.Torrents.Size(),
-		Users:         w.Users.Size(),
+		UptimeSeconds: time.Since(w.Stats.StartTime).Seconds(),
+		TorrentCount:  w.Torrents.Size(),
+		UserCount:     w.Users.Size(),
 		Seeders:       w.Stats.Seeders.Load(),
 		Leechers:      w.Stats.Leechers.Load(),
 		Connections:   w.Stats.OpenConnections.Load(),
-		Announces:     w.Stats.Announcements.Load(),
-		SuccAnnounces: w.Stats.SuccAnnouncements.Load(),
+		Announcements: w.Stats.Announcements.Load(),
 		Scrapes:       w.Stats.Scrapes.Load(),
 		BytesRead:     w.Stats.BytesRead.Load(),
 		BytesWritten:  w.Stats.BytesWritten.Load(),
 	}
-
 	return json.Marshal(stats)
 }
 
-// TorrentInfo represents torrent details for JSON API
+// TorrentInfo represents torrent details for the JSON API.
 type TorrentInfo struct {
+	ID        uint32 `json:"id"`
 	InfoHash  string `json:"info_hash"`
-	TorrentID uint32 `json:"torrent_id"`
 	Seeders   int    `json:"seeders"`
 	Leechers  int    `json:"leechers"`
 	Completed uint32 `json:"completed"`
@@ -406,7 +259,7 @@ type TorrentInfo struct {
 	Balance   int64  `json:"balance"`
 }
 
-// GetTorrents returns list of active torrents as JSON
+// GetTorrents returns a list of active torrents as JSON.
 func (w *Worker) GetTorrents(limit int) ([]byte, error) {
 	torrents := make([]TorrentInfo, 0, limit)
 	count := 0
@@ -416,11 +269,10 @@ func (w *Worker) GetTorrents(limit int) ([]byte, error) {
 		if count >= limit {
 			break
 		}
-
 		torrent.mu.RLock()
 		info := TorrentInfo{
+			ID:        uint32(torrent.ID),
 			InfoHash:  hash,
-			TorrentID: uint32(torrent.ID),
 			Seeders:   torrent.Seeders.Size(),
 			Leechers:  torrent.Leechers.Size(),
 			Completed: torrent.Completed,
@@ -428,16 +280,18 @@ func (w *Worker) GetTorrents(limit int) ([]byte, error) {
 			Balance:   torrent.Balance,
 		}
 		torrent.mu.RUnlock()
-
 		torrents = append(torrents, info)
 		count++
 	}
 	w.Torrents.mu.RUnlock()
 
+	if torrents == nil {
+		return []byte("[]"), nil
+	}
 	return json.Marshal(torrents)
 }
 
-// PeerInfo represents peer details for JSON API
+// PeerInfo represents peer details for the JSON API.
 type PeerInfo struct {
 	UserID       uint32 `json:"user_id"`
 	IP           string `json:"ip"`
@@ -447,9 +301,10 @@ type PeerInfo struct {
 	Left         int64  `json:"left"`
 	LastAnnounce string `json:"last_announce"`
 	Announces    uint32 `json:"announces"`
+	Seeder       bool   `json:"seeder"`
 }
 
-// GetPeers returns list of peers for a torrent as JSON
+// GetPeers returns a list of peers for a torrent as JSON.
 func (w *Worker) GetPeers(infoHash string, limit int) ([]byte, error) {
 	torrent, ok := w.Torrents.Get(infoHash)
 	if !ok {
@@ -462,23 +317,21 @@ func (w *Worker) GetPeers(infoHash string, limit int) ([]byte, error) {
 	torrent.mu.RLock()
 	defer torrent.mu.RUnlock()
 
-	// Add seeders
 	torrent.Seeders.ForEach(func(_ string, peer *Peer) bool {
 		if count >= limit {
 			return false
 		}
-		peers = append(peers, w.peerToInfo(peer))
+		peers = append(peers, w.peerToInfo(peer, true))
 		count++
 		return true
 	})
 
-	// Add leechers
 	if count < limit {
 		torrent.Leechers.ForEach(func(_ string, peer *Peer) bool {
 			if count >= limit {
 				return false
 			}
-			peers = append(peers, w.peerToInfo(peer))
+			peers = append(peers, w.peerToInfo(peer, false))
 			count++
 			return true
 		})
@@ -487,22 +340,33 @@ func (w *Worker) GetPeers(infoHash string, limit int) ([]byte, error) {
 	return json.Marshal(peers)
 }
 
-func (w *Worker) peerToInfo(peer *Peer) PeerInfo {
+func (w *Worker) peerToInfo(peer *Peer, seeder bool) PeerInfo {
+	ipStr := ""
+	if peer.IP != nil {
+		ipStr = peer.IP.String()
+	}
+	lastAnnounce := ""
+	if !peer.LastAnnounced.IsZero() {
+		lastAnnounce = peer.LastAnnounced.Format(time.RFC3339)
+	}
 	return PeerInfo{
 		UserID:       uint32(peer.UserID),
-		IP:           peer.IP.String(),
+		IP:           ipStr,
 		Port:         peer.Port,
 		Uploaded:     peer.Uploaded,
 		Downloaded:   peer.Downloaded,
 		Left:         peer.Left,
-		LastAnnounce: peer.LastAnnounced.Format(time.RFC3339),
+		LastAnnounce: lastAnnounce,
 		Announces:    peer.Announces,
+		Seeder:       seeder,
 	}
 }
 
-// GetWhitelist returns the whitelist as JSON
+// GetWhitelist returns the whitelist prefix slice as JSON.
 func (w *Worker) GetWhitelist() ([]byte, error) {
-	return json.Marshal(map[string][]string{
-		"prefixes": w.Whitelist.GetAll(),
-	})
+	prefixes := w.Whitelist.GetAll()
+	if len(prefixes) == 0 {
+		return []byte("[]"), nil
+	}
+	return json.Marshal(prefixes)
 }

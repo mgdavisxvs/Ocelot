@@ -204,6 +204,9 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	if !ValidateIPNotPrivate(ip) {
 		invalidIP = true
 		peer.InvalidIP = true
+		peer.Port = req.Port
+		peer.IP = ip
+		peer.IPPort = CompactIPPort(ip, req.Port)
 	} else if inserted || peer.Port != req.Port || !peer.IP.Equal(ip) {
 		peer.Port = req.Port
 		peer.IP = ip
@@ -328,9 +331,15 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		return nil, fmt.Errorf("access denied, leeching forbidden")
 	}
 
+	adaptiveInterval := AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval)
+	baseInterval := int32(w.Config.AnnounceInterval)
+	if adaptiveInterval < baseInterval {
+		adaptiveInterval = baseInterval
+	}
+
 	response := &AnnounceResponse{
-		Interval:    AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval),
-		MinInterval: int32(w.Config.AnnounceInterval),
+		Interval:    adaptiveInterval,
+		MinInterval: baseInterval,
 		Complete:    int32(seederCount),
 		Incomplete:  int32(leecherCount),
 		Peers:       peers,
@@ -435,7 +444,7 @@ func (w *Worker) findOrCreatePeer(peerList *PeerList, peerKey string, user *User
 }
 
 func (w *Worker) peerIsVisible(user *User, peer *Peer) bool {
-	return (peer.Left == 0 || user.CanLeech.Load()) && !peer.InvalidIP
+	return peer.Left == 0 || user.CanLeech.Load()
 }
 
 // ParseAnnounceParams parses URL query parameters into an AnnounceRequest.
