@@ -249,8 +249,7 @@ func (b *BatchWriterDB) RecordUserStats(userID UserID, uploaded, downloaded int6
 
 func (b *BatchWriterDB) RecordTorrent(torrentID TorrentID, seeders, leechers uint32,
 	snatched int, balance int64) error {
-	b.bw.QueueTorrentUpdate("", int32(seeders), int32(leechers))
-	return nil
+	return b.inner.RecordTorrent(torrentID, seeders, leechers, snatched, balance)
 }
 
 func (b *BatchWriterDB) RecordSnatch(userID UserID, torrentID TorrentID, t time.Time, ip string) error {

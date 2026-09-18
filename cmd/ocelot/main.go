@@ -36,6 +36,9 @@ func main() {
 	if err := tracker.CreateAuditLogTable(db.CurrentDB()); err != nil {
 		log.Printf("Warning: could not create audit log table: %v", err)
 	}
+	if err := tracker.CreateAPIKeysTable(db.CurrentDB()); err != nil {
+		log.Printf("Warning: could not create api_keys table: %v", err)
+	}
 	auditLog := tracker.NewAuditLogger(db.CurrentDB())
 
 	// ── Batch writer ──────────────────────────────────────────────────────────

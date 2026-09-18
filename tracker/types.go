@@ -302,19 +302,30 @@ type Stats struct {
 type Whitelist struct {
 	mu       sync.RWMutex
 	prefixes []string
+	trie     *WhitelistTrie // O(k) lookup; rebuilt whenever prefixes change
 }
 
 func NewWhitelist() *Whitelist {
 	return &Whitelist{prefixes: make([]string, 0)}
 }
 
+// rebuildTrie rebuilds the trie from the current prefixes slice.
+// Must be called with wl.mu held for writing.
+func (wl *Whitelist) rebuildTrie() {
+	wl.trie = BuildTrieFromSlice(wl.prefixes)
+}
+
 // IsAllowed returns true if the peer_id matches any whitelisted prefix,
 // or if the whitelist is empty (allow-all mode).
+// Uses the O(k) trie when available; falls back to linear scan.
 func (wl *Whitelist) IsAllowed(peerID []byte) bool {
 	wl.mu.RLock()
 	defer wl.mu.RUnlock()
 	if len(wl.prefixes) == 0 {
 		return true
+	}
+	if wl.trie != nil {
+		return wl.trie.IsAllowed(peerID)
 	}
 	peerIDStr := string(peerID)
 	for _, prefix := range wl.prefixes {
@@ -335,6 +346,7 @@ func (wl *Whitelist) Add(prefix string) {
 		}
 	}
 	wl.prefixes = append(wl.prefixes, prefix)
+	wl.rebuildTrie()
 }
 
 // Remove deletes a prefix from the whitelist.
@@ -348,6 +360,7 @@ func (wl *Whitelist) Remove(prefix string) {
 		}
 	}
 	wl.prefixes = out
+	wl.rebuildTrie()
 }
 
 // Reset replaces the entire prefix list atomically.
@@ -359,6 +372,7 @@ func (wl *Whitelist) Reset(prefixes []string) {
 	} else {
 		wl.prefixes = prefixes
 	}
+	wl.rebuildTrie()
 }
 
 // GetAll returns a snapshot of the current prefix list.

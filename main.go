@@ -38,6 +38,9 @@ func main() {
 	if err := tracker.CreateAuditLogTable(rawDB.CurrentDB()); err != nil {
 		log.Printf("warning: could not ensure audit_log table: %v", err)
 	}
+	if err := tracker.CreateAPIKeysTable(rawDB.CurrentDB()); err != nil {
+		log.Printf("warning: could not ensure api_keys table: %v", err)
+	}
 	auditLog := tracker.NewAuditLogger(rawDB.CurrentDB())
 
 	// ── Circuit breaker [D] ───────────────────────────────────────────────────
@@ -192,6 +195,13 @@ func main() {
 				if err := loader.Reload(); err != nil {
 					log.Printf("SIGUSR1: reload failed: %v", err)
 				} else {
+					// Evict stale L1 cache entries so the fresh DB state is served.
+					if worker.TorrentCache != nil {
+						worker.TorrentCache.Clear()
+					}
+					if worker.UserCache != nil {
+						worker.UserCache.Clear()
+					}
 					log.Printf("SIGUSR1: reload complete — %d torrents, %d users",
 						torrents.Size(), users.Size())
 				}

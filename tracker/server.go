@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -463,9 +464,15 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 }
 
 func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool) []byte {
+	start := time.Now()
 	infoHashes := req.URL.Query()["info_hash"]
 	_, span := TraceScrape(req.Context(), infoHashes)
-	defer span.End()
+	defer func() {
+		span.End()
+		if s.worker.Metrics != nil {
+			s.worker.Metrics.RecordScrape("ok", time.Since(start))
+		}
+	}()
 
 	_, ok := s.worker.Users.Get(passkey)
 	if !ok {
@@ -722,10 +729,12 @@ func (s *Server) Shutdown() error {
 		s.wg.Wait()
 		close(done)
 	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	select {
 	case <-done:
-		return nil
-	case <-time.After(30 * time.Second):
+		return s.pool.Shutdown(ctx)
+	case <-ctx.Done():
 		return fmt.Errorf("shutdown timeout")
 	}
 }
@@ -778,10 +787,91 @@ func (s *Server) StartAdminAPIServer(db *sql.DB) {
 		w.Write([]byte(`{"ok":true}`))
 	})
 
+	// POST /admin/auth/token — issue a signed JWT for API access
+	mux.HandleFunc("/admin/auth/token", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			UserID int    `json:"user_id"`
+			Role   string `json:"role"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		token, err := GenerateToken(req.UserID, req.Role, authCfg)
+		if err != nil {
+			http.Error(w, "failed to generate token", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"token": token})
+	})
+
+	// POST /admin/auth/api-key — create a persistent API key
+	mux.HandleFunc("/admin/auth/api-key", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			UserID      int      `json:"user_id"`
+			Permissions []string `json:"permissions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		key, err := CreateAPIKey(db, req.UserID, req.Permissions, nil)
+		if err != nil {
+			http.Error(w, "failed to create API key", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"api_key": key})
+	})
+
+	// GET /admin/audit — query audit log entries
+	mux.HandleFunc("/admin/audit", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		filters := AuditFilters{
+			Action:       q.Get("action"),
+			ResourceType: q.Get("resource_type"),
+			Limit:        100,
+		}
+		if v := q.Get("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				filters.Limit = n
+			}
+		}
+		entries, err := s.worker.AuditLog.Query(filters)
+		if err != nil {
+			http.Error(w, "audit query failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(entries)
+	})
+
+	// POST /admin/circuit-breaker/reset — manual circuit-breaker reset
+	mux.HandleFunc("/admin/circuit-breaker/reset", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if s.worker.CircuitBreak != nil {
+			s.worker.CircuitBreak.Reset()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	})
+
 	// Stack: rate limit → auth → mux.  The rate limiter runs first so
 	// unauthenticated callers cannot exhaust resources before the JWT check.
 	var handler http.Handler = mux
-	handler = AuthMiddleware(authCfg, nil)(handler)
+	handler = AuthMiddleware(authCfg, db)(handler)
 	if s.worker.RateLimiter != nil {
 		handler = RateLimitMiddleware(s.worker.RateLimiter)(handler)
 	}
@@ -815,6 +905,23 @@ func (s *Server) buildStatsJSON() []byte {
 
 	swarmHealth := s.worker.SwarmHealthSummary()
 
+	// PredictCompletionTime: aggregate swarm-wide seeder/leecher counts and use
+	// a heuristic avg upload speed of 1 MB/s per seeder.
+	completionETA := int64(-1)
+	if shp, ok := s.worker.SwarmPredictor.(*ml.SwarmHealthPredictor); ok {
+		var totalSeeders, totalLeechers int
+		s.worker.Torrents.ForEach(func(_ string, t *Torrent) bool {
+			totalSeeders += t.Seeders.Size()
+			totalLeechers += t.Leechers.Size()
+			return true
+		})
+		const avgUploadBytesPerSec = 1 << 20 // 1 MB/s heuristic per seeder
+		d := shp.PredictCompletionTime(totalSeeders, totalLeechers, avgUploadBytesPerSec, 700<<20)
+		if d.Seconds() < float64(1<<62) { // exclude math.MaxInt64 sentinel
+			completionETA = int64(d.Seconds())
+		}
+	}
+
 	torrentCacheSize := 0
 	if s.worker.TorrentCache != nil {
 		torrentCacheSize = s.worker.TorrentCache.cache.Size()
@@ -824,15 +931,28 @@ func (s *Server) buildStatsJSON() []byte {
 		userCacheSize = s.worker.UserCache.cache.Size()
 	}
 
+	// Update Prometheus gauges that require explicit periodic refresh.
+	poolActive := s.pool.Active()
+	poolCapacity := s.pool.Capacity()
+	torrentCount := s.worker.Torrents.Size()
+	if s.worker.Metrics != nil {
+		s.worker.Metrics.UpdateWorkerPool(poolActive, poolCapacity)
+		s.worker.Metrics.UpdateTorrentCount(torrentCount)
+	}
+
 	return []byte(fmt.Sprintf(
-		`{"open_connections":%d,"announcements":%d,"scrapes":%d,"seeders":%d,"leechers":%d,`+
-			`"evicted_peers":%d,"anomalies":%d,"db_queue_depth":%d,"circuit_breaker":%q,"swarm_health":%d,`+
-			`"torrent_cache_size":%d,"user_cache_size":%d}`,
+		`{"open_connections":%d,"announcements":%d,"succ_announcements":%d,"scrapes":%d,`+
+			`"seeders":%d,"leechers":%d,"evicted_peers":%d,"anomalies":%d,`+
+			`"db_queue_depth":%d,"circuit_breaker":%q,"swarm_health":%d,`+
+			`"torrent_cache_size":%d,"user_cache_size":%d,"completion_eta_sec":%d,`+
+			`"worker_pool_active":%d,"worker_pool_capacity":%d,"torrent_count":%d}`,
 		stats.OpenConnections.Load(), stats.Announcements.Load(),
-		stats.Scrapes.Load(), stats.Seeders.Load(), stats.Leechers.Load(),
+		stats.SuccAnnouncements.Load(), stats.Scrapes.Load(),
+		stats.Seeders.Load(), stats.Leechers.Load(),
 		stats.EvictedPeers.Load(), stats.AnomalyDetections.Load(),
 		dbQueue, cbState, swarmHealth,
-		torrentCacheSize, userCacheSize,
+		torrentCacheSize, userCacheSize, completionETA,
+		poolActive, poolCapacity, torrentCount,
 	))
 }
 
