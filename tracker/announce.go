@@ -227,7 +227,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	// Anomaly detection — runs after the lock is released to avoid holding it
 	// during a potentially-logging-heavy detection pass.
 	if w.Detector != nil {
-		if isAnomaly, reason := w.Detector.Detect(peer, upSpeed, downSpeed); isAnomaly {
+		if isAnomaly, reason := w.Detector.Detect(peer, upSpeed, downSpeed, torrent.Size); isAnomaly {
 			w.Stats.AnomalyDetections.Add(1)
 			_ = w.SiteComm.ReportAnomaly(int64(user.ID), 1.0)
 			_ = w.SiteComm.BanUser(int64(user.ID))

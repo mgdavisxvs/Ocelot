@@ -121,6 +121,7 @@ type Torrent struct {
 	Completed          uint32
 	Balance            int64
 	FreeType           FreeType
+	Size               int64 // total torrent size in bytes; used by anomaly detection
 	LastFlushed        time.Time
 	Seeders            *PeerList
 	Leechers           *PeerList

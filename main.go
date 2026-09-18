@@ -21,15 +21,23 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 	config := fileCfg.ToTrackerConfig()
+	log.Printf("config loaded from %s", cfgPath)
 
 	// ── Database ─────────────────────────────────────────────────────────────
 	rawDB, err := tracker.NewSQLiteShardManager(fileCfg.DBDir)
 	if err != nil {
 		log.Fatalf("database init: %v", err)
 	}
+	defer rawDB.Close()
 	log.Printf("SQLite database initialised in %s", fileCfg.DBDir)
 
-	// [D] Circuit breaker — protects all DB writes.
+	// ── Audit log ─────────────────────────────────────────────────────────────
+	if err := tracker.CreateAuditLogTable(rawDB.CurrentDB()); err != nil {
+		log.Printf("warning: could not ensure audit_log table: %v", err)
+	}
+	auditLog := tracker.NewAuditLogger(rawDB.CurrentDB())
+
+	// ── Circuit breaker [D] ───────────────────────────────────────────────────
 	breaker := tracker.NewCircuitBreaker(tracker.CircuitBreakerConfig{
 		Name:         "sqlite",
 		MaxFailures:  5,
@@ -37,17 +45,35 @@ func main() {
 		HalfOpenMax:  3,
 	})
 
-	// [A] BufferedDB — async write queue wrapping the raw DB + circuit breaker.
+	// ── BufferedDB [A] ────────────────────────────────────────────────────────
 	db := tracker.NewBufferedDB(rawDB, breaker, config.BatchBufferCap, 200*time.Millisecond)
 	log.Printf("BufferedDB initialised (queue cap %d)", config.BatchBufferCap)
 
-	// ── In-memory state ──────────────────────────────────────────────────────
+	// ── Metrics ───────────────────────────────────────────────────────────────
+	metrics := tracker.GetMetricsRecorder()
+	if config.MetricsPort != "" {
+		go func() {
+			log.Printf("Prometheus metrics on %s", config.MetricsPort)
+			if err := tracker.StartMetricsServer(config.MetricsPort); err != nil {
+				log.Printf("metrics server error: %v", err)
+			}
+		}()
+	}
+
+	// ── In-memory state ───────────────────────────────────────────────────────
 	torrents := tracker.NewTorrentList()
 	users := tracker.NewUserList()
 	whitelist := tracker.NewWhitelist()
 	stats := &tracker.Stats{StartTime: time.Now()}
 
-	// ── Loader (reads use rawDB directly so startup never hits the buffer) ───
+	// ── Rate limiter [E] ──────────────────────────────────────────────────────
+	rateLimiter := tracker.NewRateLimiter(
+		config.RateLimitRPS,
+		config.RateLimitBurst,
+		100_000,
+	)
+
+	// ── Loader (reads use rawDB directly — startup never hits the buffer) ─────
 	loader := tracker.NewLoader(rawDB, torrents, users, whitelist)
 	if err := loader.LoadAll(); err != nil {
 		log.Printf("warning: failed to load initial state: %v", err)
@@ -57,31 +83,36 @@ func main() {
 			torrents.Size(), users.Size())
 	}
 
-	// Fall back to sample data when the database is empty.
-	if torrents.Size() == 0 || users.Size() == 0 {
-		log.Println("database empty, loading sample data")
-		loadSampleData(torrents, users, whitelist)
+	// ── Site communication ────────────────────────────────────────────────────
+	var siteComm tracker.SiteCommInterface
+	if fileCfg.GazelleURL != "" {
+		siteComm = tracker.NewGazelleSiteComm(fileCfg.GazelleURL, fileCfg.SitePassword)
+		log.Printf("Gazelle callbacks enabled: %s", fileCfg.GazelleURL)
+	} else {
+		siteComm = &tracker.NoOpSiteComm{}
+		log.Println("no gazelle_url configured; token expiry callbacks disabled")
 	}
 
-	// ── Site communication (replace with real Gazelle integration) ───────────
-	siteComm := &MockSiteComm{}
-
-	// ── Worker ───────────────────────────────────────────────────────────────
+	// ── Worker ────────────────────────────────────────────────────────────────
 	worker := &tracker.Worker{
-		Config:    config,
-		DB:        db,  // [A+D] buffered + circuit-breaker protected
-		SiteComm:  siteComm,
-		Torrents:  torrents,
-		Users:     users,
-		Whitelist: whitelist,
-		Stats:     stats,
-		// [F] Anomaly detector
-		Detector: tracker.NewAnomalyDetector(),
+		Config:       config,
+		DB:           db, // [A+D] buffered + circuit-breaker protected
+		SiteComm:     siteComm,
+		Torrents:     torrents,
+		Users:        users,
+		Whitelist:    whitelist,
+		Stats:        stats,
+		RateLimiter:  rateLimiter,
+		CircuitBreak: breaker,
+		AuditLog:     auditLog,
+		Metrics:      metrics,
+		Detector:     tracker.NewAnomalyDetector(), // [F]
 	}
 
 	// [B] Reaper + [E] RateLimiter initialised inside Worker.Start().
 	worker.Start()
-	log.Println("reaper started")
+	log.Printf("reaper started (interval=%ds timeout=%ds)",
+		config.ReapPeersInterval, config.PeersTimeout)
 	if config.RateLimitRPS > 0 {
 		log.Printf("rate limiter active (%d RPS, burst %d)", config.RateLimitRPS, config.RateLimitBurst)
 	}
@@ -89,55 +120,64 @@ func main() {
 	// [C] Scheduler — WAL checkpoint + shard rotation.
 	sched := tracker.NewScheduler(rawDB, config.ScheduleInterval)
 	sched.Start()
-	log.Printf("scheduler started (interval %ds)", config.ScheduleInterval)
+	log.Printf("scheduler started (interval=%ds)", config.ScheduleInterval)
 
-	// ── Server ───────────────────────────────────────────────────────────────
+	// ── Signal handlers ───────────────────────────────────────────────────────
+	sigAdmin := make(chan os.Signal, 1)
+	signal.Notify(sigAdmin, syscall.SIGHUP, syscall.SIGUSR1)
+	go func() {
+		for sig := range sigAdmin {
+			switch sig {
+			case syscall.SIGHUP:
+				newFC, err := tracker.ParseConfigFile(cfgPath)
+				if err != nil {
+					log.Printf("SIGHUP: failed to reload config: %v", err)
+					continue
+				}
+				newCfg := newFC.ToTrackerConfig()
+				config.SitePassword = newCfg.SitePassword
+				config.ReportPassword = newCfg.ReportPassword
+				config.NumWantLimit = newCfg.NumWantLimit
+				config.AnnounceInterval = newCfg.AnnounceInterval
+				config.PeersTimeout = newCfg.PeersTimeout
+				log.Println("SIGHUP: configuration reloaded")
+
+			case syscall.SIGUSR1:
+				log.Println("SIGUSR1: reloading torrent/user/whitelist state...")
+				if err := loader.Reload(); err != nil {
+					log.Printf("SIGUSR1: reload failed: %v", err)
+				} else {
+					log.Printf("SIGUSR1: reload complete — %d torrents, %d users",
+						torrents.Size(), users.Size())
+				}
+			}
+		}
+	}()
+
+	// ── Server ────────────────────────────────────────────────────────────────
 	server := tracker.NewServer(config, worker)
 
 	go func() {
 		log.Printf("tracker listening on %s", config.ListenAddr)
 		if err := server.ListenAndServe(); err != nil {
-			log.Fatalf("server: %v", err)
+			log.Printf("server: %v", err)
 		}
 	}()
 
-	if config.MetricsPort != "" {
-		go func() {
-			log.Printf("metrics server on %s", config.MetricsPort)
-			if err := tracker.StartMetricsServer(config.MetricsPort); err != nil {
-				log.Printf("metrics server error: %v", err)
-			}
-		}()
-	}
-
 	go printStats(stats, worker)
 
-	// ── Graceful shutdown ────────────────────────────────────────────────────
+	// ── Graceful shutdown ─────────────────────────────────────────────────────
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
+	log.Println("shutdown signal received — draining connections...")
 
-	fmt.Println("\nshutting down gracefully...")
-
-	// Stop accepting new connections.
 	if err := server.Shutdown(); err != nil {
 		log.Printf("server shutdown: %v", err)
 	}
-
-	// Stop scheduler.
 	sched.Stop()
-
-	// Stop reaper and flush buffered DB writes (Worker.Stop handles both).
-	worker.Stop()
-
-	fmt.Println("shutdown complete")
-}
-
-// loadSampleData loads minimal sample data for development/testing.
-func loadSampleData(torrents *tracker.TorrentList, users *tracker.UserList, whitelist *tracker.Whitelist) {
-	users.Set("0123456789abcdef0123456789abcdef", tracker.NewUser(1, true, false))
-	torrents.Set("sampleinfohash12345", tracker.NewTorrent(1))
-	log.Println("sample data loaded (1 user, 1 torrent)")
+	worker.Stop() // stops reaper + flushes buffered DB writes
+	log.Println("shutdown complete")
 }
 
 // printStats logs tracker statistics every 30 seconds.
@@ -163,16 +203,3 @@ func printStats(stats *tracker.Stats, worker *tracker.Worker) {
 		)
 	}
 }
-
-// MockSiteComm is a no-op SiteCommInterface for development use.
-// Replace with a real Gazelle HTTP client for production.
-type MockSiteComm struct{}
-
-func (sc *MockSiteComm) ExpireToken(torrentID tracker.TorrentID, userID tracker.UserID) {
-	log.Printf("token expired: user=%d torrent=%d", userID, torrentID)
-}
-func (sc *MockSiteComm) NotifyFreeleech(torrentID int64, hours int) error  { return nil }
-func (sc *MockSiteComm) ReportAnomaly(userID int64, score float64) error   { return nil }
-func (sc *MockSiteComm) UpdateStats(seeders, leechers, completed int64) error { return nil }
-func (sc *MockSiteComm) BanUser(userID int64) error                        { return nil }
-func (sc *MockSiteComm) UnbanUser(userID int64) error                      { return nil }

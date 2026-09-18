@@ -237,6 +237,38 @@ func (sm *SQLiteShardManager) initSchema(db *sql.DB) error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		prefix TEXT NOT NULL UNIQUE
 	);
+
+	-- Administrative action audit trail.
+	CREATE TABLE IF NOT EXISTS audit_log (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		timestamp INTEGER NOT NULL,
+		user_id INTEGER,
+		action TEXT NOT NULL,
+		resource_type TEXT NOT NULL,
+		resource_id TEXT,
+		ip_address TEXT,
+		success BOOLEAN NOT NULL,
+		error_message TEXT,
+		metadata TEXT
+	);
+	CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
+	CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id);
+	CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+	CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_log(resource_type, resource_id);
+
+	-- API key authentication.
+	CREATE TABLE IF NOT EXISTS api_keys (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		key_hash TEXT NOT NULL UNIQUE,
+		user_id INTEGER NOT NULL,
+		permissions TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER,
+		last_used_at INTEGER,
+		revoked BOOLEAN DEFAULT 0
+	);
+	CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+	CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
 	`)
 	return err
 }

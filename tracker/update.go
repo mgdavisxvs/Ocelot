@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -84,7 +85,17 @@ func (w *Worker) addTorrent(p queryParams) ([]byte, error) {
 			torrent.FreeType = FreeType(n)
 		}
 	}
+	if sizeStr := qpGet(p, "size"); sizeStr != "" {
+		if sz, err := strconv.ParseInt(sizeStr, 10, 64); err == nil && sz > 0 {
+			torrent.Size = sz
+		}
+	}
 	w.Torrents.Set(infoHash, torrent)
+	if err := w.DB.RecordTorrentHash(torrent.ID, infoHash); err != nil {
+		w.logAudit("add_torrent", "torrent", idStr, false, err)
+		return w.updateError("failed to persist torrent hash: " + err.Error())
+	}
+	w.logAudit("add_torrent", "torrent", idStr, true, nil)
 	return w.updateOK()
 }
 
@@ -119,6 +130,7 @@ func (w *Worker) deleteTorrent(p queryParams) ([]byte, error) {
 		return w.updateError("torrent not found")
 	}
 	w.Torrents.Delete(infoHash)
+	w.logAudit("delete_torrent", "torrent", infoHash, true, nil)
 	return w.updateOK()
 }
 
@@ -149,6 +161,11 @@ func (w *Worker) addUser(p queryParams) ([]byte, error) {
 
 	user := NewUser(UserID(id), canLeech, protectIP)
 	w.Users.Set(passkey, user)
+	if err := w.DB.RecordUserPasskey(user.ID, passkey, canLeech, protectIP); err != nil {
+		w.logAudit("add_user", "user", idStr, false, err)
+		return w.updateError("failed to persist user passkey: " + err.Error())
+	}
+	w.logAudit("add_user", "user", idStr, true, nil)
 	return w.updateOK()
 }
 
@@ -161,6 +178,7 @@ func (w *Worker) removeUser(p queryParams) ([]byte, error) {
 		return w.updateError("user not found")
 	}
 	w.Users.Delete(passkey)
+	w.logAudit("remove_user", "user", passkey, true, nil)
 	return w.updateOK()
 }
 
@@ -202,6 +220,14 @@ func (w *Worker) removeWhitelist(p queryParams) ([]byte, error) {
 	}
 	w.Whitelist.Remove(prefix)
 	return w.updateOK()
+}
+
+// logAudit emits an audit record when an AuditLogger is wired into the Worker.
+func (w *Worker) logAudit(action, resourceType, resourceID string, success bool, err error) {
+	if w.AuditLog == nil {
+		return
+	}
+	_ = w.AuditLog.Log(context.Background(), action, resourceType, resourceID, success, err)
 }
 
 // ── response helpers ────────────────────────────────────────────────────────
