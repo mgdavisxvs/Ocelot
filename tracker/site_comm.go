@@ -93,16 +93,27 @@ func (g *GazelleSiteComm) UnbanUser(userID int64) error {
 
 func (g *GazelleSiteComm) post(params url.Values) error {
 	params.Set("password", g.password)
-	resp, err := g.client.PostForm(g.baseURL, params)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("HTTP %d from Gazelle", resp.StatusCode)
-	}
-	return nil
+	return RetryWithBackoff(func() error {
+		resp, err := g.client.PostForm(g.baseURL, params)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body)
+		if resp.StatusCode >= 500 {
+			// 5xx → transient; 4xx → permanent (bad request/auth)
+			return fmt.Errorf("HTTP %d from Gazelle", resp.StatusCode)
+		}
+		if resp.StatusCode >= 400 {
+			return fmt.Errorf("HTTP %d from Gazelle", resp.StatusCode)
+		}
+		return nil
+	}, RetryConfig{
+		MaxRetries:  2,
+		InitialWait: 200 * time.Millisecond,
+		MaxWait:     2 * time.Second,
+		Multiplier:  2.0,
+	})
 }
 
 // NoOpSiteComm is used when no Gazelle URL is configured.

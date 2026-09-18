@@ -146,8 +146,9 @@ func main() {
 		CircuitBreak:   breaker,
 		AuditLog:       auditLog,
 		Metrics:        metrics,
-		Detector:       anomalyDetector,               // [F+ML-01] behaviour anomaly (adaptive)
-		ClientDetector: tracker.NewClientDetector(),   // [ML-04] client anomaly
+		Detector:       anomalyDetector,                         // [F+ML-01] behaviour anomaly (adaptive)
+		ClientDetector: tracker.NewClientDetector(),              // [ML-04] client anomaly
+		SwarmPredictor: tracker.NewSwarmHealthPredictor(),        // [ML-02] swarm health scoring
 	}
 
 	// [B] Reaper + [E] RateLimiter initialised inside Worker.Start().
@@ -159,7 +160,7 @@ func main() {
 	}
 
 	// [C] Scheduler — WAL checkpoint + shard rotation.
-	sched := tracker.NewScheduler(rawDB, config.ScheduleInterval)
+	sched := tracker.NewScheduler(rawDB, config.ScheduleInterval, config.DelReasonLifetime)
 	sched.Start()
 	log.Printf("scheduler started (interval=%ds)", config.ScheduleInterval)
 
@@ -200,6 +201,7 @@ func main() {
 	// Adapters with action names that collide with the BT fast-paths are skipped
 	// to prevent accidentally shadowing announce/scrape.
 	server := tracker.NewServer(config, worker)
+	server.StartAdminAPIServer(rawDB.CurrentDB())
 
 	btBuiltins := map[string]bool{
 		"announce": true, "scrape": true, "update": true,
@@ -286,8 +288,13 @@ func printStats(stats *tracker.Stats, worker *tracker.Worker) {
 		if bdb, ok := worker.DB.(*tracker.BufferedDB); ok {
 			qDepth = bdb.QueueDepth()
 		}
+		swarmHealth := worker.SwarmHealthSummary()
+		healthStr := "n/a"
+		if swarmHealth >= 0 {
+			healthStr = fmt.Sprintf("%d", swarmHealth)
+		}
 		log.Printf("uptime=%s announces=%d scrapes=%d seeders=%d leechers=%d "+
-			"evicted=%d anomalies=%d db_queue=%d",
+			"evicted=%d anomalies=%d db_queue=%d swarm_health=%s",
 			uptime,
 			stats.Announcements.Load(),
 			stats.Scrapes.Load(),
@@ -296,6 +303,7 @@ func printStats(stats *tracker.Stats, worker *tracker.Worker) {
 			stats.EvictedPeers.Load(),
 			stats.AnomalyDetections.Load(),
 			qDepth,
+			healthStr,
 		)
 	}
 }

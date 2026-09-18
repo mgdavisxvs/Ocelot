@@ -23,19 +23,20 @@ const (
 
 // Peer represents a single peer in a swarm
 type Peer struct {
-	UserID         UserID
-	Uploaded       int64
-	Downloaded     int64
-	Corrupt        int64
-	Left           int64
-	LastAnnounced  time.Time
-	FirstAnnounced time.Time
-	Announces      uint32
-	Port           uint16
-	IP             net.IP // Go's native IP type (safer than manual parsing)
-	IPPort         []byte // Compact 6-byte format: 4-byte IPv4 + 2-byte port
-	Visible        bool
-	InvalidIP      bool
+	UserID          UserID
+	Uploaded        int64
+	Downloaded      int64
+	Corrupt         int64
+	Left            int64
+	LastAnnounced   time.Time
+	FirstAnnounced  time.Time
+	Announces       uint32
+	Port            uint16
+	IP              net.IP // Go's native IP type (safer than manual parsing)
+	IPPort          []byte // Compact 6-byte format: 4-byte IPv4 + 2-byte port
+	Visible         bool
+	InvalidIP       bool
+	ConnectionTimes []time.Time // timestamps of each announce; used for rapid-reconnect detection
 }
 
 // PeerKey generates a unique, randomized key for a peer.

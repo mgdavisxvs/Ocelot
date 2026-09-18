@@ -46,6 +46,9 @@ type FileConfig struct {
 	TLSAutoTLS  bool
 	TLSDomain   string
 	TLSCacheDir string
+	// Admin REST API (JWT-protected)
+	AdminAPIPort string
+	JWTSecret    string
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -176,6 +179,10 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.TLSDomain = val
 		case "tls_cache_dir":
 			cfg.TLSCacheDir = val
+		case "admin_api_port":
+			cfg.AdminAPIPort = val
+		case "jwt_secret":
+			cfg.JWTSecret = val
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -208,6 +215,13 @@ func (fc *FileConfig) ToTrackerConfig() *Config {
 		BatchBufferCap:       fc.BatchBufferCap,
 		FreeleechPollSec:     fc.FreeleechPollSec,
 		FreeleechNotifyHours: fc.FreeleechNotifyHours,
+		MaxReadBuffer:        fc.MaxReadBuffer,
+		MaxRequestSize:       fc.MaxRequestSize,
+		RequestLogSize:       fc.RequestLogSize,
+		DelReasonLifetime:    fc.DelReasonLifetime,
+		Readonly:             fc.Readonly,
+		AdminAPIPort:         fc.AdminAPIPort,
+		JWTSecret:            []byte(fc.JWTSecret),
 		TLS: TLSConfig{
 			CertFile: fc.TLSCertFile,
 			KeyFile:  fc.TLSKeyFile,

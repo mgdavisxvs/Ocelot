@@ -114,7 +114,7 @@ func main() {
 	reaper.Start()
 	defer reaper.Stop()
 
-	scheduler := tracker.NewScheduler(db, config.ScheduleInterval)
+	scheduler := tracker.NewScheduler(db, config.ScheduleInterval, config.DelReasonLifetime)
 	scheduler.Start()
 	defer scheduler.Stop()
 

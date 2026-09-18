@@ -4,6 +4,12 @@ import (
 	"github.com/mgdavisxvs/Ocelot/ml"
 )
 
+// NewSwarmHealthPredictor returns a SwarmHealthInterface backed by the ml
+// package's heuristic predictor.
+func NewSwarmHealthPredictor() SwarmHealthInterface {
+	return ml.NewSwarmHealthPredictor()
+}
+
 // ClientDetector checks peer_id bytes and User-Agent strings for known-bad
 // client patterns before the peer is admitted to any swarm.
 type ClientDetector interface {
@@ -47,13 +53,14 @@ func NewAnomalyDetectorPair() (BehaviorDetector, *ml.AnomalyDetector) {
 
 func (a *mlAnomalyAdapter) Detect(peer *Peer, upSpeed, downSpeed, torrentSize int64) (bool, string) {
 	b := &ml.PeerBehavior{
-		Uploaded:      peer.Uploaded,
-		Downloaded:    peer.Downloaded,
-		UploadSpeed:   float64(upSpeed),
-		AnnounceCount: int(peer.Announces),
-		FirstSeen:     peer.FirstAnnounced,
-		PortHistory:   []uint16{peer.Port},
-		TorrentSize:   torrentSize,
+		Uploaded:        peer.Uploaded,
+		Downloaded:      peer.Downloaded,
+		UploadSpeed:     float64(upSpeed),
+		AnnounceCount:   int(peer.Announces),
+		FirstSeen:       peer.FirstAnnounced,
+		PortHistory:     []uint16{peer.Port},
+		TorrentSize:     torrentSize,
+		ConnectionTimes: peer.ConnectionTimes,
 	}
 	return a.d.DetectAnomaly(b)
 }

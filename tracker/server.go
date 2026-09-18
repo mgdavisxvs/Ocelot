@@ -3,6 +3,7 @@ package tracker
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"net"
@@ -60,6 +61,23 @@ type Config struct {
 	// FreeleechPollSec is how often the freeleech poller fires (0 = disabled).
 	FreeleechPollSec     int
 	FreeleechNotifyHours int
+	// MaxReadBuffer is the per-connection read buffer size in bytes.
+	MaxReadBuffer int
+	// MaxRequestSize is the maximum acceptable HTTP Content-Length in bytes
+	// (0 = unlimited).
+	MaxRequestSize int
+	// RequestLogSize is the number of recent requests kept in the ring log.
+	RequestLogSize int
+	// DelReasonLifetime is how long (in seconds) deletion-reason records are
+	// retained before the scheduler purges them.
+	DelReasonLifetime int
+	// Readonly disables all database writes when true.
+	Readonly bool
+	// AdminAPIPort is the address (e.g. ":8081") for the authenticated admin
+	// REST API server. Empty disables it.
+	AdminAPIPort string
+	// JWTSecret is the HMAC secret used to sign and validate admin JWT tokens.
+	JWTSecret []byte
 }
 
 func NewServer(config *Config, worker *Worker) *Server {
@@ -167,7 +185,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 		tcpConn.SetKeepAlivePeriod(2 * time.Minute)
 	}
 
-	reader := bufio.NewReaderSize(conn, 4096)
+	readBufSize := s.config.MaxReadBuffer
+	if readBufSize <= 0 {
+		readBufSize = 4096
+	}
+	reader := bufio.NewReaderSize(conn, readBufSize)
 	keepalive := s.config.KeepaliveTimeout > 0
 
 	for {
@@ -180,6 +202,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 			if err != io.EOF {
 				// timeout or malformed request — close silently
 			}
+			return
+		}
+
+		if s.config.MaxRequestSize > 0 && request.ContentLength > int64(s.config.MaxRequestSize) {
+			conn.Write([]byte("HTTP/1.1 413 Request Entity Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
 			return
 		}
 
@@ -681,6 +708,204 @@ func (s *Server) Shutdown() error {
 	}
 }
 
+// StartAdminAPIServer starts an authenticated HTTP admin API server on
+// config.AdminAPIPort (e.g. ":8081"). It returns immediately; the server
+// runs in the background until the process exits.
+// Routes:
+//
+//	GET  /admin/stats       — tracker statistics (JSON)
+//	GET  /admin/torrents    — torrent list (JSON)
+//	GET  /admin/peers       — peer list for an info_hash (JSON)
+//	GET  /admin/whitelist   — current whitelist (JSON)
+//	POST /admin/update      — apply delta update
+//	POST /admin/report      — ban/unban a user
+func (s *Server) StartAdminAPIServer(db *sql.DB) {
+	if s.config.AdminAPIPort == "" || len(s.config.JWTSecret) == 0 {
+		return
+	}
+	authCfg := AuthConfig{
+		JWTSecret:     s.config.JWTSecret,
+		TokenDuration: 24 * time.Hour,
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/admin/stats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(s.buildStatsJSON())
+	})
+	mux.HandleFunc("/admin/torrents", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(s.buildTorrentsJSON(r))
+	})
+	mux.HandleFunc("/admin/peers", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(s.buildPeersJSON(r))
+	})
+	mux.HandleFunc("/admin/whitelist", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(s.buildWhitelistJSON())
+	})
+	mux.HandleFunc("/admin/update", func(w http.ResponseWriter, r *http.Request) {
+		s.worker.handleAdminUpdate(r)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	})
+	mux.HandleFunc("/admin/report", func(w http.ResponseWriter, r *http.Request) {
+		s.worker.handleAdminReport(r)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	})
+
+	handler := AuthMiddleware(authCfg, nil)(mux)
+	srv := &http.Server{
+		Addr:         s.config.AdminAPIPort,
+		Handler:      handler,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			GetDefaultLogger().Error("admin API server stopped", err)
+		}
+	}()
+	GetDefaultLogger().Info("admin API server started", "addr", s.config.AdminAPIPort)
+}
+
+// buildStatsJSON returns the current tracker stats as JSON.
+func (s *Server) buildStatsJSON() []byte {
+	stats := s.stats
+	return []byte(fmt.Sprintf(
+		`{"open_connections":%d,"announcements":%d,"scrapes":%d,"seeders":%d,"leechers":%d}`,
+		stats.OpenConnections.Load(), stats.Announcements.Load(),
+		stats.Scrapes.Load(), stats.Seeders.Load(), stats.Leechers.Load(),
+	))
+}
+
+// buildTorrentsJSON returns a JSON array of known torrent IDs.
+func (s *Server) buildTorrentsJSON(r *http.Request) []byte {
+	limit := 100
+	count := 0
+	out := []byte(`[`)
+	s.worker.Torrents.ForEach(func(hash string, t *Torrent) bool {
+		if count >= limit {
+			return false
+		}
+		if count > 0 {
+			out = append(out, ',')
+		}
+		out = append(out, []byte(fmt.Sprintf(`{"id":%d,"hash":%q,"seeders":%d,"leechers":%d}`,
+			t.ID, hash, t.Seeders.Size(), t.Leechers.Size()))...)
+		count++
+		return true
+	})
+	return append(out, ']')
+}
+
+// buildPeersJSON returns a JSON array of peers for the given info_hash query param.
+func (s *Server) buildPeersJSON(r *http.Request) []byte {
+	hash := r.URL.Query().Get("info_hash")
+	torrent, ok := s.worker.Torrents.Get(hash)
+	if !ok {
+		return []byte(`[]`)
+	}
+	out := []byte(`[`)
+	first := true
+	torrent.Seeders.ForEach(func(_ string, p *Peer) bool {
+		if !first {
+			out = append(out, ',')
+		}
+		out = append(out, []byte(fmt.Sprintf(`{"ip":%q,"port":%d,"seeder":true}`, p.IP, p.Port))...)
+		first = false
+		return true
+	})
+	torrent.Leechers.ForEach(func(_ string, p *Peer) bool {
+		if !first {
+			out = append(out, ',')
+		}
+		out = append(out, []byte(fmt.Sprintf(`{"ip":%q,"port":%d,"seeder":false}`, p.IP, p.Port))...)
+		first = false
+		return true
+	})
+	return append(out, ']')
+}
+
+// buildWhitelistJSON returns the whitelist as a JSON array of strings.
+func (s *Server) buildWhitelistJSON() []byte {
+	prefixes := s.worker.Whitelist.GetAll()
+	out := []byte(`[`)
+	for i, p := range prefixes {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = append(out, []byte(fmt.Sprintf("%q", p))...)
+	}
+	return append(out, ']')
+}
+
+// handleAdminUpdate applies a delta update from the admin API.
+func (w *Worker) handleAdminUpdate(r *http.Request) {
+	r.ParseForm()
+	if torrentID := r.FormValue("torrent_id"); torrentID != "" {
+		tid, _ := strconv.ParseUint(torrentID, 10, 32)
+		action := r.FormValue("action")
+		switch action {
+		case "delete":
+			infoHash := r.FormValue("info_hash")
+			w.Torrents.Delete(infoHash)
+		case "freeleech":
+			freeStr := r.FormValue("free_type")
+			free, _ := strconv.ParseUint(freeStr, 10, 8)
+			infoHash := r.FormValue("info_hash")
+			if t, ok := w.Torrents.Get(infoHash); ok {
+				t.FreeType = FreeType(free)
+			}
+		default:
+			_ = tid
+		}
+	}
+	if userID := r.FormValue("user_id"); userID != "" {
+		uid, err := strconv.ParseUint(userID, 10, 32)
+		if err != nil {
+			return
+		}
+		action := r.FormValue("action")
+		switch action {
+		case "can_leech":
+			passkey := r.FormValue("passkey")
+			if u, ok := w.Users.Get(passkey); ok {
+				u.CanLeech.Store(r.FormValue("value") == "1")
+			}
+			_ = uid
+		case "protect_ip":
+			passkey := r.FormValue("passkey")
+			if u, ok := w.Users.Get(passkey); ok {
+				u.ProtectIP.Store(r.FormValue("value") == "1")
+			}
+			_ = uid
+		}
+	}
+}
+
+// handleAdminReport processes a ban/unban action from the admin API.
+func (w *Worker) handleAdminReport(r *http.Request) {
+	r.ParseForm()
+	action := r.FormValue("action")
+	uidStr := r.FormValue("user_id")
+	uid, err := strconv.ParseUint(uidStr, 10, 32)
+	if err != nil {
+		return
+	}
+	switch action {
+	case "ban":
+		w.Users.SetBanned(UserID(uid), true)
+		_ = w.SiteComm.ReportAnomaly(int64(uid), 1.0)
+		_ = w.SiteComm.BanUser(int64(uid))
+	case "unban":
+		w.Users.SetBanned(UserID(uid), false)
+		_ = w.SiteComm.UnbanUser(int64(uid))
+	}
+}
+
 // ── Worker ────────────────────────────────────────────────────────────────────
 
 // Worker encapsulates tracker business logic.
@@ -696,9 +921,15 @@ type Worker struct {
 	CircuitBreak *CircuitBreaker
 	AuditLog     *AuditLogger
 	Metrics      *MetricsRecorder
-	Detector       BehaviorDetector // per-peer behaviour anomaly detection; nil disables
-	ClientDetector ClientDetector   // client-pattern check at announce entry; nil disables
-	reaper         *Reaper          // created by Start()
+	Detector         BehaviorDetector      // per-peer behaviour anomaly detection; nil disables
+	ClientDetector   ClientDetector        // client-pattern check at announce entry; nil disables
+	SwarmPredictor   SwarmHealthInterface  // swarm health prediction; nil disables
+	reaper           *Reaper               // created by Start()
+}
+
+// SwarmHealthInterface is the seam for swarm health prediction.
+type SwarmHealthInterface interface {
+	HealthScore(seeders, leechers int) int
 }
 
 // Start initialises subsystems that depend on Worker fields being populated:
@@ -723,6 +954,27 @@ func (w *Worker) Start() {
 	}
 	w.reaper = NewReaper(w.Torrents, w.Stats, interval, timeout)
 	w.reaper.Start()
+}
+
+// SwarmHealthSummary returns the mean health score across all tracked torrents,
+// or -1 if no predictor is configured.
+func (w *Worker) SwarmHealthSummary() int {
+	if w.SwarmPredictor == nil {
+		return -1
+	}
+	total := 0
+	count := 0
+	w.Torrents.ForEach(func(_ string, t *Torrent) bool {
+		s := t.Seeders.Size()
+		l := t.Leechers.Size()
+		total += w.SwarmPredictor.HealthScore(s, l)
+		count++
+		return true
+	})
+	if count == 0 {
+		return -1
+	}
+	return total / count
 }
 
 // Stop shuts down the Reaper and flushes any buffered DB writes.

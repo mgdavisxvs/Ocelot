@@ -40,6 +40,7 @@ type AnnounceResponse struct {
 // Go equivalent of worker::announce() (worker.cpp:266-735).
 func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, userAgent string) (*AnnounceResponse, error) {
 	now := time.Now()
+	announceStart := now
 
 	if !req.Compact {
 		return nil, fmt.Errorf("your client does not support compact announces")
@@ -139,6 +140,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		peer.Downloaded = req.Downloaded
 		peer.Corrupt = req.Corrupt
 		peer.Announces = 1
+		peer.ConnectionTimes = []time.Time{now}
 		peerChanged = true
 	} else if req.Uploaded < peer.Uploaded || req.Downloaded < peer.Downloaded {
 		peer.Announces++
@@ -201,6 +203,12 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	}
 
 	peer.Left = req.Left
+	// Append connection timestamp for rapid-reconnect anomaly detection; keep
+	// the last 10 entries so the slice stays bounded.
+	peer.ConnectionTimes = append(peer.ConnectionTimes, now)
+	if len(peer.ConnectionTimes) > 10 {
+		peer.ConnectionTimes = peer.ConnectionTimes[len(peer.ConnectionTimes)-10:]
+	}
 
 	ip := req.IP
 	if ip == nil || ip.IsUnspecified() {
@@ -250,18 +258,20 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		}
 	}
 
-	if peerChanged {
-		announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
-		ipStr := ""
-		if !user.ProtectIP.Load() {
-			ipStr = ip.String()
+	if !w.Config.Readonly {
+		if peerChanged {
+			announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
+			ipStr := ""
+			if !user.ProtectIP.Load() {
+				ipStr = ip.String()
+			}
+			w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
+				upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
+				ipStr, string(req.PeerID), userAgent)
+		} else {
+			announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
+			w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, string(req.PeerID))
 		}
-		w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
-			upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
-			ipStr, string(req.PeerID), userAgent)
-	} else {
-		announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
-		w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, string(req.PeerID))
 	}
 
 	numwant := req.NumWant
@@ -285,11 +295,13 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		torrent.Completed++
 		torrent.mu.Unlock()
 
-		ipStr := ""
-		if !user.ProtectIP.Load() {
-			ipStr = ip.String()
+		if !w.Config.Readonly {
+			ipStr := ""
+			if !user.ProtectIP.Load() {
+				ipStr = ip.String()
+			}
+			w.DB.RecordSnatch(user.ID, torrent.ID, now, ipStr)
 		}
-		w.DB.RecordSnatch(user.ID, torrent.ID, now, ipStr)
 
 		if !inserted {
 			torrent.mu.Lock()
@@ -303,7 +315,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 			torrent.mu.Unlock()
 		}
 
-		if expireToken {
+		if expireToken && !w.Config.Readonly {
 			w.SiteComm.ExpireToken(torrent.ID, user.ID)
 			torrent.mu.Lock()
 			delete(torrent.TokenedUsers, user.ID)
@@ -346,7 +358,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	}
 
 	torrent.mu.Lock()
-	if updateTorrent || now.Sub(torrent.LastFlushed) > time.Hour {
+	if !w.Config.Readonly && (updateTorrent || now.Sub(torrent.LastFlushed) > time.Hour) {
 		torrent.LastFlushed = now
 		w.DB.RecordTorrent(torrent.ID, uint32(torrent.Seeders.Size()),
 			uint32(torrent.Leechers.Size()), snatched, torrent.Balance)
@@ -375,6 +387,20 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	if invalidIP {
 		response.Warning = "Illegal character found in IP address"
 	}
+
+	if w.Metrics != nil {
+		event := "update"
+		if inserted || req.Event == "started" {
+			event = "started"
+		} else if req.Event == "completed" {
+			event = "completed"
+		} else if req.Event == "stopped" {
+			event = "stopped"
+		}
+		w.Metrics.RecordAnnounce(event, "success", time.Since(announceStart))
+		w.Metrics.UpdatePeerCounts(seederCount, leecherCount)
+	}
+	_ = w.SiteComm.UpdateStats(int64(seederCount), int64(leecherCount), int64(torrent.Completed))
 
 	return response, nil
 }
