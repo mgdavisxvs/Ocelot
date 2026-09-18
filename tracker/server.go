@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mgdavisxvs/Ocelot/ml"
 )
 
 // Server is the high-performance tracker server.
@@ -27,6 +29,7 @@ type Server struct {
 	shutdownCancel context.CancelFunc
 	wg             sync.WaitGroup
 	stats          *Stats
+	pool           *WorkerPool // bounded goroutine pool for connection handlers
 
 	// adapters maps action verb → DomainAdapter for vocab-driven routing.
 	// Built via RegisterAdapter; the legacy BT routes remain as fast paths.
@@ -82,6 +85,10 @@ type Config struct {
 
 func NewServer(config *Config, worker *Worker) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
+	poolCap := config.MaxMiddlemen
+	if poolCap <= 0 {
+		poolCap = 4096
+	}
 	return &Server{
 		worker:         worker,
 		config:         config,
@@ -90,6 +97,7 @@ func NewServer(config *Config, worker *Worker) *Server {
 		shutdownCancel: cancel,
 		stats:          worker.Stats,
 		adapters:       make(map[string]DomainAdapter),
+		pool:           NewWorkerPool(poolCap),
 	}
 }
 
@@ -165,7 +173,11 @@ func (s *Server) serve(ln net.Listener) error {
 		s.stats.OpenedConnections.Add(1)
 
 		s.wg.Add(1)
-		go s.handleConnection(conn)
+		if err := s.pool.Submit(func() { s.handleConnection(conn) }); err != nil {
+			// Pool was shut down — context cancelled.
+			s.wg.Done()
+			conn.Close()
+		}
 	}
 }
 
@@ -391,7 +403,7 @@ func (s *Server) handleDomainRequest(req *http.Request, passkey string, clientIP
 	}
 
 	announceReq := EventToAnnounceRequest(event, nil)
-	announceResp, err := s.worker.Announce(announceReq, user, clientIP, opts.UserAgent)
+	announceResp, err := s.worker.Announce(req.Context(), announceReq, user, clientIP, opts.UserAgent)
 	if err != nil {
 		return a.FormatError(err.Error(), httpClose)
 	}
@@ -407,7 +419,17 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 	)
 	defer span.End()
 
-	user, ok := s.worker.Users.Get(passkey)
+	var user *User
+	var ok bool
+	if s.worker.UserCache != nil {
+		user, ok = s.worker.UserCache.Get(passkey)
+	}
+	if !ok {
+		user, ok = s.worker.Users.Get(passkey)
+		if ok && s.worker.UserCache != nil {
+			s.worker.UserCache.Set(passkey, user)
+		}
+	}
 	if !ok {
 		AddSpanError(req.Context(), ErrInvalidPasskey)
 		return s.errorResponse("Passkey not found", httpClose)
@@ -431,7 +453,7 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 	}
 
 	userAgent := req.Header.Get("User-Agent")
-	announceResp, err := s.worker.Announce(announceReq, user, clientIP, userAgent)
+	announceResp, err := s.worker.Announce(req.Context(), announceReq, user, clientIP, userAgent)
 	if err != nil {
 		AddSpanError(req.Context(), err)
 		return s.errorResponse(err.Error(), httpClose)
@@ -756,7 +778,13 @@ func (s *Server) StartAdminAPIServer(db *sql.DB) {
 		w.Write([]byte(`{"ok":true}`))
 	})
 
-	handler := AuthMiddleware(authCfg, nil)(mux)
+	// Stack: rate limit → auth → mux.  The rate limiter runs first so
+	// unauthenticated callers cannot exhaust resources before the JWT check.
+	var handler http.Handler = mux
+	handler = AuthMiddleware(authCfg, nil)(handler)
+	if s.worker.RateLimiter != nil {
+		handler = RateLimitMiddleware(s.worker.RateLimiter)(handler)
+	}
 	srv := &http.Server{
 		Addr:         s.config.AdminAPIPort,
 		Handler:      handler,
@@ -774,10 +802,37 @@ func (s *Server) StartAdminAPIServer(db *sql.DB) {
 // buildStatsJSON returns the current tracker stats as JSON.
 func (s *Server) buildStatsJSON() []byte {
 	stats := s.stats
+
+	cbState := "n/a"
+	if s.worker.CircuitBreak != nil {
+		cbState = s.worker.CircuitBreak.GetStateString()
+	}
+
+	dbQueue := 0
+	if bdb, ok := s.worker.DB.(*BufferedDB); ok {
+		dbQueue = bdb.QueueDepth()
+	}
+
+	swarmHealth := s.worker.SwarmHealthSummary()
+
+	torrentCacheSize := 0
+	if s.worker.TorrentCache != nil {
+		torrentCacheSize = s.worker.TorrentCache.cache.Size()
+	}
+	userCacheSize := 0
+	if s.worker.UserCache != nil {
+		userCacheSize = s.worker.UserCache.cache.Size()
+	}
+
 	return []byte(fmt.Sprintf(
-		`{"open_connections":%d,"announcements":%d,"scrapes":%d,"seeders":%d,"leechers":%d}`,
+		`{"open_connections":%d,"announcements":%d,"scrapes":%d,"seeders":%d,"leechers":%d,`+
+			`"evicted_peers":%d,"anomalies":%d,"db_queue_depth":%d,"circuit_breaker":%q,"swarm_health":%d,`+
+			`"torrent_cache_size":%d,"user_cache_size":%d}`,
 		stats.OpenConnections.Load(), stats.Announcements.Load(),
 		stats.Scrapes.Load(), stats.Seeders.Load(), stats.Leechers.Load(),
+		stats.EvictedPeers.Load(), stats.AnomalyDetections.Load(),
+		dbQueue, cbState, swarmHealth,
+		torrentCacheSize, userCacheSize,
 	))
 }
 
@@ -852,6 +907,9 @@ func (w *Worker) handleAdminUpdate(r *http.Request) {
 		case "delete":
 			infoHash := r.FormValue("info_hash")
 			w.Torrents.Delete(infoHash)
+			if w.TorrentCache != nil {
+				w.TorrentCache.Delete(infoHash)
+			}
 		case "freeleech":
 			freeStr := r.FormValue("free_type")
 			free, _ := strconv.ParseUint(freeStr, 10, 8)
@@ -875,11 +933,17 @@ func (w *Worker) handleAdminUpdate(r *http.Request) {
 			if u, ok := w.Users.Get(passkey); ok {
 				u.CanLeech.Store(r.FormValue("value") == "1")
 			}
+			if w.UserCache != nil {
+				w.UserCache.Delete(passkey)
+			}
 			_ = uid
 		case "protect_ip":
 			passkey := r.FormValue("passkey")
 			if u, ok := w.Users.Get(passkey); ok {
 				u.ProtectIP.Store(r.FormValue("value") == "1")
+			}
+			if w.UserCache != nil {
+				w.UserCache.Delete(passkey)
 			}
 			_ = uid
 		}
@@ -924,6 +988,9 @@ type Worker struct {
 	Detector         BehaviorDetector      // per-peer behaviour anomaly detection; nil disables
 	ClientDetector   ClientDetector        // client-pattern check at announce entry; nil disables
 	SwarmPredictor   SwarmHealthInterface  // swarm health prediction; nil disables
+	PeerScorer       *ml.PeerScorer        // ML peer scoring; nil falls back to reservoir sampling
+	TorrentCache     *TorrentCache         // L1 cache for hot-torrent lookups; nil disables
+	UserCache        *UserCache            // L1 cache for passkey→user lookups; nil disables
 	reaper           *Reaper               // created by Start()
 }
 

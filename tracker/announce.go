@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -38,7 +39,7 @@ type AnnounceResponse struct {
 
 // Announce handles a BitTorrent announce request.
 // Go equivalent of worker::announce() (worker.cpp:266-735).
-func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, userAgent string) (*AnnounceResponse, error) {
+func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User, clientIP net.IP, userAgent string) (*AnnounceResponse, error) {
 	now := time.Now()
 	announceStart := now
 
@@ -58,7 +59,17 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		}
 	}
 
-	torrent, ok := w.Torrents.Get(req.InfoHash)
+	var torrent *Torrent
+	var ok bool
+	if w.TorrentCache != nil {
+		torrent, ok = w.TorrentCache.Get(req.InfoHash)
+	}
+	if !ok {
+		torrent, ok = w.Torrents.Get(req.InfoHash)
+		if ok && w.TorrentCache != nil {
+			w.TorrentCache.Set(req.InfoHash, torrent)
+		}
+	}
 	if !ok {
 		return nil, fmt.Errorf("unregistered torrent")
 	}
@@ -327,7 +338,9 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		numwant = 0
 	}
 
-	peers := SelectPeersOptimized(torrent, peer, user.ID, numwant, req.Left > 0)
+	_, peerSelSpan := TracePeerSelection(ctx, fmt.Sprintf("%d", torrent.ID), int(numwant))
+	peers := SelectPeersScored(torrent, peer, user.ID, numwant, req.Left > 0, w.PeerScorer, clientIP)
+	peerSelSpan.End()
 
 	w.Stats.SuccAnnouncements.Add(1)
 	if incLeechers {

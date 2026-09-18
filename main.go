@@ -146,9 +146,12 @@ func main() {
 		CircuitBreak:   breaker,
 		AuditLog:       auditLog,
 		Metrics:        metrics,
-		Detector:       anomalyDetector,                         // [F+ML-01] behaviour anomaly (adaptive)
-		ClientDetector: tracker.NewClientDetector(),              // [ML-04] client anomaly
-		SwarmPredictor: tracker.NewSwarmHealthPredictor(),        // [ML-02] swarm health scoring
+		Detector:       anomalyDetector,                                            // [F+ML-01] behaviour anomaly (adaptive)
+		ClientDetector: tracker.NewClientDetector(),                                // [ML-04] client anomaly
+		SwarmPredictor: tracker.NewSwarmHealthPredictor(),                          // [ML-02] swarm health scoring
+		PeerScorer:     tracker.NewPeerScorer(),                                    // [ML-03] ML peer scoring
+		TorrentCache:   tracker.NewTorrentCache(5 * time.Minute),                  // L1 hot-torrent cache
+		UserCache:      tracker.NewUserCache(5 * time.Minute),                     // L1 passkey→user cache
 	}
 
 	// [B] Reaper + [E] RateLimiter initialised inside Worker.Start().

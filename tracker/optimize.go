@@ -3,6 +3,9 @@ package tracker
 import (
 	"math/rand"
 	"net"
+	"sort"
+
+	"github.com/mgdavisxvs/Ocelot/ml"
 )
 
 // Optimization functions implementing Terence Tao and Paul Erdős approaches
@@ -299,6 +302,97 @@ func (wt *WhitelistTrie) IsAllowed(peerID []byte) bool {
 	}
 
 	return node.isPrefix
+}
+
+// SelectPeersScored selects peers using the ml.PeerScorer when one is provided,
+// falling back to SelectPeersOptimized otherwise.  requesterIP is the IP of the
+// announcing peer and is used to favour topologically close peers.
+func SelectPeersScored(torrent *Torrent, self *Peer, userID UserID, numwant int32,
+	isLeecher bool, scorer *ml.PeerScorer, requesterIP net.IP) []byte {
+	if scorer == nil || requesterIP == nil {
+		return SelectPeersOptimized(torrent, self, userID, numwant, isLeecher)
+	}
+
+	torrent.mu.RLock()
+	var raw []*Peer
+	if isLeecher {
+		raw = collectVisiblePeers(torrent.Seeders, userID)
+		leechers := collectVisiblePeers(torrent.Leechers, userID)
+		raw = append(raw, leechers...)
+	} else {
+		raw = collectVisiblePeers(torrent.Leechers, userID)
+	}
+	torrent.mu.RUnlock()
+
+	if len(raw) == 0 {
+		return []byte{}
+	}
+
+	// Build ml.PeerInfo slice keeping a parallel index into raw so we can
+	// recover *Peer.IPPort after scoring.
+	type scored struct {
+		score float64
+		peer  *Peer
+	}
+	infos := make([]*ml.PeerInfo, len(raw))
+	for i, p := range raw {
+		infos[i] = &ml.PeerInfo{
+			IP:           p.IP,
+			Port:         p.Port,
+			Uploaded:     p.Uploaded,
+			Downloaded:   p.Downloaded,
+			FirstSeen:    p.FirstAnnounced,
+			LastAnnounce: p.LastAnnounced,
+			// Approximate: use Announces as a proxy for TotalSessions; we don't
+			// track completed sessions at the Peer level, so assume all complete.
+			TotalSessions:     int(p.Announces),
+			CompletedSessions: int(p.Announces),
+		}
+	}
+
+	selected := scorer.SelectBest(infos, requesterIP, int(numwant))
+
+	// Map selected PeerInfo back to *Peer by matching IP+Port.
+	// Build a lookup: (IP string)+(Port) → *Peer.
+	lookup := make(map[string]*Peer, len(raw))
+	for _, p := range raw {
+		key := p.IP.String() + ":" + intToStr(int(p.Port))
+		lookup[key] = p
+	}
+
+	out := make([]scored, 0, len(selected))
+	for i, info := range selected {
+		key := info.IP.String() + ":" + intToStr(int(info.Port))
+		if p, ok := lookup[key]; ok {
+			out = append(out, scored{score: float64(len(selected) - i), peer: p})
+		}
+	}
+
+	// Sort descending by score (already ordered, but re-sort for safety).
+	sort.Slice(out, func(i, j int) bool { return out[i].score > out[j].score })
+
+	buf := make([]byte, 0, len(out)*6)
+	for _, s := range out {
+		if len(s.peer.IPPort) == 6 {
+			buf = append(buf, s.peer.IPPort...)
+		}
+	}
+	return buf
+}
+
+// intToStr converts a non-negative int to its decimal string representation.
+func intToStr(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	buf := [20]byte{}
+	pos := len(buf)
+	for n > 0 {
+		pos--
+		buf[pos] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[pos:])
 }
 
 // BuildTrieFromSlice converts a slice of prefixes to a trie

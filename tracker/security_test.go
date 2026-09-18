@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"net"
 	"strings"
 	"testing"
@@ -57,7 +58,7 @@ func TestSecurity_DeletedUserAnnounce(t *testing.T) {
 
 	ip := net.ParseIP(testIP)
 	req := newAnnounceReqFull(testInfoHash, testPeerID, "started", 0, 0, 1000)
-	_, err := f.worker.Announce(req, u, ip, "test-client")
+	_, err := f.worker.Announce(context.Background(), req, u, ip, "test-client")
 	if err == nil || !strings.Contains(err.Error(), "leeching forbidden") {
 		t.Errorf("CanLeech=false leecher should get leeching forbidden, got: %v", err)
 	}
@@ -74,7 +75,7 @@ func TestSecurity_SQLInjectionInPeerID(t *testing.T) {
 	ip := net.ParseIP(testIP)
 	user, _ := f.worker.Users.Get(testPasskey)
 	req := newAnnounceReqFull(testInfoHash, peerID, "started", 0, 0, 1000)
-	_, err := f.worker.Announce(req, user, ip, "malicious-client")
+	_, err := f.worker.Announce(context.Background(), req, user, ip, "malicious-client")
 	if err != nil {
 		t.Fatalf("announce with adversarial peer_id should not fail: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestSecurity_VeryLargeUploadedValue(t *testing.T) {
 	const maxUploaded = int64(1<<62 - 1)
 
 	req := newAnnounceReqFull(testInfoHash, testPeerID, "started", maxUploaded, 0, 0)
-	_, err := f.worker.Announce(req, user, ip, "test-client")
+	_, err := f.worker.Announce(context.Background(), req, user, ip, "test-client")
 	if err != nil {
 		t.Fatalf("large uploaded value should not panic/error: %v", err)
 	}
@@ -117,7 +118,7 @@ func TestSecurity_NonCompactAnnounceRejected(t *testing.T) {
 	req := newAnnounceReqFull(testInfoHash, testPeerID, "started", 0, 0, 1000)
 	req.Compact = false
 
-	_, err := f.worker.Announce(req, user, ip, "test-client")
+	_, err := f.worker.Announce(context.Background(), req, user, ip, "test-client")
 	if err == nil || !strings.Contains(err.Error(), "compact") {
 		t.Errorf("non-compact announce should be rejected, got: %v", err)
 	}
@@ -131,7 +132,7 @@ func TestSecurity_UnregisteredTorrent(t *testing.T) {
 	user, _ := f.worker.Users.Get(testPasskey)
 
 	req := newAnnounceReqFull(strings.Repeat("\xff", 20), testPeerID, "started", 0, 0, 1000)
-	_, err := f.worker.Announce(req, user, ip, "test-client")
+	_, err := f.worker.Announce(context.Background(), req, user, ip, "test-client")
 	if err == nil || !strings.Contains(err.Error(), "unregistered") {
 		t.Errorf("unknown torrent should be rejected, got: %v", err)
 	}
@@ -148,7 +149,7 @@ func TestSecurity_WhitelistEnforced(t *testing.T) {
 
 	// testPeerID starts with "\x02" → not "-qB"
 	req := newAnnounceReqFull(testInfoHash, testPeerID, "started", 0, 0, 1000)
-	_, err := f.worker.Announce(req, user, ip, "banned-client")
+	_, err := f.worker.Announce(context.Background(), req, user, ip, "banned-client")
 	if err == nil || !strings.Contains(err.Error(), "whitelist") {
 		t.Errorf("client not on whitelist should be rejected, got: %v", err)
 	}

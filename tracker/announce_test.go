@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"net"
 	"net/url"
 	"testing"
@@ -246,7 +247,7 @@ func TestAnnounce_RejectNonCompact(t *testing.T) {
 	req := newAnnounceReq("started", 1000)
 	req.Compact = false
 	u := NewUser(1, true, false)
-	_, err := w.Announce(req, u, net.ParseIP("10.0.0.1"), "")
+	_, err := w.Announce(context.Background(), req, u, net.ParseIP("10.0.0.1"), "")
 	if err == nil {
 		t.Error("expected error for non-compact announce")
 	}
@@ -257,7 +258,7 @@ func TestAnnounce_RejectShortPeerID(t *testing.T) {
 	req := newAnnounceReq("started", 1000)
 	req.PeerID = []byte("tooshort")
 	u := NewUser(1, true, false)
-	_, err := w.Announce(req, u, net.ParseIP("10.0.0.1"), "")
+	_, err := w.Announce(context.Background(), req, u, net.ParseIP("10.0.0.1"), "")
 	if err == nil {
 		t.Error("expected error for short peer ID")
 	}
@@ -269,7 +270,7 @@ func TestAnnounce_RejectNotWhitelisted(t *testing.T) {
 	req := newAnnounceReq("started", 1000)
 	// PeerID starts with "-qB4", not "-XX9"
 	u := NewUser(1, true, false)
-	_, err := w.Announce(req, u, net.ParseIP("10.0.0.1"), "")
+	_, err := w.Announce(context.Background(), req, u, net.ParseIP("10.0.0.1"), "")
 	if err == nil {
 		t.Error("expected error for non-whitelisted client")
 	}
@@ -280,7 +281,7 @@ func TestAnnounce_RejectUnregisteredTorrent(t *testing.T) {
 	req := newAnnounceReq("started", 1000)
 	u := NewUser(1, true, false)
 	// Torrent not added to w.Torrents
-	_, err := w.Announce(req, u, net.ParseIP("10.0.0.1"), "")
+	_, err := w.Announce(context.Background(), req, u, net.ParseIP("10.0.0.1"), "")
 	if err == nil {
 		t.Error("expected error for unregistered torrent")
 	}
@@ -302,7 +303,7 @@ func setupAnnounce(t *testing.T) (*Worker, *mockDB, *mockSiteComm, *User) {
 func TestAnnounce_Started_AddsLeecher(t *testing.T) {
 	w, db, _, u := setupAnnounce(t)
 	req := newAnnounceReq("started", 1000)
-	resp, err := w.Announce(req, u, net.ParseIP("10.0.0.1"), "TestClient/1.0")
+	resp, err := w.Announce(context.Background(), req, u, net.ParseIP("10.0.0.1"), "TestClient/1.0")
 	if err != nil {
 		t.Fatalf("Announce: %v", err)
 	}
@@ -328,7 +329,7 @@ func TestAnnounce_Started_AddsLeecher(t *testing.T) {
 func TestAnnounce_Seeder_AddedToSeeders(t *testing.T) {
 	w, _, _, u := setupAnnounce(t)
 	req := newAnnounceReq("started", 0) // left=0 → seeder
-	_, err := w.Announce(req, u, net.ParseIP("10.0.0.1"), "")
+	_, err := w.Announce(context.Background(), req, u, net.ParseIP("10.0.0.1"), "")
 	if err != nil {
 		t.Fatalf("Announce: %v", err)
 	}
@@ -349,7 +350,7 @@ func TestAnnounce_Stopped_RemovesPeer(t *testing.T) {
 
 	// First: join as leecher
 	req := newAnnounceReq("started", 1000)
-	if _, err := w.Announce(req, u, ip, ""); err != nil {
+	if _, err := w.Announce(context.Background(), req, u, ip, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -360,7 +361,7 @@ func TestAnnounce_Stopped_RemovesPeer(t *testing.T) {
 
 	// Then: stop
 	req2 := newAnnounceReq("stopped", 1000)
-	if _, err := w.Announce(req2, u, ip, ""); err != nil {
+	if _, err := w.Announce(context.Background(), req2, u, ip, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -380,13 +381,13 @@ func TestAnnounce_Completed_MovesLeecherToSeeder(t *testing.T) {
 
 	// Join as leecher
 	req := newAnnounceReq("started", 1000)
-	if _, err := w.Announce(req, u, ip, ""); err != nil {
+	if _, err := w.Announce(context.Background(), req, u, ip, ""); err != nil {
 		t.Fatal(err)
 	}
 
 	// Complete
 	req2 := newAnnounceReq("completed", 0)
-	if _, err := w.Announce(req2, u, ip, ""); err != nil {
+	if _, err := w.Announce(context.Background(), req2, u, ip, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -407,7 +408,7 @@ func TestAnnounce_Completed_MovesLeecherToSeeder(t *testing.T) {
 func TestAnnounce_Response_Interval(t *testing.T) {
 	w, _, _, u := setupAnnounce(t)
 	req := newAnnounceReq("started", 1000)
-	resp, err := w.Announce(req, u, net.ParseIP("10.0.0.1"), "")
+	resp, err := w.Announce(context.Background(), req, u, net.ParseIP("10.0.0.1"), "")
 	if err != nil {
 		t.Fatalf("Announce: %v", err)
 	}
@@ -422,7 +423,7 @@ func TestAnnounce_Response_Interval(t *testing.T) {
 func TestAnnounce_Response_Peers_EmptyForNewLeecher(t *testing.T) {
 	w, _, _, u := setupAnnounce(t)
 	req := newAnnounceReq("started", 1000)
-	resp, err := w.Announce(req, u, net.ParseIP("10.0.0.1"), "")
+	resp, err := w.Announce(context.Background(), req, u, net.ParseIP("10.0.0.1"), "")
 	if err != nil {
 		t.Fatalf("Announce: %v", err)
 	}
@@ -448,7 +449,7 @@ func TestAnnounce_LeecherReceivesSeeder(t *testing.T) {
 		Event:      "started",
 		NumWant:    50,
 	}
-	if _, err := w.Announce(seederReq, seeder, net.ParseIP("192.168.1.1"), ""); err != nil {
+	if _, err := w.Announce(context.Background(), seederReq, seeder, net.ParseIP("192.168.1.1"), ""); err != nil {
 		t.Fatalf("seeder announce: %v", err)
 	}
 
@@ -465,7 +466,7 @@ func TestAnnounce_LeecherReceivesSeeder(t *testing.T) {
 		Event:      "started",
 		NumWant:    50,
 	}
-	resp, err := w.Announce(leecherReq, leecher, net.ParseIP("10.0.0.2"), "")
+	resp, err := w.Announce(context.Background(), leecherReq, leecher, net.ParseIP("10.0.0.2"), "")
 	if err != nil {
 		t.Fatalf("leecher announce: %v", err)
 	}
@@ -482,7 +483,7 @@ func TestAnnounce_CanLeech_False_Forbidden(t *testing.T) {
 	w, _, _, _ := setupAnnounce(t)
 	u := NewUser(99, false, false) // cannot leech
 	req := newAnnounceReq("started", 1000)
-	_, err := w.Announce(req, u, net.ParseIP("10.0.0.1"), "")
+	_, err := w.Announce(context.Background(), req, u, net.ParseIP("10.0.0.1"), "")
 	if err == nil {
 		t.Error("expected error for user with CanLeech=false trying to leech")
 	}

@@ -39,8 +39,12 @@ func main() {
 	auditLog := tracker.NewAuditLogger(db.CurrentDB())
 
 	// ── Batch writer ──────────────────────────────────────────────────────────
+	// BatchWriterDB routes hot-path announce writes through the async queue
+	// (QueuePeerAnnounce / QueueTorrentUpdate) and delegates everything else to
+	// the underlying SQLiteShardManager.
 	batchWriter := tracker.NewBatchWriter(db.CurrentDB(), 100, 5*time.Second)
 	defer batchWriter.Stop()
+	batchWriterDB := tracker.NewBatchWriterDB(db, batchWriter)
 
 	// ── Rate limiter ──────────────────────────────────────────────────────────
 	rateLimiter := tracker.NewRateLimiter(10, 30, 100_000)
@@ -95,7 +99,7 @@ func main() {
 	// ── Worker ────────────────────────────────────────────────────────────────
 	worker := &tracker.Worker{
 		Config:         config,
-		DB:             db,
+		DB:             batchWriterDB, // hot-path writes routed through BatchWriterDB
 		SiteComm:       siteComm,
 		Torrents:       torrents,
 		Users:          users,
@@ -107,6 +111,10 @@ func main() {
 		Metrics:        metrics,
 		Detector:       anomalyDetector,
 		ClientDetector: tracker.NewClientDetector(),
+		SwarmPredictor: tracker.NewSwarmHealthPredictor(),
+		PeerScorer:     tracker.NewPeerScorer(),
+		TorrentCache:   tracker.NewTorrentCache(5 * time.Minute),
+		UserCache:      tracker.NewUserCache(5 * time.Minute),
 	}
 
 	// ── Background subsystems ─────────────────────────────────────────────────

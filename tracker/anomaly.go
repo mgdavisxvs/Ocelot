@@ -10,6 +10,11 @@ func NewSwarmHealthPredictor() SwarmHealthInterface {
 	return ml.NewSwarmHealthPredictor()
 }
 
+// NewPeerScorer returns a production *ml.PeerScorer with default weights.
+func NewPeerScorer() *ml.PeerScorer {
+	return ml.NewPeerScorer()
+}
+
 // ClientDetector checks peer_id bytes and User-Agent strings for known-bad
 // client patterns before the peer is admitted to any swarm.
 type ClientDetector interface {

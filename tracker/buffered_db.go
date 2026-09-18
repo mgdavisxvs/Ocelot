@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,12 +96,14 @@ func (b *BufferedDB) drain(interval time.Duration) {
 
 // execute runs one op, wrapping it in the circuit breaker when present.
 func (b *BufferedDB) execute(op bufferedOp) {
+	_, span := TraceDBQuery(context.Background(), "async_write")
 	var err error
 	if b.breaker != nil {
 		err = b.breaker.Execute(op.call)
 	} else {
 		err = op.call()
 	}
+	span.End()
 	if err != nil {
 		b.logger.Warn("buffered db write failed", "error", err.Error())
 	}
@@ -120,6 +123,8 @@ func (b *BufferedDB) enqueue(fn func() error) {
 // syncWrite runs fn synchronously, routing through the circuit breaker when
 // present.  Used for infrequent admin writes that must not be silently lost.
 func (b *BufferedDB) syncWrite(fn func() error) error {
+	_, span := TraceDBQuery(context.Background(), "sync_write")
+	defer span.End()
 	if b.breaker != nil {
 		return b.breaker.Execute(fn)
 	}
