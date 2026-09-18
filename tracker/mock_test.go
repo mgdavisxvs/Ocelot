@@ -254,6 +254,12 @@ func (m *MockDB) CheckRotation() error {
 	return m.ReturnErr
 }
 
+func (m *MockDB) DeleteToken(userID UserID, torrentID TorrentID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ReturnErr
+}
+
 func (m *MockDB) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

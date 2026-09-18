@@ -460,6 +460,15 @@ func (sm *SQLiteShardManager) RemoveWhitelistEntry(prefix string) error {
 	return err
 }
 
+// DeleteToken removes a freeleech token row when it has been consumed.
+func (sm *SQLiteShardManager) DeleteToken(userID UserID, torrentID TorrentID) error {
+	sm.mu.RLock()
+	db := sm.currentDB
+	sm.mu.RUnlock()
+	_, err := db.Exec(`DELETE FROM tokens WHERE user_id = ? AND torrent_id = ?`, userID, torrentID)
+	return err
+}
+
 // ── Read / load operations ────────────────────────────────────────────────────
 
 // LoadTorrents loads all torrent metadata for restart state recovery.

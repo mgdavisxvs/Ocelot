@@ -4,6 +4,18 @@ import (
 	"github.com/mgdavisxvs/Ocelot/ml"
 )
 
+// ClientDetector checks peer_id bytes and User-Agent strings for known-bad
+// client patterns before the peer is admitted to any swarm.
+type ClientDetector interface {
+	DetectClientAnomaly(clientID, userAgent string) (bool, string)
+}
+
+// NewClientDetector returns a production ClientDetector backed by the ml
+// package's pattern database.
+func NewClientDetector() ClientDetector {
+	return ml.NewClientAnomalyDetector()
+}
+
 // BehaviorDetector is the seam between the tracker and the ML anomaly layer.
 // Keeping it as an interface lets tests inject a stub without importing ml.
 type BehaviorDetector interface {

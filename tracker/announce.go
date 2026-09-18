@@ -51,6 +51,12 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		return nil, fmt.Errorf("your client is not on the whitelist")
 	}
 
+	if w.ClientDetector != nil {
+		if bad, reason := w.ClientDetector.DetectClientAnomaly(string(req.PeerID), userAgent); bad {
+			return nil, fmt.Errorf("client rejected: %s", reason)
+		}
+	}
+
 	torrent, ok := w.Torrents.Get(req.InfoHash)
 	if !ok {
 		return nil, fmt.Errorf("unregistered torrent")
@@ -302,6 +308,8 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 			torrent.mu.Lock()
 			delete(torrent.TokenedUsers, user.ID)
 			torrent.mu.Unlock()
+			// Remove the consumed token from DB so it cannot be re-used.
+			w.DB.DeleteToken(user.ID, torrent.ID)
 		}
 	} else if !user.CanLeech.Load() && req.Left > 0 {
 		numwant = 0

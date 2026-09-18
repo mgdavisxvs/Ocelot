@@ -54,6 +54,8 @@ type Config struct {
 	RateLimitBurst int
 	// BatchBufferCap is the async write queue capacity for BufferedDB.
 	BatchBufferCap int
+	// TLS configuration — CertFile empty means plaintext.
+	TLS TLSConfig
 }
 
 func NewServer(config *Config, worker *Worker) *Server {
@@ -82,18 +84,42 @@ func (s *Server) RegisterAdapter(a DomainAdapter) {
 }
 
 func (s *Server) ListenAndServe() error {
-	listener, err := net.Listen("tcp", s.config.ListenAddr)
+	ln, err := net.Listen("tcp", s.config.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
-	s.listener = listener
+	return s.serve(ln)
+}
+
+// ListenAndServeTLS starts the tracker with TLS using the given cert and key
+// files.  The server's ListenAddr is used as the bind address.
+func (s *Server) ListenAndServeTLS(certFile, keyFile string) error {
+	ln, err := newTLSListener(s.config.ListenAddr, certFile, keyFile)
+	if err != nil {
+		return err
+	}
+	return s.serve(ln)
+}
+
+// ListenAndServeAutoTLS starts the tracker with Let's Encrypt-managed TLS.
+func (s *Server) ListenAndServeAutoTLS(domain, cacheDir string) error {
+	ln, err := newAutoTLSListener(s.config.ListenAddr, domain, cacheDir)
+	if err != nil {
+		return err
+	}
+	return s.serve(ln)
+}
+
+// serve runs the accept loop on an already-created listener.
+func (s *Server) serve(ln net.Listener) error {
+	s.listener = ln
 
 	fmt.Printf("Ocelot tracker listening on %s (%s netpoller)\n",
 		s.config.ListenAddr, netpollerType())
 	fmt.Printf("GOMAXPROCS=%d\n", runtime.GOMAXPROCS(0))
 
 	for {
-		conn, err := listener.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
 			select {
 			case <-s.shutdownCtx.Done():
@@ -610,8 +636,9 @@ type Worker struct {
 	CircuitBreak *CircuitBreaker
 	AuditLog     *AuditLogger
 	Metrics      *MetricsRecorder
-	Detector     BehaviorDetector // anomaly detection; nil disables
-	reaper       *Reaper          // created by Start()
+	Detector       BehaviorDetector // per-peer behaviour anomaly detection; nil disables
+	ClientDetector ClientDetector   // client-pattern check at announce entry; nil disables
+	reaper         *Reaper          // created by Start()
 }
 
 // Start initialises subsystems that depend on Worker fields being populated:
@@ -663,6 +690,7 @@ type DatabaseInterface interface {
 	RecordUserPasskey(id UserID, passkey string, canLeech, protectIP bool) error
 	AddWhitelistEntry(prefix string) error
 	RemoveWhitelistEntry(prefix string) error
+	DeleteToken(userID UserID, torrentID TorrentID) error
 
 	// State reload reads
 	LoadTorrents() ([]torrentLoadRow, error)

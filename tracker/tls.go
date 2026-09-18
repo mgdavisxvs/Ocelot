@@ -2,108 +2,80 @@ package tracker
 
 import (
 	"crypto/tls"
+	"fmt"
+	"net"
 	"net/http"
 	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 )
 
-// TLSConfig holds TLS configuration
+// TLSConfig holds TLS configuration fields read from ocelot.conf.
 type TLSConfig struct {
 	CertFile string
 	KeyFile  string
 	AutoTLS  bool
 	Domain   string
+	CacheDir string // directory for Let's Encrypt certificate cache
 }
 
-// StartTLS starts the tracker with TLS support
-func (s *Server) StartTLS(config TLSConfig) error {
-	logger := GetDefaultLogger()
-
-	if config.AutoTLS {
-		logger.Info("starting tracker with auto TLS (Let's Encrypt)",
-			"domain", config.Domain,
-			"port", "443",
-		)
-		return s.startAutoTLS(config.Domain)
+// newTLSListener wraps net.Listen with a tls.Config loaded from certFile/keyFile.
+func newTLSListener(addr, certFile, keyFile string) (net.Listener, error) {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load TLS cert/key: %w", err)
 	}
-
-	logger.Info("starting tracker with TLS",
-		"cert", config.CertFile,
-		"key", config.KeyFile,
-		"port", "34443",
-	)
-	return s.startManualTLS(config.CertFile, config.KeyFile)
-}
-
-// startManualTLS starts with manual certificate files
-func (s *Server) startManualTLS(certFile, keyFile string) error {
-	tlsConfig := &tls.Config{
-		MinVersion: tls.VersionTLS13,
+	cfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13,
 		CipherSuites: []uint16{
 			tls.TLS_AES_128_GCM_SHA256,
 			tls.TLS_AES_256_GCM_SHA384,
 			tls.TLS_CHACHA20_POLY1305_SHA256,
 		},
-		PreferServerCipherSuites: true,
 	}
-
-	// Create HTTP handler (stub - would need integration)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/announce", func(w http.ResponseWriter, r *http.Request) {
-		// Stub handler
-		w.WriteHeader(http.StatusOK)
-	})
-
-	server := &http.Server{
-		Addr:         ":34443",
-		Handler:      mux,
-		TLSConfig:    tlsConfig,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  120 * time.Second,
+	ln, err := tls.Listen("tcp", addr, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("tls listen on %s: %w", addr, err)
 	}
-
-	return server.ListenAndServeTLS(certFile, keyFile)
+	return ln, nil
 }
 
-// startAutoTLS starts with automatic Let's Encrypt certificates
-func (s *Server) startAutoTLS(domain string) error {
-	certManager := &autocert.Manager{
+// newAutoTLSListener creates a tls.Listener backed by Let's Encrypt.
+// It also starts a plain HTTP server on :80 to answer ACME challenges.
+func newAutoTLSListener(addr, domain, cacheDir string) (net.Listener, error) {
+	if cacheDir == "" {
+		cacheDir = "/var/lib/ocelot/certs"
+	}
+	mgr := &autocert.Manager{
 		Prompt:      autocert.AcceptTOS,
 		HostPolicy:  autocert.HostWhitelist(domain),
-		Cache:       autocert.DirCache("/var/lib/ocelot/certs"),
-		RenewBefore: 30 * 24 * time.Hour, // Renew 30 days before expiry
+		Cache:       autocert.DirCache(cacheDir),
+		RenewBefore: 30 * 24 * time.Hour,
 	}
 
-	tlsConfig := certManager.TLSConfig()
-	tlsConfig.MinVersion = tls.VersionTLS13
-
-	// Start HTTP redirect server for ACME challenges
+	// ACME HTTP-01 challenge responder.
 	go func() {
-		http.ListenAndServe(":80", certManager.HTTPHandler(nil))
+		srv := &http.Server{
+			Addr:         ":80",
+			Handler:      mgr.HTTPHandler(nil),
+			ReadTimeout:  5 * time.Second,
+			WriteTimeout: 5 * time.Second,
+		}
+		_ = srv.ListenAndServe()
 	}()
 
-	// Create HTTP handler (stub - would need integration)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/announce", func(w http.ResponseWriter, r *http.Request) {
-		// Stub handler
-		w.WriteHeader(http.StatusOK)
-	})
-
-	server := &http.Server{
-		Addr:         ":443",
-		Handler:      mux,
-		TLSConfig:    tlsConfig,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  120 * time.Second,
+	cfg := mgr.TLSConfig()
+	cfg.MinVersion = tls.VersionTLS13
+	ln, err := tls.Listen("tcp", addr, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("auto-tls listen on %s: %w", addr, err)
 	}
-
-	return server.ListenAndServeTLS("", "")
+	return ln, nil
 }
 
-// RedirectHTTPToHTTPS returns middleware to redirect HTTP to HTTPS
+// RedirectHTTPToHTTPS returns an http.HandlerFunc that issues a 301 redirect
+// to the same path over HTTPS.
 func RedirectHTTPToHTTPS() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		target := "https://" + r.Host + r.URL.Path

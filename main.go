@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -83,6 +84,14 @@ func main() {
 			torrents.Size(), users.Size())
 	}
 
+	// ── Peer snapshot [AI-05] — restore swarm state from previous run ─────────
+	snapshotPath := filepath.Join(fileCfg.DBDir, "swarm.snap")
+	if err := tracker.LoadSnapshot(snapshotPath, torrents); err != nil {
+		log.Printf("warning: could not load peer snapshot: %v", err)
+	} else {
+		log.Printf("peer snapshot loaded from %s", snapshotPath)
+	}
+
 	// ── Site communication ────────────────────────────────────────────────────
 	var siteComm tracker.SiteCommInterface
 	if fileCfg.GazelleURL != "" {
@@ -95,18 +104,19 @@ func main() {
 
 	// ── Worker ────────────────────────────────────────────────────────────────
 	worker := &tracker.Worker{
-		Config:       config,
-		DB:           db, // [A+D] buffered + circuit-breaker protected
-		SiteComm:     siteComm,
-		Torrents:     torrents,
-		Users:        users,
-		Whitelist:    whitelist,
-		Stats:        stats,
-		RateLimiter:  rateLimiter,
-		CircuitBreak: breaker,
-		AuditLog:     auditLog,
-		Metrics:      metrics,
-		Detector:     tracker.NewAnomalyDetector(), // [F]
+		Config:         config,
+		DB:             db, // [A+D] buffered + circuit-breaker protected
+		SiteComm:       siteComm,
+		Torrents:       torrents,
+		Users:          users,
+		Whitelist:      whitelist,
+		Stats:          stats,
+		RateLimiter:    rateLimiter,
+		CircuitBreak:   breaker,
+		AuditLog:       auditLog,
+		Metrics:        metrics,
+		Detector:       tracker.NewAnomalyDetector(),  // [F] behaviour anomaly
+		ClientDetector: tracker.NewClientDetector(),   // [ML-04] client anomaly
 	}
 
 	// [B] Reaper + [E] RateLimiter initialised inside Worker.Start().
@@ -154,13 +164,24 @@ func main() {
 		}
 	}()
 
-	// ── Server ────────────────────────────────────────────────────────────────
+	// ── Server [HI-05] — TLS selection ───────────────────────────────────────
 	server := tracker.NewServer(config, worker)
 
 	go func() {
 		log.Printf("tracker listening on %s", config.ListenAddr)
-		if err := server.ListenAndServe(); err != nil {
-			log.Printf("server: %v", err)
+		var serveErr error
+		switch {
+		case config.TLS.AutoTLS:
+			log.Printf("TLS: auto via Let's Encrypt (domain=%s cache=%s)", config.TLS.Domain, config.TLS.CacheDir)
+			serveErr = server.ListenAndServeAutoTLS(config.TLS.Domain, config.TLS.CacheDir)
+		case config.TLS.CertFile != "":
+			log.Printf("TLS: manual cert %s / key %s", config.TLS.CertFile, config.TLS.KeyFile)
+			serveErr = server.ListenAndServeTLS(config.TLS.CertFile, config.TLS.KeyFile)
+		default:
+			serveErr = server.ListenAndServe()
+		}
+		if serveErr != nil {
+			log.Printf("server: %v", serveErr)
 		}
 	}()
 
@@ -177,6 +198,14 @@ func main() {
 	}
 	sched.Stop()
 	worker.Stop() // stops reaper + flushes buffered DB writes
+
+	// [AI-05] persist swarm state for fast restart
+	if err := tracker.SaveSnapshot(snapshotPath, torrents); err != nil {
+		log.Printf("warning: could not save peer snapshot: %v", err)
+	} else {
+		log.Printf("peer snapshot saved to %s", snapshotPath)
+	}
+
 	log.Println("shutdown complete")
 }
 

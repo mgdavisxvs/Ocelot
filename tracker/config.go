@@ -37,6 +37,12 @@ type FileConfig struct {
 	RateLimitBurst int
 	// Async write queue capacity for BufferedDB (0 = default 4096)
 	BatchBufferCap int
+	// TLS — leave CertFile empty to disable TLS.
+	TLSCertFile string
+	TLSKeyFile  string
+	TLSAutoTLS  bool
+	TLSDomain   string
+	TLSCacheDir string
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -149,6 +155,16 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.RateLimitBurst = parseIntVal(val, cfg.RateLimitBurst)
 		case "batch_buffer_cap":
 			cfg.BatchBufferCap = parseIntVal(val, cfg.BatchBufferCap)
+		case "tls_cert_file":
+			cfg.TLSCertFile = val
+		case "tls_key_file":
+			cfg.TLSKeyFile = val
+		case "tls_auto":
+			cfg.TLSAutoTLS = val == "true"
+		case "tls_domain":
+			cfg.TLSDomain = val
+		case "tls_cache_dir":
+			cfg.TLSCacheDir = val
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -177,6 +193,13 @@ func (fc *FileConfig) ToTrackerConfig() *Config {
 		RateLimitRPS:      fc.RateLimitRPS,
 		RateLimitBurst:    fc.RateLimitBurst,
 		BatchBufferCap:    fc.BatchBufferCap,
+		TLS: TLSConfig{
+			CertFile: fc.TLSCertFile,
+			KeyFile:  fc.TLSKeyFile,
+			AutoTLS:  fc.TLSAutoTLS,
+			Domain:   fc.TLSDomain,
+			CacheDir: fc.TLSCacheDir,
+		},
 	}
 }
 

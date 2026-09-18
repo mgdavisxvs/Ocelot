@@ -207,6 +207,10 @@ func (b *BufferedDB) RemoveWhitelistEntry(prefix string) error {
 	return b.syncWrite(func() error { return b.inner.RemoveWhitelistEntry(prefix) })
 }
 
+func (b *BufferedDB) DeleteToken(userID UserID, torrentID TorrentID) error {
+	return b.syncWrite(func() error { return b.inner.DeleteToken(userID, torrentID) })
+}
+
 // ── DatabaseInterface: reads (always pass-through) ───────────────────────────
 
 func (b *BufferedDB) LoadTorrents() ([]torrentLoadRow, error) { return b.inner.LoadTorrents() }
