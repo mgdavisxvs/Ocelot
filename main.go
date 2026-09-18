@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -194,8 +195,29 @@ func main() {
 		}
 	}()
 
-	// ── Server [HI-05] — TLS selection ───────────────────────────────────────
+	// ── Domain adapters ───────────────────────────────────────────────────────
+	// Load vocab JSON files from a domains/ subdirectory (relative to CWD).
+	// Adapters with action names that collide with the BT fast-paths are skipped
+	// to prevent accidentally shadowing announce/scrape.
 	server := tracker.NewServer(config, worker)
+
+	btBuiltins := map[string]bool{
+		"announce": true, "scrape": true, "update": true,
+		"stats": true, "torrents": true, "peers": true,
+		"whitelist": true, "report": true,
+	}
+	if vocabConfigs, err := tracker.LoadAllVocabConfigs("domains"); err != nil {
+		log.Printf("domain adapters: %v (skip)", err)
+	} else {
+		for _, vc := range vocabConfigs {
+			if btBuiltins[vc.Actions.Event] || btBuiltins[vc.Actions.Query] {
+				continue
+			}
+			server.RegisterAdapter(tracker.NewConfiguredAdapter(vc, whitelist, server))
+			log.Printf("domain adapter: %s (event=%s query=%s fmt=%s)",
+				vc.Domain, vc.Actions.Event, vc.Actions.Query, vc.WireFormat.Format)
+		}
+	}
 
 	go func() {
 		log.Printf("tracker listening on %s", config.ListenAddr)
@@ -206,6 +228,19 @@ func main() {
 			serveErr = server.ListenAndServeAutoTLS(config.TLS.Domain, config.TLS.CacheDir)
 		case config.TLS.CertFile != "":
 			log.Printf("TLS: manual cert %s / key %s", config.TLS.CertFile, config.TLS.KeyFile)
+			// Start an HTTP-to-HTTPS redirect on :80 alongside the TLS listener.
+			go func() {
+				log.Println("TLS: HTTP→HTTPS redirect on :80")
+				redirectSrv := &http.Server{
+					Addr:         ":80",
+					Handler:      tracker.RedirectHTTPToHTTPS(),
+					ReadTimeout:  5 * time.Second,
+					WriteTimeout: 5 * time.Second,
+				}
+				if err := redirectSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					log.Printf("TLS redirect server: %v", err)
+				}
+			}()
 			serveErr = server.ListenAndServeTLS(config.TLS.CertFile, config.TLS.KeyFile)
 		default:
 			serveErr = server.ListenAndServe()

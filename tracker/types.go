@@ -262,6 +262,22 @@ func (ul *UserList) Reset() {
 	ul.users = make(map[string]*User)
 }
 
+// SetBanned marks a user as banned (banned=true) or reinstates them (banned=false).
+// A banned user has CanLeech cleared and Deleted set; both are reversed on unban.
+// The user is looked up by numeric ID — O(n) scan, acceptable for low-frequency
+// admin operations.
+func (ul *UserList) SetBanned(id UserID, banned bool) {
+	ul.mu.RLock()
+	defer ul.mu.RUnlock()
+	for _, u := range ul.users {
+		if u.ID == id {
+			u.Deleted.Store(banned)
+			u.CanLeech.Store(!banned)
+			return
+		}
+	}
+}
+
 // Stats tracks global tracker statistics using atomics — no mutex required.
 type Stats struct {
 	OpenConnections   atomic.Uint32

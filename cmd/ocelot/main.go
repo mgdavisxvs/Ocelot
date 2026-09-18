@@ -89,19 +89,24 @@ func main() {
 		log.Println("No gazelle_url configured; token expiry callbacks disabled")
 	}
 
+	// ── Anomaly detection ─────────────────────────────────────────────────────
+	anomalyDetector, _ := tracker.NewAnomalyDetectorPair()
+
 	// ── Worker ────────────────────────────────────────────────────────────────
 	worker := &tracker.Worker{
-		Config:       config,
-		DB:           db,
-		SiteComm:     siteComm,
-		Torrents:     torrents,
-		Users:        users,
-		Whitelist:    whitelist,
-		Stats:        stats,
-		RateLimiter:  rateLimiter,
-		CircuitBreak: circuitBreaker,
-		AuditLog:     auditLog,
-		Metrics:      metrics,
+		Config:         config,
+		DB:             db,
+		SiteComm:       siteComm,
+		Torrents:       torrents,
+		Users:          users,
+		Whitelist:      whitelist,
+		Stats:          stats,
+		RateLimiter:    rateLimiter,
+		CircuitBreak:   circuitBreaker,
+		AuditLog:       auditLog,
+		Metrics:        metrics,
+		Detector:       anomalyDetector,
+		ClientDetector: tracker.NewClientDetector(),
 	}
 
 	// ── Background subsystems ─────────────────────────────────────────────────
@@ -174,10 +179,25 @@ func main() {
 	shutdownCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// ── Peer snapshot — restore swarm state ──────────────────────────────────
+	snapshotPath := fc.DBDir + "/swarm.snap"
+	if err := tracker.LoadSnapshot(snapshotPath, torrents); err != nil {
+		log.Printf("Warning: peer snapshot load failed: %v", err)
+	}
+
 	go func() {
 		log.Printf("Listening on %s", config.ListenAddr)
-		if err := server.ListenAndServe(); err != nil {
-			log.Printf("Server error: %v", err)
+		var serveErr error
+		switch {
+		case config.TLS.AutoTLS:
+			serveErr = server.ListenAndServeAutoTLS(config.TLS.Domain, config.TLS.CacheDir)
+		case config.TLS.CertFile != "":
+			serveErr = server.ListenAndServeTLS(config.TLS.CertFile, config.TLS.KeyFile)
+		default:
+			serveErr = server.ListenAndServe()
+		}
+		if serveErr != nil {
+			log.Printf("Server error: %v", serveErr)
 		}
 	}()
 
@@ -186,5 +206,10 @@ func main() {
 	if err := server.Shutdown(); err != nil {
 		log.Printf("Shutdown error: %v", err)
 	}
+
+	if err := tracker.SaveSnapshot(snapshotPath, torrents); err != nil {
+		log.Printf("Warning: peer snapshot save failed: %v", err)
+	}
+
 	log.Println("Shutdown complete")
 }

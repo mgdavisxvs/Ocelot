@@ -282,6 +282,12 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 		}
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
+	case "report":
+		if passkey == s.config.ReportPassword {
+			return s.handleReport(req, httpClose), httpClose
+		}
+		return s.errorResponse("Authentication failure", httpClose), httpClose
+
 	default:
 		// Try registered domain adapters before giving up.
 		s.adaptersMu.RLock()
@@ -368,14 +374,22 @@ func (s *Server) handleDomainRequest(req *http.Request, passkey string, clientIP
 }
 
 func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.IP, httpClose bool) []byte {
+	_, span := TraceAnnounce(req.Context(),
+		req.URL.Query().Get("info_hash"),
+		req.URL.Query().Get("peer_id"),
+	)
+	defer span.End()
+
 	user, ok := s.worker.Users.Get(passkey)
 	if !ok {
+		AddSpanError(req.Context(), ErrInvalidPasskey)
 		return s.errorResponse("Passkey not found", httpClose)
 	}
 
 	params := req.URL.Query()
 	announceReq, err := ParseAnnounceParams(params, clientIP)
 	if err != nil {
+		AddSpanError(req.Context(), err)
 		return s.errorResponse(err.Error(), httpClose)
 	}
 
@@ -392,6 +406,7 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 	userAgent := req.Header.Get("User-Agent")
 	announceResp, err := s.worker.Announce(announceReq, user, clientIP, userAgent)
 	if err != nil {
+		AddSpanError(req.Context(), err)
 		return s.errorResponse(err.Error(), httpClose)
 	}
 
@@ -399,12 +414,16 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 }
 
 func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool) []byte {
+	infoHashes := req.URL.Query()["info_hash"]
+	_, span := TraceScrape(req.Context(), infoHashes)
+	defer span.End()
+
 	_, ok := s.worker.Users.Get(passkey)
 	if !ok {
+		AddSpanError(req.Context(), ErrInvalidPasskey)
 		return s.errorResponse("Passkey not found", httpClose)
 	}
 
-	infoHashes := req.URL.Query()["info_hash"]
 	var b strings.Builder
 	b.WriteString("d5:filesd")
 
@@ -473,6 +492,43 @@ func (s *Server) handleWhitelistAPI(httpClose bool) []byte {
 		return s.errorResponse(err.Error(), httpClose)
 	}
 	return s.jsonResponse(jsonData, httpClose)
+}
+
+// handleReport processes peer-ban and anomaly-report callbacks from the site.
+// The calling site POSTs ?action=<ban|unban>&user_id=<id>&score=<float>.
+// A "ban" report bans the user in the in-memory Users list and notifies the
+// SiteComm layer. An "unban" report reverses that.
+func (s *Server) handleReport(req *http.Request, httpClose bool) []byte {
+	q := req.URL.Query()
+	action := q.Get("action")
+	userIDStr := q.Get("user_id")
+	scoreStr := q.Get("score")
+
+	if userIDStr == "" {
+		return s.errorResponse("missing user_id", httpClose)
+	}
+	uid, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		return s.errorResponse("invalid user_id", httpClose)
+	}
+
+	switch action {
+	case "ban":
+		s.worker.Users.SetBanned(UserID(uid), true)
+		if scoreStr != "" {
+			if score, err := strconv.ParseFloat(scoreStr, 64); err == nil {
+				_ = s.worker.SiteComm.ReportAnomaly(uid, score)
+			}
+		}
+		_ = s.worker.SiteComm.BanUser(uid)
+	case "unban":
+		s.worker.Users.SetBanned(UserID(uid), false)
+		_ = s.worker.SiteComm.UnbanUser(uid)
+	default:
+		return s.errorResponse("unknown action: expected ban or unban", httpClose)
+	}
+
+	return s.jsonResponse([]byte(`{"ok":true}`), httpClose)
 }
 
 // ── Response helpers ──────────────────────────────────────────────────────────
