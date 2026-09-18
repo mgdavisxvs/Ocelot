@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // AnnounceRequest represents a parsed BitTorrent announce request.
@@ -316,6 +318,11 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 		torrent.Completed++
 		torrent.mu.Unlock()
 
+		AddSpanEvent(ctx, "snatch",
+			attribute.String("torrent_id", fmt.Sprintf("%d", torrent.ID)),
+			attribute.String("user_id", fmt.Sprintf("%d", user.ID)),
+		)
+
 		if !w.Config.Readonly {
 			ipStr := ""
 			if !user.ProtectIP.Load() {
@@ -337,6 +344,10 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 		}
 
 		if expireToken && !w.Config.Readonly {
+			AddSpanEvent(ctx, "token_expired",
+				attribute.String("torrent_id", fmt.Sprintf("%d", torrent.ID)),
+				attribute.String("user_id", fmt.Sprintf("%d", user.ID)),
+			)
 			w.SiteComm.ExpireToken(torrent.ID, user.ID)
 			torrent.mu.Lock()
 			delete(torrent.TokenedUsers, user.ID)

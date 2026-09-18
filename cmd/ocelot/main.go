@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -96,8 +97,17 @@ func main() {
 		log.Println("No gazelle_url configured; token expiry callbacks disabled")
 	}
 
-	// ── Anomaly detection ─────────────────────────────────────────────────────
-	anomalyDetector, _ := tracker.NewAnomalyDetectorPair()
+	// ── Anomaly detection + adaptive threshold poller [ML-01] ────────────────
+	markovCtx, markovCancel := context.WithCancel(context.Background())
+	anomalyDetector, rawDetector := tracker.NewAnomalyDetectorPair()
+
+	if config.MarkovAPIURL != "" {
+		markovClient := tracker.NewMarkovClient(config.MarkovAPIURL)
+		log.Printf("Markov API client configured: %s", config.MarkovAPIURL)
+		tracker.AdaptiveThresholdPoller(markovCtx, markovClient, rawDetector,
+			config.FreeleechPollSec)
+		log.Println("adaptive threshold poller started")
+	}
 
 	// ── Worker ────────────────────────────────────────────────────────────────
 	worker := &tracker.Worker{
@@ -214,6 +224,7 @@ func main() {
 
 	<-shutdownCh
 	log.Println("Shutdown signal received — draining connections...")
+	markovCancel()
 	if err := server.Shutdown(); err != nil {
 		log.Printf("Shutdown error: %v", err)
 	}
