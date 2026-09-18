@@ -309,6 +309,12 @@ func (b *BatchWriterDB) Close() error {
 	return b.inner.Close()
 }
 
+// QueueDepth returns the current pending-write queue depth, matching the
+// same method name on BufferedDB so callers can use a type switch.
+func (b *BatchWriterDB) QueueDepth() int {
+	return b.bw.Size()
+}
+
 // Stop gracefully stops the batch writer
 func (bw *BatchWriter) Stop() {
 	close(bw.stopChan)

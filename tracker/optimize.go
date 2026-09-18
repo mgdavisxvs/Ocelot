@@ -56,14 +56,26 @@ func ReservoirSample(peers []*Peer, k int) []*Peer {
 	return sample
 }
 
-// SelectPeersOptimized uses Tao/Erdős algorithms for fair peer distribution
-// This replaces the basic round-robin in announce.go
-func SelectPeersOptimized(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool) []byte {
+// appendCompact appends a peer's IPPort bytes to the matching (ipv4, ipv6) slices.
+func appendCompact(p4, p6 []byte, peer *Peer) ([]byte, []byte) {
+	switch len(peer.IPPort) {
+	case 6:
+		return append(p4, peer.IPPort...), p6
+	case 18:
+		return p4, append(p6, peer.IPPort...)
+	}
+	return p4, p6
+}
+
+// SelectPeersOptimized uses Tao/Erdős algorithms for fair peer distribution.
+// Returns (peers4, peers6): IPv4 compact (6 B/peer) and IPv6 compact (18 B/peer, BEP 7).
+func SelectPeersOptimized(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool) ([]byte, []byte) {
 	if numwant <= 0 {
-		return []byte{}
+		return []byte{}, []byte{}
 	}
 
-	peers := make([]byte, 0, numwant*6)
+	peers4 := make([]byte, 0, numwant*6)
+	peers6 := make([]byte, 0)
 	want := int(numwant)
 
 	torrent.mu.RLock()
@@ -80,9 +92,7 @@ func SelectPeersOptimized(torrent *Torrent, self *Peer, userID UserID, numwant i
 		FisherYatesShuffle(selectedSeeders)
 
 		for _, peer := range selectedSeeders {
-			if len(peer.IPPort) == 6 {
-				peers = append(peers, peer.IPPort...)
-			}
+			peers4, peers6 = appendCompact(peers4, peers6, peer)
 		}
 
 		// Fill remaining with leechers if needed
@@ -93,9 +103,7 @@ func SelectPeersOptimized(torrent *Torrent, self *Peer, userID UserID, numwant i
 			FisherYatesShuffle(selectedLeechers)
 
 			for _, peer := range selectedLeechers {
-				if len(peer.IPPort) == 6 {
-					peers = append(peers, peer.IPPort...)
-				}
+				peers4, peers6 = appendCompact(peers4, peers6, peer)
 			}
 		}
 	} else {
@@ -105,13 +113,11 @@ func SelectPeersOptimized(torrent *Torrent, self *Peer, userID UserID, numwant i
 		FisherYatesShuffle(selectedLeechers)
 
 		for _, peer := range selectedLeechers {
-			if len(peer.IPPort) == 6 {
-				peers = append(peers, peer.IPPort...)
-			}
+			peers4, peers6 = appendCompact(peers4, peers6, peer)
 		}
 	}
 
-	return peers
+	return peers4, peers6
 }
 
 // collectVisiblePeers extracts visible peers (excluding self) into a slice
@@ -308,7 +314,7 @@ func (wt *WhitelistTrie) IsAllowed(peerID []byte) bool {
 // falling back to SelectPeersOptimized otherwise.  requesterIP is the IP of the
 // announcing peer and is used to favour topologically close peers.
 func SelectPeersScored(torrent *Torrent, self *Peer, userID UserID, numwant int32,
-	isLeecher bool, scorer *ml.PeerScorer, requesterIP net.IP) []byte {
+	isLeecher bool, scorer *ml.PeerScorer, requesterIP net.IP) ([]byte, []byte) {
 	if scorer == nil || requesterIP == nil {
 		return SelectPeersOptimized(torrent, self, userID, numwant, isLeecher)
 	}
@@ -325,7 +331,7 @@ func SelectPeersScored(torrent *Torrent, self *Peer, userID UserID, numwant int3
 	torrent.mu.RUnlock()
 
 	if len(raw) == 0 {
-		return []byte{}
+		return []byte{}, []byte{}
 	}
 
 	// Build ml.PeerInfo slice keeping a parallel index into raw so we can
@@ -371,13 +377,12 @@ func SelectPeersScored(torrent *Torrent, self *Peer, userID UserID, numwant int3
 	// Sort descending by score (already ordered, but re-sort for safety).
 	sort.Slice(out, func(i, j int) bool { return out[i].score > out[j].score })
 
-	buf := make([]byte, 0, len(out)*6)
+	buf4 := make([]byte, 0, len(out)*6)
+	buf6 := make([]byte, 0)
 	for _, s := range out {
-		if len(s.peer.IPPort) == 6 {
-			buf = append(buf, s.peer.IPPort...)
-		}
+		buf4, buf6 = appendCompact(buf4, buf6, s.peer)
 	}
-	return buf
+	return buf4, buf6
 }
 
 // intToStr converts a non-negative int to its decimal string representation.

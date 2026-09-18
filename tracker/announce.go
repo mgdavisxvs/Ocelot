@@ -33,8 +33,18 @@ type AnnounceResponse struct {
 	MinInterval int32
 	Complete    int32  // number of seeders
 	Incomplete  int32  // number of leechers
-	Peers       []byte // compact format: 6 bytes per peer
+	Peers       []byte // IPv4 compact format: 6 bytes per peer
+	Peers6      []byte // IPv6 compact format: 18 bytes per peer (BEP 7)
 	Warning     string
+}
+
+// buildCompactIPPort returns the 6-byte IPv4 or 18-byte IPv6 compact peer
+// encoding. Returns nil when the address cannot be represented.
+func buildCompactIPPort(ip net.IP, port uint16) []byte {
+	if compact := CompactIPPort(ip, port); compact != nil {
+		return compact // IPv4
+	}
+	return CompactIPv6Port(ip, port) // IPv6 (may also be nil on bad input)
 }
 
 // Announce handles a BitTorrent announce request.
@@ -231,11 +241,11 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 		peer.InvalidIP = true
 		peer.Port = req.Port
 		peer.IP = ip
-		peer.IPPort = CompactIPPort(ip, req.Port)
+		peer.IPPort = buildCompactIPPort(ip, req.Port)
 	} else if inserted || peer.Port != req.Port || !peer.IP.Equal(ip) {
 		peer.Port = req.Port
 		peer.IP = ip
-		peer.IPPort = CompactIPPort(ip, req.Port)
+		peer.IPPort = buildCompactIPPort(ip, req.Port)
 		if peer.IPPort == nil {
 			invalidIP = true
 			peer.InvalidIP = true
@@ -339,7 +349,7 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 	}
 
 	_, peerSelSpan := TracePeerSelection(ctx, fmt.Sprintf("%d", torrent.ID), int(numwant))
-	peers := SelectPeersScored(torrent, peer, user.ID, numwant, req.Left > 0, w.PeerScorer, clientIP)
+	peers4, peers6 := SelectPeersScored(torrent, peer, user.ID, numwant, req.Left > 0, w.PeerScorer, clientIP)
 	peerSelSpan.End()
 
 	w.Stats.SuccAnnouncements.Add(1)
@@ -395,7 +405,8 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 		MinInterval: baseInterval,
 		Complete:    int32(seederCount),
 		Incomplete:  int32(leecherCount),
-		Peers:       peers,
+		Peers:       peers4,
+		Peers6:      peers6,
 	}
 	if invalidIP {
 		response.Warning = "Illegal character found in IP address"
@@ -412,6 +423,7 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 		}
 		w.Metrics.RecordAnnounce(event, "success", time.Since(announceStart))
 		w.Metrics.UpdatePeerCounts(seederCount, leecherCount)
+		w.Metrics.UpdateActivePeers(strconv.FormatUint(uint64(torrent.ID), 10), seederCount+leecherCount)
 	}
 	_ = w.SiteComm.UpdateStats(int64(seederCount), int64(leecherCount), int64(torrent.Completed))
 

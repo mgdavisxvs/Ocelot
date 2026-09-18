@@ -246,6 +246,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool) {
+	start := time.Now()
+	httpStatus := 200
+	defer func() {
+		if s.worker.Metrics != nil {
+			s.worker.Metrics.RecordHTTPRequest(req.Method, req.URL.Path, httpStatus, time.Since(start))
+		}
+	}()
+
 	httpClose := true
 	if s.config.KeepaliveTimeout > 0 {
 		if req.ProtoMajor == 1 && req.ProtoMinor == 0 {
@@ -265,6 +273,10 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 			ipStr = req.RemoteAddr
 		}
 		if !s.worker.RateLimiter.Allow(ipStr) {
+			httpStatus = 429
+			if s.worker.Metrics != nil {
+				s.worker.Metrics.RecordRateLimitExceeded(ipStr)
+			}
 			return s.rateLimitResponse(httpClose), httpClose
 		}
 	}
@@ -626,6 +638,13 @@ func (s *Server) bencodedAnnounceResponse(resp *AnnounceResponse, httpClose bool
 		b.Write(resp.Peers)
 	}
 
+	if len(resp.Peers6) > 0 {
+		b.WriteString("6:peers6")
+		b.WriteString(strconv.Itoa(len(resp.Peers6)))
+		b.WriteString(":")
+		b.Write(resp.Peers6)
+	}
+
 	if resp.Warning != "" {
 		b.WriteString("15:warning message")
 		b.WriteString(strconv.Itoa(len(resp.Warning)))
@@ -899,8 +918,11 @@ func (s *Server) buildStatsJSON() []byte {
 	}
 
 	dbQueue := 0
-	if bdb, ok := s.worker.DB.(*BufferedDB); ok {
-		dbQueue = bdb.QueueDepth()
+	switch db := s.worker.DB.(type) {
+	case *BufferedDB:
+		dbQueue = db.QueueDepth()
+	case *BatchWriterDB:
+		dbQueue = db.QueueDepth()
 	}
 
 	swarmHealth := s.worker.SwarmHealthSummary()

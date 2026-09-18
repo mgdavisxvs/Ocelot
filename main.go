@@ -298,8 +298,11 @@ func printStats(stats *tracker.Stats, worker *tracker.Worker) {
 	for range ticker.C {
 		uptime := time.Since(stats.StartTime).Round(time.Second)
 		qDepth := 0
-		if bdb, ok := worker.DB.(*tracker.BufferedDB); ok {
-			qDepth = bdb.QueueDepth()
+		switch db := worker.DB.(type) {
+		case *tracker.BufferedDB:
+			qDepth = db.QueueDepth()
+		case *tracker.BatchWriterDB:
+			qDepth = db.QueueDepth()
 		}
 		swarmHealth := worker.SwarmHealthSummary()
 		healthStr := "n/a"

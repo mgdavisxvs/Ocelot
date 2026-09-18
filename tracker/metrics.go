@@ -184,6 +184,16 @@ func (m *MetricsRecorder) UpdateWorkerPool(active, capacity int) {
 	workerPoolCapacity.Set(float64(capacity))
 }
 
+// RecordRateLimitExceeded increments the rate-limit counter for an IP.
+func (m *MetricsRecorder) RecordRateLimitExceeded(ip string) {
+	rateLimitExceeded.WithLabelValues(ip).Inc()
+}
+
+// UpdateActivePeers sets the active peer gauge for a specific torrent.
+func (m *MetricsRecorder) UpdateActivePeers(torrentID string, count int) {
+	activePeers.WithLabelValues(torrentID).Set(float64(count))
+}
+
 // StartMetricsServer starts the Prometheus metrics HTTP server
 func StartMetricsServer(addr string) error {
 	logger := GetDefaultLogger()
