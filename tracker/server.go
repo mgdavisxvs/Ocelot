@@ -48,6 +48,7 @@ type Config struct {
 	ScheduleInterval  int
 	ReapPeersInterval int
 	GazelleURL        string
+	MarkovAPIURL      string // Markov engine HTTP API base URL (empty = disabled)
 	MetricsPort       string
 	// RateLimiter config — 0 disables rate limiting.
 	RateLimitRPS   int
@@ -56,6 +57,9 @@ type Config struct {
 	BatchBufferCap int
 	// TLS configuration — CertFile empty means plaintext.
 	TLS TLSConfig
+	// FreeleechPollSec is how often the freeleech poller fires (0 = disabled).
+	FreeleechPollSec     int
+	FreeleechNotifyHours int
 }
 
 func NewServer(config *Config, worker *Worker) *Server {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -102,6 +103,35 @@ func main() {
 		log.Println("no gazelle_url configured; token expiry callbacks disabled")
 	}
 
+	// ── Markov engine integration [HI-01/HI-06/ML-01] ────────────────────────
+	// The Markov engine runs as a separate process (ocelot-markov).
+	// When markov_api_url is configured the tracker communicates with it via
+	// HTTP for freeleech candidate polling (HI-06) and adaptive anomaly
+	// threshold adjustment (ML-01).
+	markovCtx, markovCancel := context.WithCancel(context.Background())
+	_ = markovCancel // cancelled on shutdown
+
+	var markovClient *tracker.MarkovClient
+	anomalyDetector, rawDetector := tracker.NewAnomalyDetectorPair()
+
+	if config.MarkovAPIURL != "" {
+		markovClient = tracker.NewMarkovClient(config.MarkovAPIURL)
+		log.Printf("Markov API client configured: %s", config.MarkovAPIURL)
+
+		// [HI-06] freeleech candidate → NotifyFreeleech pipeline
+		if config.FreeleechPollSec > 0 {
+			tracker.FreeleechPoller(markovCtx, markovClient, siteComm,
+				config.FreeleechPollSec, config.FreeleechNotifyHours)
+			log.Printf("freeleech poller started (interval=%ds notify_hours=%d)",
+				config.FreeleechPollSec, config.FreeleechNotifyHours)
+		}
+
+		// [ML-01] adaptive anomaly thresholds driven by Markov population stats
+		tracker.AdaptiveThresholdPoller(markovCtx, markovClient, rawDetector,
+			config.FreeleechPollSec)
+		log.Println("adaptive threshold poller started")
+	}
+
 	// ── Worker ────────────────────────────────────────────────────────────────
 	worker := &tracker.Worker{
 		Config:         config,
@@ -115,7 +145,7 @@ func main() {
 		CircuitBreak:   breaker,
 		AuditLog:       auditLog,
 		Metrics:        metrics,
-		Detector:       tracker.NewAnomalyDetector(),  // [F] behaviour anomaly
+		Detector:       anomalyDetector,               // [F+ML-01] behaviour anomaly (adaptive)
 		ClientDetector: tracker.NewClientDetector(),   // [ML-04] client anomaly
 	}
 
@@ -192,6 +222,8 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 	log.Println("shutdown signal received — draining connections...")
+
+	markovCancel() // stop freeleech poller and adaptive threshold goroutines
 
 	if err := server.Shutdown(); err != nil {
 		log.Printf("server shutdown: %v", err)

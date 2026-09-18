@@ -37,6 +37,14 @@ func NewAnomalyDetector() BehaviorDetector {
 	return &mlAnomalyAdapter{d: ml.NewAnomalyDetector()}
 }
 
+// NewAnomalyDetectorPair returns a BehaviorDetector and the underlying
+// *ml.AnomalyDetector so callers can call SetThresholds without the interface
+// hiding the method.
+func NewAnomalyDetectorPair() (BehaviorDetector, *ml.AnomalyDetector) {
+	d := ml.NewAnomalyDetector()
+	return &mlAnomalyAdapter{d: d}, d
+}
+
 func (a *mlAnomalyAdapter) Detect(peer *Peer, upSpeed, downSpeed, torrentSize int64) (bool, string) {
 	b := &ml.PeerBehavior{
 		Uploaded:      peer.Uploaded,

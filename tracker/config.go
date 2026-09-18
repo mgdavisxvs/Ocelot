@@ -30,8 +30,11 @@ type FileConfig struct {
 	ScheduleInterval  int
 	Readonly          bool
 	DBDir             string
-	GazelleURL        string // optional Gazelle callback endpoint
-	MetricsPort       string // Prometheus metrics listen address, e.g. ":9090"
+	GazelleURL           string // optional Gazelle callback endpoint
+	MarkovAPIURL         string // optional Markov engine HTTP API base URL, e.g. "http://127.0.0.1:9090"
+	FreeleechPollSec     int    // how often (seconds) to poll /freeleech; 0 = disabled
+	FreeleechNotifyHours int    // freeleech duration (hours) passed to NotifyFreeleech
+	MetricsPort          string // Prometheus metrics listen address, e.g. ":9090"
 	// Rate limiting (0 = disabled)
 	RateLimitRPS   int
 	RateLimitBurst int
@@ -65,8 +68,10 @@ func DefaultFileConfig() *FileConfig {
 		ReapPeersInterval: 1800,
 		ScheduleInterval:  300, // 5-minute WAL checkpoint interval
 		Readonly:          false,
-		DBDir:             "./data/db",
-		MetricsPort:       ":9090",
+		DBDir:                "./data/db",
+		FreeleechPollSec:     300,
+		FreeleechNotifyHours: 24,
+		MetricsPort:          ":9090",
 		RateLimitRPS:      100,
 		RateLimitBurst:    200,
 		BatchBufferCap:    4096,
@@ -147,6 +152,12 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.DBDir = val
 		case "gazelle_url":
 			cfg.GazelleURL = val
+		case "markov_api_url":
+			cfg.MarkovAPIURL = val
+		case "freeleech_poll_sec":
+			cfg.FreeleechPollSec = parseIntVal(val, cfg.FreeleechPollSec)
+		case "freeleech_notify_hours":
+			cfg.FreeleechNotifyHours = parseIntVal(val, cfg.FreeleechNotifyHours)
 		case "metrics_port":
 			cfg.MetricsPort = val
 		case "rate_limit_rps":
@@ -177,22 +188,26 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 func (fc *FileConfig) ToTrackerConfig() *Config {
 	readTimeout := time.Duration(fc.ConnectionTimeout) * time.Second
 	return &Config{
-		ListenAddr:        fmt.Sprintf(":%d", fc.ListenPort),
-		AnnounceInterval:  fc.AnnounceInterval,
-		PeersTimeout:      fc.PeersTimeout,
-		MaxMiddlemen:      fc.MaxMiddlemen,
-		NumWantLimit:      fc.NumWantLimit,
-		KeepaliveTimeout:  time.Duration(fc.KeepaliveTimeout) * time.Second,
-		SitePassword:      fc.SitePassword,
-		ReportPassword:    fc.ReportPassword,
-		ReadTimeout:       readTimeout,
-		WriteTimeout:      readTimeout,
-		ScheduleInterval:  fc.ScheduleInterval,
-		ReapPeersInterval: fc.ReapPeersInterval,
-		MetricsPort:       fc.MetricsPort,
-		RateLimitRPS:      fc.RateLimitRPS,
-		RateLimitBurst:    fc.RateLimitBurst,
-		BatchBufferCap:    fc.BatchBufferCap,
+		ListenAddr:           fmt.Sprintf(":%d", fc.ListenPort),
+		AnnounceInterval:     fc.AnnounceInterval,
+		PeersTimeout:         fc.PeersTimeout,
+		MaxMiddlemen:         fc.MaxMiddlemen,
+		NumWantLimit:         fc.NumWantLimit,
+		KeepaliveTimeout:     time.Duration(fc.KeepaliveTimeout) * time.Second,
+		SitePassword:         fc.SitePassword,
+		ReportPassword:       fc.ReportPassword,
+		ReadTimeout:          readTimeout,
+		WriteTimeout:         readTimeout,
+		ScheduleInterval:     fc.ScheduleInterval,
+		ReapPeersInterval:    fc.ReapPeersInterval,
+		GazelleURL:           fc.GazelleURL,
+		MarkovAPIURL:         fc.MarkovAPIURL,
+		MetricsPort:          fc.MetricsPort,
+		RateLimitRPS:         fc.RateLimitRPS,
+		RateLimitBurst:       fc.RateLimitBurst,
+		BatchBufferCap:       fc.BatchBufferCap,
+		FreeleechPollSec:     fc.FreeleechPollSec,
+		FreeleechNotifyHours: fc.FreeleechNotifyHours,
 		TLS: TLSConfig{
 			CertFile: fc.TLSCertFile,
 			KeyFile:  fc.TLSKeyFile,
