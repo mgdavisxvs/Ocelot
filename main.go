@@ -26,6 +26,13 @@ func main() {
 	config := fileCfg.ToTrackerConfig()
 	log.Printf("config loaded from %s", cfgPath)
 
+	// ── Distributed tracing [M-1] ────────────────────────────────────────────
+	shutdownTracer := tracker.InitTracerProvider(config.OTelEndpoint)
+	defer shutdownTracer()
+	if config.OTelEndpoint != "" {
+		log.Printf("OTel tracing enabled: endpoint=%s", config.OTelEndpoint)
+	}
+
 	// ── Database ─────────────────────────────────────────────────────────────
 	rawDB, err := tracker.NewSQLiteShardManager(fileCfg.DBDir)
 	if err != nil {
@@ -135,6 +142,21 @@ func main() {
 		log.Println("adaptive threshold poller started")
 	}
 
+	// ── Redis backend [H-2] ──────────────────────────────────────────────────
+	var redisBackend *tracker.RedisBackend
+	if config.RedisAddr != "" {
+		var err error
+		redisBackend, err = tracker.NewRedisBackend(tracker.RedisConfig{
+			Addr:     config.RedisAddr,
+			PoolSize: 10,
+		})
+		if err != nil {
+			log.Printf("warning: redis unavailable (%v); running without Redis", err)
+		} else {
+			log.Printf("Redis backend connected: %s", config.RedisAddr)
+		}
+	}
+
 	// ── Worker ────────────────────────────────────────────────────────────────
 	worker := &tracker.Worker{
 		Config:         config,
@@ -154,6 +176,7 @@ func main() {
 		PeerScorer:     tracker.NewPeerScorer(),                                    // [ML-03] ML peer scoring
 		TorrentCache:   tracker.NewTorrentCache(5 * time.Minute),                  // L1 hot-torrent cache
 		UserCache:      tracker.NewUserCache(5 * time.Minute),                     // L1 passkey→user cache
+		Redis:          redisBackend,                                               // [H-2] optional Redis dual-write
 	}
 
 	// [B] Reaper + [E] RateLimiter initialised inside Worker.Start().

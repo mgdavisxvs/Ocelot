@@ -90,16 +90,6 @@ func (al *AuditLogger) Log(ctx context.Context, action, resourceType, resourceID
 	return nil
 }
 
-// LogSuccess logs a successful action
-func (al *AuditLogger) LogSuccess(ctx context.Context, action, resourceType, resourceID string) error {
-	return al.Log(ctx, action, resourceType, resourceID, true, nil)
-}
-
-// LogFailure logs a failed action
-func (al *AuditLogger) LogFailure(ctx context.Context, action, resourceType, resourceID string, err error) error {
-	return al.Log(ctx, action, resourceType, resourceID, false, err)
-}
-
 // Query retrieves audit logs with filters
 func (al *AuditLogger) Query(filters AuditFilters) ([]*AuditEntry, error) {
 	query := `SELECT id, timestamp, user_id, action, resource_type, resource_id,

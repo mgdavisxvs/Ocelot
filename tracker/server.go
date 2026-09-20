@@ -82,6 +82,15 @@ type Config struct {
 	AdminAPIPort string
 	// JWTSecret is the HMAC secret used to sign and validate admin JWT tokens.
 	JWTSecret []byte
+	// OTelEndpoint is the OTLP HTTP endpoint for distributed tracing.
+	// Empty disables tracing.
+	OTelEndpoint string
+	// MaxConnections is the maximum number of simultaneous TCP connections the
+	// listener will accept. 0 means unlimited.
+	MaxConnections int
+	// RedisAddr is an optional Redis server address for dual-write / caching.
+	// Empty disables Redis.
+	RedisAddr string
 }
 
 func NewServer(config *Config, worker *Worker) *Server {
@@ -141,8 +150,45 @@ func (s *Server) ListenAndServeAutoTLS(domain, cacheDir string) error {
 	return s.serve(ln)
 }
 
+// limitedListener wraps a net.Listener and enforces a maximum connection count
+// via a semaphore channel.  When at capacity, Accept blocks until a slot opens.
+type limitedListener struct {
+	net.Listener
+	sem chan struct{}
+}
+
+func newLimitedListener(ln net.Listener, max int) *limitedListener {
+	return &limitedListener{Listener: ln, sem: make(chan struct{}, max)}
+}
+
+func (l *limitedListener) Accept() (net.Conn, error) {
+	l.sem <- struct{}{}
+	c, err := l.Listener.Accept()
+	if err != nil {
+		<-l.sem
+		return nil, err
+	}
+	return &limitedConn{Conn: c, release: func() { <-l.sem }}, nil
+}
+
+// limitedConn releases the semaphore slot when the connection is closed.
+type limitedConn struct {
+	net.Conn
+	release  func()
+	releaseOnce sync.Once
+}
+
+func (c *limitedConn) Close() error {
+	err := c.Conn.Close()
+	c.releaseOnce.Do(c.release)
+	return err
+}
+
 // serve runs the accept loop on an already-created listener.
 func (s *Server) serve(ln net.Listener) error {
+	if s.config.MaxConnections > 0 {
+		ln = newLimitedListener(ln, s.config.MaxConnections)
+	}
 	s.listener = ln
 
 	fmt.Printf("Ocelot tracker listening on %s (%s netpoller)\n",
@@ -507,8 +553,13 @@ func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool)
 		torrent.mu.RUnlock()
 
 		b.WriteString(fmt.Sprintf("%d:%s", len(infoHash), infoHash))
-		b.WriteString(fmt.Sprintf("d8:completei%de10:incompletei%de10:downloadedi%dee",
+		b.WriteString(fmt.Sprintf("d8:completei%de10:incompletei%de10:downloadedi%de",
 			seeders, leechers, completed))
+		if s.worker.SwarmPredictor != nil {
+			hs := s.worker.SwarmPredictor.HealthScore(seeders, leechers)
+			b.WriteString(fmt.Sprintf("12:health_scorei%de", hs))
+		}
+		b.WriteString("e")
 	}
 	b.WriteString("ee")
 	return s.response(b.String(), httpClose, false)
@@ -585,13 +636,13 @@ func (s *Server) handleReport(req *http.Request, httpClose bool) []byte {
 		s.worker.Users.SetBanned(UserID(uid), true)
 		if scoreStr != "" {
 			if score, err := strconv.ParseFloat(scoreStr, 64); err == nil {
-				_ = s.worker.SiteComm.ReportAnomaly(uid, score)
+				s.worker.logSiteCommErr("report_anomaly", s.worker.SiteComm.ReportAnomaly(uid, score))
 			}
 		}
-		_ = s.worker.SiteComm.BanUser(uid)
+		s.worker.logSiteCommErr("ban_user", s.worker.SiteComm.BanUser(uid))
 	case "unban":
 		s.worker.Users.SetBanned(UserID(uid), false)
-		_ = s.worker.SiteComm.UnbanUser(uid)
+		s.worker.logSiteCommErr("unban_user", s.worker.SiteComm.UnbanUser(uid))
 	default:
 		return s.errorResponse("unknown action: expected ban or unban", httpClose)
 	}
@@ -882,6 +933,44 @@ func (s *Server) StartAdminAPIServer(db *sql.DB) {
 		json.NewEncoder(w).Encode(entries)
 	})
 
+	// GET /admin/ml/status — ML subsystem health and configuration snapshot
+	mux.HandleFunc("/admin/ml/status", func(w http.ResponseWriter, r *http.Request) {
+		type anomalyThresholds struct {
+			MaxUploadSpeed    float64 `json:"max_upload_speed"`
+			MaxAnnounceRate   int     `json:"max_announce_rate"`
+			MaxPortChanges    int     `json:"max_port_changes"`
+			MinDownloadRatio  float64 `json:"min_download_ratio"`
+			RapidReconnectSec int     `json:"rapid_reconnect_sec"`
+		}
+		type mlStatus struct {
+			AnomalyDetectorEnabled bool               `json:"anomaly_detector_enabled"`
+			AnomalyThresholds      *anomalyThresholds `json:"anomaly_thresholds,omitempty"`
+			ClientDetectorEnabled  bool               `json:"client_detector_enabled"`
+			SwarmPredictorEnabled  bool               `json:"swarm_predictor_enabled"`
+			PeerScorerEnabled      bool               `json:"peer_scorer_enabled"`
+			TotalAnomalies         uint64             `json:"total_anomalies"`
+		}
+		status := mlStatus{
+			AnomalyDetectorEnabled: s.worker.Detector != nil,
+			ClientDetectorEnabled:  s.worker.ClientDetector != nil,
+			SwarmPredictorEnabled:  s.worker.SwarmPredictor != nil,
+			PeerScorerEnabled:      s.worker.PeerScorer != nil,
+			TotalAnomalies:         s.worker.Stats.AnomalyDetections.Load(),
+		}
+		if s.worker.Detector != nil {
+			tc := s.worker.Detector.GetThresholds()
+			status.AnomalyThresholds = &anomalyThresholds{
+				MaxUploadSpeed:    tc.MaxUploadSpeed,
+				MaxAnnounceRate:   tc.MaxAnnounceRate,
+				MaxPortChanges:    tc.MaxPortChanges,
+				MinDownloadRatio:  tc.MinDownloadRatio,
+				RapidReconnectSec: tc.RapidReconnectSec,
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(status)
+	})
+
 	// POST /admin/circuit-breaker/reset — manual circuit-breaker reset
 	mux.HandleFunc("/admin/circuit-breaker/reset", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -938,7 +1027,7 @@ func (s *Server) buildStatsJSON() []byte {
 	// PredictCompletionTime: aggregate swarm-wide seeder/leecher counts and use
 	// a heuristic avg upload speed of 1 MB/s per seeder.
 	completionETA := int64(-1)
-	if shp, ok := s.worker.SwarmPredictor.(*ml.SwarmHealthPredictor); ok {
+	if s.worker.SwarmPredictor != nil {
 		var totalSeeders, totalLeechers int
 		s.worker.Torrents.ForEach(func(_ string, t *Torrent) bool {
 			totalSeeders += t.Seeders.Size()
@@ -946,7 +1035,7 @@ func (s *Server) buildStatsJSON() []byte {
 			return true
 		})
 		const avgUploadBytesPerSec = 1 << 20 // 1 MB/s heuristic per seeder
-		d := shp.PredictCompletionTime(totalSeeders, totalLeechers, avgUploadBytesPerSec, 700<<20)
+		d := s.worker.SwarmPredictor.PredictCompletionTime(totalSeeders, totalLeechers, avgUploadBytesPerSec, 700<<20)
 		if d.Seconds() < float64(1<<62) { // exclude math.MaxInt64 sentinel
 			completionETA = int64(d.Seconds())
 		}
@@ -1155,12 +1244,14 @@ type Worker struct {
 	PeerScorer       *ml.PeerScorer        // ML peer scoring; nil falls back to reservoir sampling
 	TorrentCache     *TorrentCache         // L1 cache for hot-torrent lookups; nil disables
 	UserCache        *UserCache            // L1 cache for passkey→user lookups; nil disables
+	Redis            *RedisBackend         // optional Redis dual-write backend; nil disables
 	reaper           *Reaper               // created by Start()
 }
 
 // SwarmHealthInterface is the seam for swarm health prediction.
 type SwarmHealthInterface interface {
 	HealthScore(seeders, leechers int) int
+	PredictCompletionTime(seeders, leechers int, avgUploadSpeed, torrentSize float64) time.Duration
 }
 
 // Start initialises subsystems that depend on Worker fields being populated:

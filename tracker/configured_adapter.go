@@ -77,10 +77,28 @@ func (a *ConfiguredAdapter) parseBencodeEvent(req *http.Request, opts ClientOpts
 		return nil, fmt.Errorf("invalid port")
 	}
 
-	produced := parseInt64(params.Get("uploaded"))
-	consumed := parseInt64(params.Get("downloaded"))
-	remaining := parseInt64(params.Get("left"))
-	corrupt := parseInt64(params.Get("corrupt"))
+	// Use vocab-defined query parameter names; fall back to BT defaults.
+	producedKey := "uploaded"
+	if v.Delta.Produced != "" {
+		producedKey = v.Delta.Produced
+	}
+	consumedKey := "downloaded"
+	if v.Delta.Consumed != "" {
+		consumedKey = v.Delta.Consumed
+	}
+	remainingKey := "left"
+	if v.Delta.Remaining != "" {
+		remainingKey = v.Delta.Remaining
+	}
+	corruptKey := "corrupt"
+	if v.Delta.Corrupt != "" {
+		corruptKey = v.Delta.Corrupt
+	}
+
+	produced := parseInt64(params.Get(producedKey))
+	consumed := parseInt64(params.Get(consumedKey))
+	remaining := parseInt64(params.Get(remainingKey))
+	corrupt := parseInt64(params.Get(corruptKey))
 
 	eventStr := params.Get("event")
 	eventType := v.EventTypeFromString(eventStr)
@@ -290,7 +308,6 @@ func EventToAnnounceRequest(e *Event, v *VocabularyConfig) *AnnounceRequest {
 	default:
 		eventStr = ""
 	}
-	_ = v // vocab reserved for future field mapping
 	return &AnnounceRequest{
 		InfoHash:   e.ResourceKey,
 		PeerID:     e.AgentID,

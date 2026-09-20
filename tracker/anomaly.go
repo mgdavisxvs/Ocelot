@@ -35,6 +35,8 @@ type BehaviorDetector interface {
 	// torrentSize is the total torrent size in bytes; 0 disables the
 	// impossible_download check.
 	Detect(peer *Peer, upSpeed, downSpeed, torrentSize int64) (bool, string)
+	// GetThresholds returns a snapshot of the current detection thresholds.
+	GetThresholds() ml.ThresholdConfig
 }
 
 // mlAnomalyAdapter wraps ml.AnomalyDetector to satisfy BehaviorDetector.
@@ -54,6 +56,10 @@ func NewAnomalyDetector() BehaviorDetector {
 func NewAnomalyDetectorPair() (BehaviorDetector, *ml.AnomalyDetector) {
 	d := ml.NewAnomalyDetector()
 	return &mlAnomalyAdapter{d: d}, d
+}
+
+func (a *mlAnomalyAdapter) GetThresholds() ml.ThresholdConfig {
+	return a.d.Thresholds()
 }
 
 func (a *mlAnomalyAdapter) Detect(peer *Peer, upSpeed, downSpeed, torrentSize int64) (bool, string) {

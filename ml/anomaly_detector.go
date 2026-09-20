@@ -36,6 +36,17 @@ type ThresholdConfig struct {
 	RapidReconnectSec int     // seconds; 0 = no change
 }
 
+// Thresholds returns a snapshot of the current threshold configuration.
+func (ad *AnomalyDetector) Thresholds() ThresholdConfig {
+	return ThresholdConfig{
+		MaxUploadSpeed:    ad.maxUploadSpeed,
+		MaxAnnounceRate:   ad.maxAnnounceRate,
+		MaxPortChanges:    ad.maxPortChanges,
+		MinDownloadRatio:  ad.minDownloadRatio,
+		RapidReconnectSec: ad.rapidReconnectSec,
+	}
+}
+
 // SetThresholds updates detection thresholds without recreating the detector.
 // Only fields with non-zero values are applied, so partial updates are safe.
 func (ad *AnomalyDetector) SetThresholds(t ThresholdConfig) {

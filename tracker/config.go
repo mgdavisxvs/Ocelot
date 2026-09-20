@@ -49,6 +49,11 @@ type FileConfig struct {
 	// Admin REST API (JWT-protected)
 	AdminAPIPort string
 	JWTSecret    string
+	// OTel OTLP endpoint, e.g. "localhost:4318" (empty = tracing disabled)
+	OTelEndpoint string
+	// RedisAddr is the Redis server address for optional dual-write / caching
+	// e.g. "localhost:6379" (empty = Redis disabled)
+	RedisAddr string
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -183,6 +188,10 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.AdminAPIPort = val
 		case "jwt_secret":
 			cfg.JWTSecret = val
+		case "otel_endpoint":
+			cfg.OTelEndpoint = val
+		case "redis_addr":
+			cfg.RedisAddr = val
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -222,6 +231,9 @@ func (fc *FileConfig) ToTrackerConfig() *Config {
 		Readonly:             fc.Readonly,
 		AdminAPIPort:         fc.AdminAPIPort,
 		JWTSecret:            []byte(fc.JWTSecret),
+		OTelEndpoint:         fc.OTelEndpoint,
+		MaxConnections:       fc.MaxConnections,
+		RedisAddr:            fc.RedisAddr,
 		TLS: TLSConfig{
 			CertFile: fc.TLSCertFile,
 			KeyFile:  fc.TLSKeyFile,

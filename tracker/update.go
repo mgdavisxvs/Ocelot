@@ -232,6 +232,18 @@ func (w *Worker) logAudit(action, resourceType, resourceID string, success bool,
 	}
 }
 
+// logSiteCommErr logs and records a metric for a site-communication error.
+// No-ops if err is nil.
+func (w *Worker) logSiteCommErr(op string, err error) {
+	if err == nil {
+		return
+	}
+	GetDefaultLogger().Warn("site comm error", "op", op, "err", err)
+	if w.Metrics != nil {
+		w.Metrics.RecordSiteCommError(op)
+	}
+}
+
 // ── response helpers ────────────────────────────────────────────────────────
 
 func (w *Worker) updateOK() ([]byte, error) {

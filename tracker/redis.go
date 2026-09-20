@@ -216,21 +216,31 @@ func (r *RedisBackend) Ping() error {
 	return r.client.Ping(r.ctx).Err()
 }
 
-// FlushExpiredPeers removes peers that haven't announced recently
+// FlushExpiredPeers removes peers whose LastAnnounced is older than timeout.
 func (r *RedisBackend) FlushExpiredPeers(infoHash string, timeout time.Duration) error {
-	peers, err := r.GetPeers(infoHash)
+	_, span := TraceRedisOp(r.ctx, "flush_expired_peers")
+	defer span.End()
+
+	key := fmt.Sprintf("torrent:%s:peers", infoHash)
+	peerMap, err := r.client.HGetAll(r.ctx, key).Result()
 	if err != nil {
 		return err
 	}
 
 	now := time.Now()
-	for _, peer := range peers {
+	var expired []string
+	for peerID, data := range peerMap {
+		var peer Peer
+		if err := json.Unmarshal([]byte(data), &peer); err != nil {
+			expired = append(expired, peerID) // remove corrupt entries
+			continue
+		}
 		if now.Sub(peer.LastAnnounced) > timeout {
-			// Note: peerID would need to be tracked separately to delete
-			// This is a stub implementation
-			_ = peer
+			expired = append(expired, peerID)
 		}
 	}
-
-	return nil
+	if len(expired) == 0 {
+		return nil
+	}
+	return r.client.HDel(r.ctx, key, expired...).Err()
 }

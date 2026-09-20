@@ -136,6 +136,15 @@ var (
 			Help: "Total capacity of the worker pool",
 		},
 	)
+
+	// Site communication error metrics
+	siteCommErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ocelot_site_comm_errors_total",
+			Help: "Total number of site communication errors",
+		},
+		[]string{"op"},
+	)
 )
 
 // MetricsRecorder provides convenience methods for recording metrics
@@ -187,6 +196,11 @@ func (m *MetricsRecorder) UpdateWorkerPool(active, capacity int) {
 // RecordRateLimitExceeded increments the rate-limit counter for an IP.
 func (m *MetricsRecorder) RecordRateLimitExceeded(ip string) {
 	rateLimitExceeded.WithLabelValues(ip).Inc()
+}
+
+// RecordSiteCommError increments the site communication error counter for op.
+func (m *MetricsRecorder) RecordSiteCommError(op string) {
+	siteCommErrors.WithLabelValues(op).Inc()
 }
 
 // UpdateActivePeers sets the active peer gauge for a specific torrent.

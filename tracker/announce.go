@@ -55,19 +55,29 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 	now := time.Now()
 	announceStart := now
 
+	// errAnnounce records the error metric then returns nil,err — used at every
+	// early-exit so announce error paths are visible in Prometheus.
+	errAnnounce := func(format string, args ...any) (*AnnounceResponse, error) {
+		err := fmt.Errorf(format, args...)
+		if w.Metrics != nil {
+			w.Metrics.RecordAnnounce(req.Event, "error", time.Since(announceStart))
+		}
+		return nil, err
+	}
+
 	if !req.Compact {
-		return nil, fmt.Errorf("your client does not support compact announces")
+		return errAnnounce("your client does not support compact announces")
 	}
 	if len(req.PeerID) != 20 {
-		return nil, fmt.Errorf("invalid peer ID")
+		return errAnnounce("invalid peer ID")
 	}
 	if !w.Whitelist.IsAllowed(req.PeerID) {
-		return nil, fmt.Errorf("your client is not on the whitelist")
+		return errAnnounce("your client is not on the whitelist")
 	}
 
 	if w.ClientDetector != nil {
 		if bad, reason := w.ClientDetector.DetectClientAnomaly(string(req.PeerID), userAgent); bad {
-			return nil, fmt.Errorf("client rejected: %s", reason)
+			return errAnnounce("client rejected: %s", reason)
 		}
 	}
 
@@ -83,7 +93,7 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 		}
 	}
 	if !ok {
-		return nil, fmt.Errorf("unregistered torrent")
+		return errAnnounce("unregistered torrent")
 	}
 
 	peerKey := PeerKeyPrime(req.PeerID, user.ID, torrent.ID)
@@ -266,8 +276,8 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 	if w.Detector != nil {
 		if isAnomaly, reason := w.Detector.Detect(peer, upSpeed, downSpeed, torrent.Size); isAnomaly {
 			w.Stats.AnomalyDetections.Add(1)
-			_ = w.SiteComm.ReportAnomaly(int64(user.ID), 1.0)
-			_ = w.SiteComm.BanUser(int64(user.ID))
+			w.logSiteCommErr("report_anomaly", w.SiteComm.ReportAnomaly(int64(user.ID), 1.0))
+			w.logSiteCommErr("ban_user", w.SiteComm.BanUser(int64(user.ID)))
 			torrent.mu.Lock()
 			torrent.Leechers.Delete(peerKey)
 			torrent.Seeders.Delete(peerKey)
@@ -277,7 +287,7 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 				"torrent_id", torrent.ID,
 				"reason", reason,
 			)
-			return nil, fmt.Errorf("anomalous activity detected: %s", reason)
+			return errAnnounce("anomalous activity detected: %s", reason)
 		}
 	}
 
@@ -402,7 +412,7 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 	torrent.mu.Unlock()
 
 	if !user.CanLeech.Load() && req.Left > 0 {
-		return nil, fmt.Errorf("access denied, leeching forbidden")
+		return errAnnounce("access denied, leeching forbidden")
 	}
 
 	adaptiveInterval := AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval)
@@ -436,7 +446,26 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 		w.Metrics.UpdatePeerCounts(seederCount, leecherCount)
 		w.Metrics.UpdateActivePeers(strconv.FormatUint(uint64(torrent.ID), 10), seederCount+leecherCount)
 	}
-	_ = w.SiteComm.UpdateStats(int64(seederCount), int64(leecherCount), int64(torrent.Completed))
+	w.logSiteCommErr("update_stats", w.SiteComm.UpdateStats(int64(seederCount), int64(leecherCount), int64(torrent.Completed)))
+
+	// [H-2] Async Redis dual-write: mirror peer state after each announce.
+	// Runs in a goroutine so Redis latency never stalls the announce response.
+	if w.Redis != nil && req.Event != "stopped" {
+		peerCopy := *peer
+		go func() {
+			ttl := time.Duration(w.Config.PeersTimeout) * time.Second
+			if err := w.Redis.AddPeer(req.InfoHash, string(req.PeerID), &peerCopy, ttl); err != nil {
+				w.logSiteCommErr("redis_add_peer", err)
+			}
+		}()
+	}
+	if w.Redis != nil && req.Event == "stopped" {
+		go func() {
+			if err := w.Redis.RemovePeer(req.InfoHash, req.PeerID); err != nil {
+				w.logSiteCommErr("redis_remove_peer", err)
+			}
+		}()
+	}
 
 	return response, nil
 }
