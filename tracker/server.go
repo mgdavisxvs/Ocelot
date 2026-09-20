@@ -796,13 +796,21 @@ func (s *Server) StartAdminAPIServer(db *sql.DB) {
 		w.Write(s.buildWhitelistJSON())
 	})
 	mux.HandleFunc("/admin/update", func(w http.ResponseWriter, r *http.Request) {
-		s.worker.handleAdminUpdate(r)
 		w.Header().Set("Content-Type", "application/json")
+		if err := s.worker.handleAdminUpdate(r); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
 		w.Write([]byte(`{"ok":true}`))
 	})
 	mux.HandleFunc("/admin/report", func(w http.ResponseWriter, r *http.Request) {
-		s.worker.handleAdminReport(r)
 		w.Header().Set("Content-Type", "application/json")
+		if err := s.worker.handleAdminReport(r); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
 		w.Write([]byte(`{"ok":true}`))
 	})
 
@@ -1040,8 +1048,10 @@ func (s *Server) buildWhitelistJSON() []byte {
 }
 
 // handleAdminUpdate applies a delta update from the admin API.
-func (w *Worker) handleAdminUpdate(r *http.Request) {
-	r.ParseForm()
+func (w *Worker) handleAdminUpdate(r *http.Request) error {
+	if err := r.ParseForm(); err != nil {
+		return fmt.Errorf("parse form: %w", err)
+	}
 	if torrentID := r.FormValue("torrent_id"); torrentID != "" {
 		tid, _ := strconv.ParseUint(torrentID, 10, 32)
 		action := r.FormValue("action")
@@ -1066,7 +1076,7 @@ func (w *Worker) handleAdminUpdate(r *http.Request) {
 	if userID := r.FormValue("user_id"); userID != "" {
 		uid, err := strconv.ParseUint(userID, 10, 32)
 		if err != nil {
-			return
+			return fmt.Errorf("invalid user_id: %w", err)
 		}
 		action := r.FormValue("action")
 		switch action {
@@ -1090,26 +1100,38 @@ func (w *Worker) handleAdminUpdate(r *http.Request) {
 			_ = uid
 		}
 	}
+	return nil
 }
 
 // handleAdminReport processes a ban/unban action from the admin API.
-func (w *Worker) handleAdminReport(r *http.Request) {
-	r.ParseForm()
+func (w *Worker) handleAdminReport(r *http.Request) error {
+	if err := r.ParseForm(); err != nil {
+		return fmt.Errorf("parse form: %w", err)
+	}
 	action := r.FormValue("action")
 	uidStr := r.FormValue("user_id")
 	uid, err := strconv.ParseUint(uidStr, 10, 32)
 	if err != nil {
-		return
+		return fmt.Errorf("invalid user_id: %w", err)
 	}
 	switch action {
 	case "ban":
 		w.Users.SetBanned(UserID(uid), true)
-		_ = w.SiteComm.ReportAnomaly(int64(uid), 1.0)
-		_ = w.SiteComm.BanUser(int64(uid))
+		if err := w.SiteComm.ReportAnomaly(int64(uid), 1.0); err != nil {
+			GetDefaultLogger().Warn("ReportAnomaly failed", "user_id", uid, "err", err)
+		}
+		if err := w.SiteComm.BanUser(int64(uid)); err != nil {
+			return fmt.Errorf("ban user: %w", err)
+		}
 	case "unban":
 		w.Users.SetBanned(UserID(uid), false)
-		_ = w.SiteComm.UnbanUser(int64(uid))
+		if err := w.SiteComm.UnbanUser(int64(uid)); err != nil {
+			return fmt.Errorf("unban user: %w", err)
+		}
+	default:
+		return fmt.Errorf("unknown action: %s", action)
 	}
+	return nil
 }
 
 // ── Worker ────────────────────────────────────────────────────────────────────

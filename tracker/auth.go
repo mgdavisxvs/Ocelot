@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -136,15 +137,17 @@ func hashAPIKey(key string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// generateRandomKey generates a random API key
+// generateRandomKey generates a cryptographically random API key.
 func generateRandomKey(length int) string {
-	// Simple random key generator - in production use crypto/rand
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, length)
-	for i := range b {
-		b[i] = charset[time.Now().UnixNano()%int64(len(charset))]
+	buf := make([]byte, length)
+	if _, err := rand.Read(buf); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
 	}
-	return string(b)
+	for i, b := range buf {
+		buf[i] = charset[int(b)%len(charset)]
+	}
+	return string(buf)
 }
 
 // AuthMiddleware validates JWT or API key authentication

@@ -227,7 +227,9 @@ func (w *Worker) logAudit(action, resourceType, resourceID string, success bool,
 	if w.AuditLog == nil {
 		return
 	}
-	_ = w.AuditLog.Log(context.Background(), action, resourceType, resourceID, success, err)
+	if aerr := w.AuditLog.Log(context.Background(), action, resourceType, resourceID, success, err); aerr != nil {
+		GetDefaultLogger().Warn("audit log write failed", "err", aerr.Error())
+	}
 }
 
 // ── response helpers ────────────────────────────────────────────────────────

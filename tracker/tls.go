@@ -3,6 +3,7 @@ package tracker
 import (
 	"crypto/tls"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"time"
@@ -62,7 +63,9 @@ func newAutoTLSListener(addr, domain, cacheDir string) (net.Listener, error) {
 			ReadTimeout:  5 * time.Second,
 			WriteTimeout: 5 * time.Second,
 		}
-		_ = srv.ListenAndServe()
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("TLS: ACME HTTP-01 challenge server error: %v", err)
+		}
 	}()
 
 	cfg := mgr.TLSConfig()

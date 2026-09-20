@@ -113,7 +113,6 @@ func main() {
 	// HTTP for freeleech candidate polling (HI-06) and adaptive anomaly
 	// threshold adjustment (ML-01).
 	markovCtx, markovCancel := context.WithCancel(context.Background())
-	_ = markovCancel // cancelled on shutdown
 
 	var markovClient *tracker.MarkovClient
 	anomalyDetector, rawDetector := tracker.NewAnomalyDetectorPair()

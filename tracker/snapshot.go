@@ -9,18 +9,19 @@ import (
 
 // snapshotPeer is the gob-serialisable DTO for a single peer.
 type snapshotPeer struct {
-	UserID         uint32
-	IP             net.IP
-	Port           uint16
-	Uploaded       int64
-	Downloaded     int64
-	Left           int64
-	Corrupt        int64
-	FirstAnnounced time.Time
-	LastAnnounced  time.Time
-	Announces      uint32
-	Visible        bool
-	Seeder         bool
+	UserID          uint32
+	IP              net.IP
+	Port            uint16
+	Uploaded        int64
+	Downloaded      int64
+	Left            int64
+	Corrupt         int64
+	FirstAnnounced  time.Time
+	LastAnnounced   time.Time
+	Announces       uint32
+	Visible         bool
+	Seeder          bool
+	ConnectionTimes []time.Time
 }
 
 type snapshotEntry struct {
@@ -108,34 +109,36 @@ func LoadSnapshot(path string, torrents *TorrentList) error {
 
 func peerToSnap(p *Peer, seeder bool) snapshotPeer {
 	return snapshotPeer{
-		UserID:         uint32(p.UserID),
-		IP:             p.IP,
-		Port:           p.Port,
-		Uploaded:       p.Uploaded,
-		Downloaded:     p.Downloaded,
-		Left:           p.Left,
-		Corrupt:        p.Corrupt,
-		FirstAnnounced: p.FirstAnnounced,
-		LastAnnounced:  p.LastAnnounced,
-		Announces:      p.Announces,
-		Visible:        p.Visible,
-		Seeder:         seeder,
+		UserID:          uint32(p.UserID),
+		IP:              p.IP,
+		Port:            p.Port,
+		Uploaded:        p.Uploaded,
+		Downloaded:      p.Downloaded,
+		Left:            p.Left,
+		Corrupt:         p.Corrupt,
+		FirstAnnounced:  p.FirstAnnounced,
+		LastAnnounced:   p.LastAnnounced,
+		Announces:       p.Announces,
+		Visible:         p.Visible,
+		Seeder:          seeder,
+		ConnectionTimes: p.ConnectionTimes,
 	}
 }
 
 func snapToPeer(sp snapshotPeer) *Peer {
 	p := &Peer{
-		UserID:         UserID(sp.UserID),
-		IP:             sp.IP,
-		Port:           sp.Port,
-		Uploaded:       sp.Uploaded,
-		Downloaded:     sp.Downloaded,
-		Left:           sp.Left,
-		Corrupt:        sp.Corrupt,
-		FirstAnnounced: sp.FirstAnnounced,
-		LastAnnounced:  sp.LastAnnounced,
-		Announces:      sp.Announces,
-		Visible:        sp.Visible,
+		UserID:          UserID(sp.UserID),
+		IP:              sp.IP,
+		Port:            sp.Port,
+		Uploaded:        sp.Uploaded,
+		Downloaded:      sp.Downloaded,
+		Left:            sp.Left,
+		Corrupt:         sp.Corrupt,
+		FirstAnnounced:  sp.FirstAnnounced,
+		LastAnnounced:   sp.LastAnnounced,
+		Announces:       sp.Announces,
+		Visible:         sp.Visible,
+		ConnectionTimes: sp.ConnectionTimes,
 	}
 	if sp.IP != nil {
 		p.IPPort = CompactIPPort(sp.IP, sp.Port)
