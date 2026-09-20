@@ -93,7 +93,10 @@ func FreeleechPoller(ctx context.Context, client *MarkovClient, siteComm SiteCom
 					continue
 				}
 				for _, c := range candidates {
-					_ = siteComm.NotifyFreeleech(c.TorrentID, notifyHours)
+					if err := siteComm.NotifyFreeleech(c.TorrentID, notifyHours); err != nil {
+						GetDefaultLogger().Warn("freeleech notify failed",
+							"torrent_id", c.TorrentID, "err", err)
+					}
 				}
 			}
 		}
