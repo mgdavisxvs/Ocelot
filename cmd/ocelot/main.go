@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mgdavisxvs/Ocelot/ml"
 	"github.com/mgdavisxvs/Ocelot/tracker"
 )
 
@@ -102,6 +103,8 @@ func main() {
 		CircuitBreak: circuitBreaker,
 		AuditLog:     auditLog,
 		Metrics:      metrics,
+		PeerScorer:   ml.NewPeerScorer(),
+		BatchWriter:  batchWriter,
 	}
 
 	// ── Background subsystems ─────────────────────────────────────────────────

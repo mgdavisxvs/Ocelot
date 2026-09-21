@@ -478,6 +478,7 @@ type Worker struct {
 	AuditLog     *AuditLogger
 	Metrics      *MetricsRecorder
 	PeerScorer   *ml.PeerScorer // nil = random selection via SelectPeersOptimized
+	BatchWriter  *BatchWriter   // nil = synchronous DB writes; non-nil = batched writes
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.
