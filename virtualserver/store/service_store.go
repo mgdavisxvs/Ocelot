@@ -148,8 +148,18 @@ func (s *VSStore) DeleteService(ctx context.Context, id int64) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	_, err := s.db.ExecContext(ctx, "DELETE FROM virtualserver_services WHERE id=?", id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM virtualserver_service_versions WHERE service_id=?", id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM virtualserver_services WHERE id=?", id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 type serviceScanner interface {
