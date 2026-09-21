@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/mgdavisxvs/Ocelot/tracker"
+	vsconfig "github.com/mgdavisxvs/Ocelot/virtualserver/config"
+	"github.com/mgdavisxvs/Ocelot/virtualserver"
 )
 
 func main() {
@@ -102,6 +105,27 @@ func main() {
 		}
 	}()
 
+	// Start VirtualServer subsystem if enabled
+	vsCfg := vsconfig.VSConfig{
+		Enabled:        false, // set via ocelot.conf vs_enabled=true
+		Port:           ":9091",
+		AdminKey:       "",
+		DBPath:         "data/db/vs.db",
+		ReconcileEvery: 15 * time.Second,
+		MaxBodyBytes:   1 << 20,
+		RequestTimeout: 30 * time.Second,
+	}
+	var vs *virtualserver.VirtualServer
+	if vs, err = virtualserver.New(vsCfg, db); err != nil {
+		log.Fatalf("VirtualServer init error: %v", err)
+	}
+	if vs != nil {
+		if err := vs.Start(); err != nil {
+			log.Fatalf("VirtualServer start error: %v", err)
+		}
+		log.Printf("VirtualServer started on %s", vsCfg.Port)
+	}
+
 	// Print statistics periodically
 	go printStats(stats)
 
@@ -111,6 +135,13 @@ func main() {
 	<-sigChan
 
 	fmt.Println("\n🛑 Shutting down gracefully...")
+	if vs != nil {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutCancel()
+		if err := vs.Stop(shutCtx); err != nil {
+			log.Printf("VirtualServer shutdown error: %v", err)
+		}
+	}
 	if err := server.Shutdown(); err != nil {
 		log.Printf("Shutdown error: %v", err)
 	}
