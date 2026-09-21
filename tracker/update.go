@@ -78,6 +78,13 @@ func (w *Worker) addTorrent(q url.Values) ([]byte, error) {
 		}
 	}
 
+	if err := w.DB.RecordTorrent(TorrentID(id), 0, 0, 0, 0); err != nil {
+		return w.updateError(fmt.Sprintf("DB error recording torrent: %v", err))
+	}
+	if err := w.DB.RecordTorrentHash(TorrentID(id), infoHash); err != nil {
+		return w.updateError(fmt.Sprintf("DB error recording torrent hash: %v", err))
+	}
+
 	torrent := NewTorrent(TorrentID(id))
 	torrent.FreeType = FreeType(freeType)
 	w.Torrents.Set(infoHash, torrent)
@@ -187,6 +194,10 @@ func (w *Worker) addUser(q url.Values) ([]byte, error) {
 	canLeech := q.Get("can_leech") != "0"
 	protectIP := q.Get("protect_ip") == "1"
 
+	if err := w.DB.RecordUserPasskey(UserID(id), passkey, canLeech, protectIP); err != nil {
+		return w.updateError(fmt.Sprintf("DB error recording user passkey: %v", err))
+	}
+
 	user := NewUser(UserID(id), canLeech, protectIP)
 	w.Users.Set(passkey, user)
 
@@ -202,12 +213,19 @@ func (w *Worker) updateUser(q url.Values) ([]byte, error) {
 	if !ok {
 		return w.updateError("User not found")
 	}
+	newCanLeech := user.CanLeech.Load()
+	newProtectIP := user.ProtectIP.Load()
 	if cl := q.Get("can_leech"); cl != "" {
-		user.CanLeech.Store(cl != "0")
+		newCanLeech = cl != "0"
 	}
 	if pi := q.Get("protect_ip"); pi != "" {
-		user.ProtectIP.Store(pi == "1")
+		newProtectIP = pi == "1"
 	}
+	if err := w.DB.RecordUserPasskey(user.ID, passkey, newCanLeech, newProtectIP); err != nil {
+		return w.updateError(fmt.Sprintf("DB error updating user passkey: %v", err))
+	}
+	user.CanLeech.Store(newCanLeech)
+	user.ProtectIP.Store(newProtectIP)
 	return w.updateSuccess(fmt.Sprintf("Updated user %d", user.ID))
 }
 
@@ -239,6 +257,10 @@ func (w *Worker) changePasskey(q url.Values) ([]byte, error) {
 	}
 	if _, ok := w.Users.Get(newPasskey); ok {
 		return w.updateError("New passkey already exists")
+	}
+
+	if err := w.DB.RecordUserPasskey(user.ID, newPasskey, user.CanLeech.Load(), user.ProtectIP.Load()); err != nil {
+		return w.updateError(fmt.Sprintf("DB error recording new passkey: %v", err))
 	}
 
 	w.Users.mu.Lock()
@@ -292,6 +314,9 @@ func (w *Worker) addWhitelist(q url.Values) ([]byte, error) {
 	if prefix == "" {
 		return w.updateError("Missing prefix")
 	}
+	if err := w.DB.AddWhitelistEntry(prefix); err != nil {
+		return w.updateError(fmt.Sprintf("DB error adding whitelist entry: %v", err))
+	}
 	w.Whitelist.Add(prefix)
 	return w.updateSuccess(fmt.Sprintf("Added whitelist prefix: %s", prefix))
 }
@@ -300,6 +325,9 @@ func (w *Worker) removeWhitelist(q url.Values) ([]byte, error) {
 	prefix := q.Get("prefix")
 	if prefix == "" {
 		return w.updateError("Missing prefix")
+	}
+	if err := w.DB.RemoveWhitelistEntry(prefix); err != nil {
+		return w.updateError(fmt.Sprintf("DB error removing whitelist entry: %v", err))
 	}
 	w.Whitelist.Remove(prefix)
 	return w.updateSuccess(fmt.Sprintf("Removed whitelist prefix: %s", prefix))
