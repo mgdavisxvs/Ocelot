@@ -102,26 +102,64 @@ func normalize(value, minVal, maxVal float64) float64 {
 	if maxVal-minVal == 0 {
 		return 0
 	}
-	return (value - minVal) / (maxVal - minVal)
+	v := (value - minVal) / (maxVal - minVal)
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
-// ipDistance calculates network distance between two IPs
-// Simple implementation: XOR of first octet
+// ipDistance returns a network-topology distance in [0, 255] between two IPs.
+//
+// IPv4: four levels based on /8, /16, /24 prefix matches.
+//   - same /24 (first 3 octets match) → 0
+//   - same /16, different /24         → 85
+//   - same /8,  different /16         → 170
+//   - different /8                    → 255
+//
+// IPv6: four levels based on /16, /32, /48 prefix matches.
+//   - same /48 (first 6 bytes match)  → 0
+//   - same /32, different /48         → 85
+//   - same /16, different /32         → 170
+//   - different /16                   → 255
+//
+// Mixed address families → 255 (maximum distance).
 func ipDistance(ip1, ip2 net.IP) int {
 	ip1v4 := ip1.To4()
 	ip2v4 := ip2.To4()
 
 	if ip1v4 != nil && ip2v4 != nil {
-		// IPv4: XOR distance
-		return int(ip1v4[0] ^ ip2v4[0])
+		switch {
+		case ip1v4[0] != ip2v4[0]:
+			return 255
+		case ip1v4[1] != ip2v4[1]:
+			return 170
+		case ip1v4[2] != ip2v4[2]:
+			return 85
+		default:
+			return 0
+		}
 	}
 
-	// IPv6 or mixed: Simple distance
-	if len(ip1) == 16 && len(ip2) == 16 {
-		return int(ip1[0] ^ ip2[0])
+	ip1v6 := ip1.To16()
+	ip2v6 := ip2.To16()
+	if ip1v6 != nil && ip2v6 != nil && ip1v4 == nil && ip2v4 == nil {
+		switch {
+		case ip1v6[0] != ip2v6[0] || ip1v6[1] != ip2v6[1]:
+			return 255
+		case ip1v6[2] != ip2v6[2] || ip1v6[3] != ip2v6[3]:
+			return 170
+		case ip1v6[4] != ip2v6[4] || ip1v6[5] != ip2v6[5]:
+			return 85
+		default:
+			return 0
+		}
 	}
 
-	return 128 // Max distance for mixed/unknown
+	return 255 // mixed or unknown address families
 }
 
 // SwarmHealthPredictor predicts swarm health metrics
