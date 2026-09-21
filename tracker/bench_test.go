@@ -110,13 +110,12 @@ func BenchmarkAnnounce_WithPeers(b *testing.B) {
 	}
 }
 
-// ── selectPeers micro-benchmark ───────────────────────────────────────────────
+// ── SelectPeersOptimized micro-benchmark ─────────────────────────────────────
 
 func BenchmarkSelectPeers(b *testing.B) {
 	for _, n := range []int{10, 50, 200} {
 		n := n
 		b.Run(fmt.Sprintf("n%d", n), func(b *testing.B) {
-			w, _, _ := newTestWorker()
 			tor := NewTorrent(1)
 			for i := 0; i < n; i++ {
 				p := &Peer{
@@ -133,7 +132,7 @@ func BenchmarkSelectPeers(b *testing.B) {
 			b.ResetTimer()
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				_ = w.selectPeers(tor, self, 9999, 50, true)
+				_ = SelectPeersOptimized(tor, self, 9999, 50, true)
 			}
 		})
 	}

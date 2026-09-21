@@ -72,7 +72,12 @@ func (m *mockDB) Close() error         { return nil }
 
 type mockSiteComm struct{ expired int }
 
-func (m *mockSiteComm) ExpireToken(_ TorrentID, _ UserID) { m.expired++ }
+func (m *mockSiteComm) ExpireToken(_ TorrentID, _ UserID)          { m.expired++ }
+func (m *mockSiteComm) BanUser(_ int64) error                      { return nil }
+func (m *mockSiteComm) UnbanUser(_ int64) error                    { return nil }
+func (m *mockSiteComm) NotifyFreeleech(_ int64, _ int) error       { return nil }
+func (m *mockSiteComm) ReportAnomaly(_ int64, _ float64) error     { return nil }
+func (m *mockSiteComm) UpdateStats(_ int64, _ int64, _ int64) error { return nil }
 
 // ── Helper: build a minimal Worker ───────────────────────────────────────────
 
@@ -482,11 +487,9 @@ func TestAnnounce_CanLeech_False_Forbidden(t *testing.T) {
 	}
 }
 
-// ── selectPeers ───────────────────────────────────────────────────────────────
+// ── SelectPeersOptimized ──────────────────────────────────────────────────────
 
 func TestSelectPeers_NumWantLimit(t *testing.T) {
-	w, _, _ := newTestWorker()
-
 	tor := NewTorrent(1)
 	// Add 10 seeders
 	for i := 0; i < 10; i++ {
@@ -501,14 +504,15 @@ func TestSelectPeers_NumWantLimit(t *testing.T) {
 	}
 
 	self := &Peer{UserID: 999}
-	got := w.selectPeers(tor, self, 999, 5, true)
+	got := SelectPeersOptimized(tor, self, 999, 5, true)
 	if len(got) != 30 { // 5 peers × 6 bytes
-		t.Errorf("selectPeers returned %d bytes, want 30 (5 peers)", len(got))
+		t.Errorf("SelectPeersOptimized returned %d bytes, want 30 (5 peers)", len(got))
 	}
 }
 
 func TestSelectPeers_ExcludesSelf(t *testing.T) {
 	w, _, _ := newTestWorker()
+	_ = w
 
 	tor := NewTorrent(1)
 	self := &Peer{UserID: 42}
@@ -522,9 +526,9 @@ func TestSelectPeers_ExcludesSelf(t *testing.T) {
 	p.IPPort = CompactIPPort(p.IP, p.Port)
 	tor.Seeders.Set(selfKey, p)
 
-	got := w.selectPeers(tor, self, 42, 50, true)
+	got := SelectPeersOptimized(tor, self, 42, 50, true)
 	if len(got) != 0 {
-		t.Errorf("selectPeers returned %d bytes including self, want 0", len(got))
+		t.Errorf("SelectPeersOptimized returned %d bytes including self, want 0", len(got))
 	}
 }
 

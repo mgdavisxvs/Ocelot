@@ -3,6 +3,9 @@ package tracker
 import (
 	"math/rand"
 	"net"
+	"sort"
+
+	"github.com/mgdavisxvs/Ocelot/ml"
 )
 
 // Optimization functions implementing Terence Tao and Paul Erdős approaches
@@ -123,6 +126,81 @@ func collectVisiblePeers(peerList *PeerList, excludeUserID UserID) []*Peer {
 	})
 
 	return result
+}
+
+// peerToInfo bridges a tracker Peer into the ml.PeerInfo scoring type.
+// Peers with Left==0 are seeders and get CompletedSessions == TotalSessions,
+// giving them full reputation weight. Leechers get CompletedSessions == 0.
+func peerToInfo(p *Peer) *ml.PeerInfo {
+	completed := 0
+	if p.Left == 0 {
+		completed = int(p.Announces)
+	}
+	return &ml.PeerInfo{
+		IP:                p.IP,
+		Port:              p.Port,
+		Uploaded:          p.Uploaded,
+		Downloaded:        p.Downloaded,
+		FirstSeen:         p.FirstAnnounced,
+		LastAnnounce:      p.LastAnnounced,
+		TotalSessions:     int(p.Announces),
+		CompletedSessions: completed,
+	}
+}
+
+// selectPeersByScore scores each candidate against requesterIP, sorts
+// descending, and returns at most want peers in compact 6-byte form.
+func selectPeersByScore(candidates []*Peer, requesterIP net.IP, want int, scorer *ml.PeerScorer) []byte {
+	if len(candidates) == 0 || want <= 0 {
+		return nil
+	}
+	type pair struct {
+		peer  *Peer
+		score float64
+	}
+	pairs := make([]pair, len(candidates))
+	for i, p := range candidates {
+		pairs[i] = pair{peer: p, score: scorer.Score(peerToInfo(p), requesterIP)}
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].score > pairs[j].score })
+	if want < len(pairs) {
+		pairs = pairs[:want]
+	}
+	out := make([]byte, 0, len(pairs)*6)
+	for _, sp := range pairs {
+		if len(sp.peer.IPPort) == 6 {
+			out = append(out, sp.peer.IPPort...)
+		}
+	}
+	return out
+}
+
+// SelectPeersScored is the scored counterpart of SelectPeersOptimized.
+// Leechers receive seeders (scored by proximity/upload/reputation) first,
+// then leechers if more slots remain. Seeders receive only leechers.
+// Falls back to the same tier-priority semantics as SelectPeersOptimized.
+func SelectPeersScored(torrent *Torrent, self *Peer, requesterIP net.IP, userID UserID, numwant int32, isLeecher bool, scorer *ml.PeerScorer) []byte {
+	if numwant <= 0 {
+		return []byte{}
+	}
+	want := int(numwant)
+
+	torrent.mu.RLock()
+	defer torrent.mu.RUnlock()
+
+	if isLeecher {
+		seeders := collectVisiblePeers(torrent.Seeders, userID)
+		out := selectPeersByScore(seeders, requesterIP, want, scorer)
+		remaining := want - len(out)/6
+		if remaining > 0 {
+			leechers := collectVisiblePeers(torrent.Leechers, userID)
+			out = append(out, selectPeersByScore(leechers, requesterIP, remaining, scorer)...)
+		}
+		return out
+	}
+
+	leechers := collectVisiblePeers(torrent.Leechers, userID)
+	return selectPeersByScore(leechers, requesterIP, want, scorer)
 }
 
 // PeerKeyPrime uses prime modulo for better hash distribution

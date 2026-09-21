@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mgdavisxvs/Ocelot/ml"
 )
 
 // Server is the high-performance tracker server.
@@ -475,6 +477,7 @@ type Worker struct {
 	CircuitBreak *CircuitBreaker
 	AuditLog     *AuditLogger
 	Metrics      *MetricsRecorder
+	PeerScorer   *ml.PeerScorer // nil = random selection via SelectPeersOptimized
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.

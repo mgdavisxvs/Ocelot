@@ -356,7 +356,7 @@ func (w *Worker) updateError(errMsg string) ([]byte, error) {
 		Error:   errMsg,
 	}
 	data, _ := json.Marshal(resp)
-	return data, fmt.Errorf(errMsg)
+	return data, fmt.Errorf("%s", errMsg)
 }
 
 // StatsResponse contains live tracker statistics for JSON API

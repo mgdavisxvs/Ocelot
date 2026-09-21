@@ -284,7 +284,12 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		numwant = 0
 	}
 
-	peers := SelectPeersOptimized(torrent, peer, user.ID, numwant, req.Left > 0)
+	var peers []byte
+	if w.PeerScorer != nil {
+		peers = SelectPeersScored(torrent, peer, ip, user.ID, numwant, req.Left > 0, w.PeerScorer)
+	} else {
+		peers = SelectPeersOptimized(torrent, peer, user.ID, numwant, req.Left > 0)
+	}
 
 	w.Stats.SuccAnnouncements.Add(1)
 	if incLeechers {
