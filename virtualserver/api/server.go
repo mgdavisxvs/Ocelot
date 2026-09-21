@@ -17,13 +17,23 @@ type Server struct {
 
 // NewServer creates a Server with the full VS API mounted.
 // The server does not start listening until Start is called.
+// It panics if cfg.AdminKey is empty, since an empty key would accept any request.
 func NewServer(cfg config.VSConfig, store HandlerStore) *Server {
+	if cfg.AdminKey == "" {
+		panic("virtualserver: AdminKey must not be empty")
+	}
 	h := NewHandlers(store)
 	mux := buildMux(h)
 
-	authMw := authMiddleware(cfg.AdminKey)
-	maxBodyMw := maxBodyMiddleware(cfg.MaxBodyBytes)
-	handler := chain(mux, requestIDMiddleware, metricsMiddleware, authMw, maxBodyMw)
+	// /healthz is registered on an unauthenticated mux so probes work without credentials.
+	publicMux := http.NewServeMux()
+	publicMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	publicMux.Handle("/", chain(mux, requestIDMiddleware, metricsMiddleware,
+		authMiddleware(cfg.AdminKey), maxBodyMiddleware(cfg.MaxBodyBytes)))
+
+	handler := publicMux
 
 	srv := &http.Server{
 		Addr:         cfg.Port,
@@ -147,11 +157,6 @@ func buildMux(h *Handlers) *http.ServeMux {
 			return
 		}
 		h.GetInstance(w, r)
-	})
-
-	// Healthcheck
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
 	})
 
 	return mux

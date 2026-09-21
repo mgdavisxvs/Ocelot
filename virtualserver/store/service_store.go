@@ -138,21 +138,25 @@ func (s *VSStore) UpdateService(ctx context.Context, id int64, m domain.ServiceM
 
 // DeleteService removes a service by ID. Fails if active instances exist.
 func (s *VSStore) DeleteService(ctx context.Context, id int64) error {
-	var active int
-	s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM virtualserver_instances
-		WHERE service_id=? AND state NOT IN ('terminated','failed')`, id,
-	).Scan(&active)
-	if active > 0 {
-		return fmt.Errorf("cannot delete service with %d active instance(s)", active)
-	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+
+	// Check for active instances inside the transaction to avoid TOCTOU.
+	var active int
+	tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM virtualserver_instances
+		WHERE service_id=? AND state NOT IN ('terminated','failed')`, id,
+	).Scan(&active)
+	if active > 0 {
+		return fmt.Errorf("service has active instances")
+	}
+
 	if _, err := tx.ExecContext(ctx, "DELETE FROM virtualserver_service_versions WHERE service_id=?", id); err != nil {
 		return err
 	}

@@ -123,8 +123,15 @@ func newTestServer(t *testing.T) *httptest.Server {
 	h := NewHandlers(ts)
 	mux := buildMux(h)
 	authMw := authMiddleware(testAdminKey)
-	handler := chain(mux, requestIDMiddleware, authMw)
-	return httptest.NewServer(handler)
+	authedHandler := chain(mux, requestIDMiddleware, authMw)
+
+	// Mirror the production two-mux pattern: /healthz is public, everything else requires auth.
+	publicMux := http.NewServeMux()
+	publicMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	publicMux.Handle("/", authedHandler)
+	return httptest.NewServer(publicMux)
 }
 
 func authHeader() string { return "Bearer " + testAdminKey }
@@ -340,10 +347,8 @@ func TestAPI_MethodNotAllowed(t *testing.T) {
 // ── healthz ───────────────────────────────────────────────────────────────────
 
 func TestAPI_Healthz(t *testing.T) {
-	ts := newTestStore()
-	h := NewHandlers(ts)
-	mux := buildMux(h)
-	srv := httptest.NewServer(mux)
+	// /healthz is on the public (unauthenticated) mux; use the full server.
+	srv := newTestServer(t)
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/healthz")

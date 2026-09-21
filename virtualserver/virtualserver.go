@@ -31,9 +31,14 @@ type VirtualServer struct {
 
 // New opens the VS SQLite database, runs migrations, and wires all components.
 // tracker is used for artifact catalog lookups (read-only).
+// Returns (nil, nil) when cfg.Enabled is false.
+// Returns an error when cfg.AdminKey is empty, preventing an insecure startup.
 func New(cfg config.VSConfig, tracker DBProvider) (*VirtualServer, error) {
 	if !cfg.Enabled {
 		return nil, nil
+	}
+	if cfg.AdminKey == "" {
+		return nil, fmt.Errorf("virtualserver: AdminKey must not be empty")
 	}
 
 	s, err := store.Open(cfg.DBPath)

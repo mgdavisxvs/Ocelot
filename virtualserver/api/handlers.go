@@ -176,7 +176,7 @@ func (h *Handlers) UpdateNodeState(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusNotFound, "node not found", "NOT_FOUND")
 			return
 		}
-		writeError(w, r, http.StatusUnprocessableEntity, err.Error(), "INVALID_TRANSITION")
+		writeError(w, r, http.StatusUnprocessableEntity, "state transition not allowed", "INVALID_TRANSITION")
 		return
 	}
 	n, _ := h.store.GetNode(r.Context(), id)
@@ -272,7 +272,7 @@ func (h *Handlers) DeleteService(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusNotFound, "service not found", "NOT_FOUND")
 			return
 		}
-		writeError(w, r, http.StatusConflict, err.Error(), "CONFLICT")
+		writeError(w, r, http.StatusConflict, "service has active instances", "CONFLICT")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
