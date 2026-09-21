@@ -7,10 +7,10 @@ import (
 
 func TestParse_Valid(t *testing.T) {
 	cases := []struct {
-		raw       string
-		wantNS    string
-		wantSvc   string
-		wantInst  string
+		raw      string
+		wantNS   string
+		wantSvc  string
+		wantInst string
 	}{
 		{"vs://inference/llama/primary", "inference", "llama", "primary"},
 		{"vs://tracker/ocelot/primary", "tracker", "ocelot", "primary"},

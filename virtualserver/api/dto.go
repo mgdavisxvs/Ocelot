@@ -18,10 +18,10 @@ type RegisterNodeRequest struct {
 
 // GPUDeviceDTO is the API representation of a GPU device.
 type GPUDeviceDTO struct {
-	Index    int    `json:"index"`
-	Vendor   string `json:"vendor,omitempty"`
-	Model    string `json:"model,omitempty"`
-	VRAMMiB  int64  `json:"vramMB"`
+	Index   int    `json:"index"`
+	Vendor  string `json:"vendor,omitempty"`
+	Model   string `json:"model,omitempty"`
+	VRAMMiB int64  `json:"vramMB"`
 }
 
 // UpdateNodeStateRequest is the request body for PUT /v1/nodes/{id}/state.
@@ -71,9 +71,9 @@ type InstanceResponse struct {
 
 // ErrorResponse is the standard error body.
 type ErrorResponse struct {
-	Error   string `json:"error"`
-	Code    string `json:"code,omitempty"`
-	ReqID   string `json:"requestId,omitempty"`
+	Error string `json:"error"`
+	Code  string `json:"code,omitempty"`
+	ReqID string `json:"requestId,omitempty"`
 }
 
 // ── Mapping helpers ───────────────────────────────────────────────────────────

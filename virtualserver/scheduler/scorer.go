@@ -8,14 +8,14 @@ import (
 
 // Weights controls the relative importance of each placement score factor.
 type Weights struct {
-	Health               float64
-	CapacityFit          float64
-	AcceleratorFit       float64
-	DataLocality         float64
-	Reliability          float64
-	PreferredNodeBonus   float64
-	ExistingLoadPenalty  float64
-	ArtifactTransfer     float64
+	Health              float64
+	CapacityFit         float64
+	AcceleratorFit      float64
+	DataLocality        float64
+	Reliability         float64
+	PreferredNodeBonus  float64
+	ExistingLoadPenalty float64
+	ArtifactTransfer    float64
 }
 
 // DefaultWeights returns the documented default scoring weights.

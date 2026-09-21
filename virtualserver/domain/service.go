@@ -43,9 +43,9 @@ func (a ArtifactReference) Validate() error {
 
 // GPURequest expresses a GPU resource requirement.
 type GPURequest struct {
-	Required    bool  `json:"required"`
-	Count       int   `json:"count"`
-	MinVRAMMiB  int64 `json:"minimumVRAMMB"`
+	Required   bool  `json:"required"`
+	Count      int   `json:"count"`
+	MinVRAMMiB int64 `json:"minimumVRAMMB"`
 }
 
 // ResourceRequest describes compute resources needed by a service instance.
@@ -57,29 +57,29 @@ type ResourceRequest struct {
 
 // PlacementPolicy constrains which nodes may host this service.
 type PlacementPolicy struct {
-	RequiredLabels  map[string]string `json:"requiredLabels,omitempty"`
-	PreferredNodes  []string          `json:"preferredNodes,omitempty"`
-	ExcludedNodes   []string          `json:"excludedNodes,omitempty"`
-	RequiredArch    string            `json:"arch,omitempty"`
-	PreferredLocation string          `json:"preferredLocation,omitempty"`
+	RequiredLabels    map[string]string `json:"requiredLabels,omitempty"`
+	PreferredNodes    []string          `json:"preferredNodes,omitempty"`
+	ExcludedNodes     []string          `json:"excludedNodes,omitempty"`
+	RequiredArch      string            `json:"arch,omitempty"`
+	PreferredLocation string            `json:"preferredLocation,omitempty"`
 }
 
 // RestartPolicy controls instance restart behavior.
 type RestartPolicy struct {
-	Policy         string `json:"policy"`          // "always", "on-failure", "never"
-	MaximumAttempts int   `json:"maximumAttempts"`
+	Policy          string `json:"policy"` // "always", "on-failure", "never"
+	MaximumAttempts int    `json:"maximumAttempts"`
 }
 
 // ServiceSpec is the desired-state specification for a service.
 type ServiceSpec struct {
-	Artifact          ArtifactReference `json:"artifact"`
-	Runtime           string            `json:"runtime"`
-	Instances         int               `json:"instances"`
-	Resources         ResourceRequest   `json:"resources"`
-	Placement         PlacementPolicy   `json:"placement,omitempty"`
-	Restart           RestartPolicy     `json:"restart,omitempty"`
-	MigrationAllowed  bool              `json:"migrationAllowed"`
-	HealthCheck       map[string]string `json:"healthCheck,omitempty"`
+	Artifact         ArtifactReference `json:"artifact"`
+	Runtime          string            `json:"runtime"`
+	Instances        int               `json:"instances"`
+	Resources        ResourceRequest   `json:"resources"`
+	Placement        PlacementPolicy   `json:"placement,omitempty"`
+	Restart          RestartPolicy     `json:"restart,omitempty"`
+	MigrationAllowed bool              `json:"migrationAllowed"`
+	HealthCheck      map[string]string `json:"healthCheck,omitempty"`
 }
 
 // ServiceManifest is the top-level declaration of a desired service.

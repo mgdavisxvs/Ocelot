@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/mgdavisxvs/Ocelot/virtualserver/domain"
@@ -239,5 +240,31 @@ func TestScheduler_EmptyNodeList(t *testing.T) {
 	_, err := sched.Schedule(context.Background(), m, nil, nil)
 	if err == nil {
 		t.Error("expected error for empty node list")
+	}
+}
+
+// BenchmarkScheduler_100Nodes measures placement throughput against a 100-node fleet.
+func BenchmarkScheduler_100Nodes(b *testing.B) {
+	nodes := make([]domain.Node, 100)
+	for i := range nodes {
+		nodes[i] = domain.Node{
+			ID:          fmt.Sprintf("n%03d", i),
+			Arch:        "x86_64",
+			State:       domain.NodeReady,
+			TotalRAMMiB: 65536,
+			AvailRAMMiB: 65536,
+			CPUThreads:  32,
+		}
+	}
+	manifest := newTestManifest("x86_64", nil, 2048, false, 0)
+	cat := &mockCatalog{available: true, exists: true}
+	sched := New(DefaultWeights())
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := sched.Schedule(ctx, manifest, nodes, cat); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

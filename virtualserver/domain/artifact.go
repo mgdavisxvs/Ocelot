@@ -16,7 +16,7 @@ const (
 type ArtifactStatus struct {
 	InfoHash     string
 	Exists       bool
-	Available    bool                 // true if Availability is available or degraded
+	Available    bool // true if Availability is available or degraded
 	SeederCount  int
 	Availability ArtifactAvailability
 	LastChecked  time.Time

@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	headerRequestID    = "X-Request-ID"
-	headerIdempotency  = "Idempotency-Key"
-	ctxKeyRequestID    = contextKey("request_id")
-	maxIdempotencyLen  = 255
+	headerRequestID   = "X-Request-ID"
+	headerIdempotency = "Idempotency-Key"
+	ctxKeyRequestID   = contextKey("request_id")
+	maxIdempotencyLen = 255
 )
 
 type contextKey string

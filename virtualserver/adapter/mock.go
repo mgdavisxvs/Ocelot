@@ -28,9 +28,9 @@ const (
 type MockAdapter struct {
 	mu sync.Mutex
 
-	FailMode    FailMode
+	FailMode       FailMode
 	ProvisionDelay time.Duration
-	StartDelay  time.Duration
+	StartDelay     time.Duration
 
 	provisioned map[string]RuntimeHandle // instanceID → handle
 	started     map[string]bool
@@ -92,9 +92,9 @@ func (m *MockAdapter) Provision(ctx context.Context, req ProvisionRequest) (Runt
 		AdapterName: "mock",
 		InstanceID:  req.InstanceID,
 		Data: map[string]string{
-			"node_id":  req.NodeID,
-			"pid":      "mock-pid-" + req.InstanceID,
-			"workdir":  "/tmp/vs-mock/" + req.InstanceID,
+			"node_id": req.NodeID,
+			"pid":     "mock-pid-" + req.InstanceID,
+			"workdir": "/tmp/vs-mock/" + req.InstanceID,
 		},
 	}
 	m.mu.Lock()

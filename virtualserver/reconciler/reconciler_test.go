@@ -50,7 +50,9 @@ func (m *mockStore) ListInstances(_ context.Context, stateFilter string) ([]doma
 	return out, nil
 }
 
-func (m *mockStore) ListNodes(_ context.Context, _ string) ([]domain.Node, error) { return m.nodes, nil }
+func (m *mockStore) ListNodes(_ context.Context, _ string) ([]domain.Node, error) {
+	return m.nodes, nil
+}
 
 func (m *mockStore) GetInstance(_ context.Context, id string) (*domain.ServiceInstance, error) {
 	m.mu.Lock()

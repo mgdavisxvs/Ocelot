@@ -276,7 +276,7 @@ func (r *VSReconciler) provisionInstance(ctx context.Context, inst *domain.Servi
 	}
 	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "provision", "ok").Inc()
 
-	r.store.UpdateRuntimeHandle(ctx, inst.ID, handle.Data) //nolint:errcheck
+	r.store.UpdateRuntimeHandle(ctx, inst.ID, handle.Data)                                                         //nolint:errcheck
 	r.store.WriteAuditLog(ctx, "provisioned", "instance", inst.ID, "", true, fmt.Sprintf("adapter=%s", ad.Name())) //nolint:errcheck
 	return nil
 }
@@ -349,8 +349,8 @@ func (r *VSReconciler) handleFailedInstance(ctx context.Context, inst *domain.Se
 		return // too soon; next loop will check again
 	}
 
-	r.store.ReleaseAllocation(ctx, inst.ID) //nolint:errcheck
-	r.store.IncrementRetryCount(ctx, inst.ID) //nolint:errcheck
+	r.store.ReleaseAllocation(ctx, inst.ID)                                      //nolint:errcheck
+	r.store.IncrementRetryCount(ctx, inst.ID)                                    //nolint:errcheck
 	r.store.WriteAuditLog(ctx, "retry_scheduled", "instance", inst.ID, "", true, //nolint:errcheck
 		fmt.Sprintf("attempt=%d", inst.RetryCount+1))
 }
