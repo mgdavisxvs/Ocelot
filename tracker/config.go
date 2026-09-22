@@ -147,17 +147,23 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 func (fc *FileConfig) ToTrackerConfig() *Config {
 	readTimeout := time.Duration(fc.ConnectionTimeout) * time.Second
 	return &Config{
-		ListenAddr:       fmt.Sprintf(":%d", fc.ListenPort),
-		AnnounceInterval: fc.AnnounceInterval,
-		PeersTimeout:     fc.PeersTimeout,
-		MaxMiddlemen:     fc.MaxMiddlemen,
-		NumWantLimit:     fc.NumWantLimit,
-		KeepaliveTimeout: time.Duration(fc.KeepaliveTimeout) * time.Second,
-		SitePassword:     fc.SitePassword,
-		ReportPassword:   fc.ReportPassword,
-		ReadTimeout:      readTimeout,
-		WriteTimeout:     readTimeout,
-		MetricsPort:      fc.MetricsPort,
+		ListenAddr:        fmt.Sprintf(":%d", fc.ListenPort),
+		AnnounceInterval:  fc.AnnounceInterval,
+		PeersTimeout:      fc.PeersTimeout,
+		MaxMiddlemen:      fc.MaxMiddlemen,
+		MaxConnections:    fc.MaxConnections,
+		MaxReadBuffer:     fc.MaxReadBuffer,
+		NumWantLimit:      fc.NumWantLimit,
+		KeepaliveTimeout:  time.Duration(fc.KeepaliveTimeout) * time.Second,
+		SitePassword:      fc.SitePassword,
+		ReportPassword:    fc.ReportPassword,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      readTimeout,
+		MetricsPort:       fc.MetricsPort,
+		GazelleURL:        fc.GazelleURL,
+		ScheduleInterval:  fc.ScheduleInterval,
+		ReapPeersInterval: fc.ReapPeersInterval,
+		Readonly:          fc.Readonly,
 	}
 }
 

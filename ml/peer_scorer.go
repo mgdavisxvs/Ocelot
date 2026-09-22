@@ -3,7 +3,6 @@ package ml
 import (
 	"math"
 	"net"
-	"sort"
 	"time"
 )
 
@@ -53,35 +52,6 @@ func (ps *PeerScorer) Score(peer *PeerInfo, requesterIP net.IP) float64 {
 	score += ps.weights["freshness"] * freshness
 
 	return score
-}
-
-// SelectBest selects the best peers based on ML scoring
-func (ps *PeerScorer) SelectBest(peers []*PeerInfo, requesterIP net.IP, numWant int) []*PeerInfo {
-	type scoredPeer struct {
-		peer  *PeerInfo
-		score float64
-	}
-
-	scored := make([]scoredPeer, len(peers))
-	for i, p := range peers {
-		scored[i] = scoredPeer{
-			peer:  p,
-			score: ps.Score(p, requesterIP),
-		}
-	}
-
-	// Sort by score descending
-	sort.Slice(scored, func(i, j int) bool {
-		return scored[i].score > scored[j].score
-	})
-
-	// Return top numWant peers
-	result := make([]*PeerInfo, min(numWant, len(scored)))
-	for i := range result {
-		result[i] = scored[i].peer
-	}
-
-	return result
 }
 
 // PeerInfo holds extended peer information for ML scoring

@@ -54,6 +54,8 @@ func (m *mockDB) RecordUserPasskey(_ UserID, _ string, _, _ bool) error {
 	m.userPasskeyRecs++
 	return nil
 }
+func (m *mockDB) DeleteTorrentHash(_ string) error    { return nil }
+func (m *mockDB) DeleteUserPasskey(_ string) error    { return nil }
 func (m *mockDB) AddWhitelistEntry(_ string) error    { m.wlAdds++; return nil }
 func (m *mockDB) RemoveWhitelistEntry(_ string) error { m.wlRemoves++; return nil }
 func (m *mockDB) LoadTorrents() ([]torrentLoadRow, error) {
@@ -410,8 +412,9 @@ func TestAnnounce_Response_Interval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Announce: %v", err)
 	}
-	if resp.Interval < int32(w.Config.AnnounceInterval) {
-		t.Errorf("Interval %d < AnnounceInterval %d", resp.Interval, w.Config.AnnounceInterval)
+	// AdaptiveInterval may return a shorter interval than baseInterval for sparse swarms.
+	if resp.Interval <= 0 {
+		t.Errorf("Interval %d must be positive", resp.Interval)
 	}
 	if resp.MinInterval != int32(w.Config.AnnounceInterval) {
 		t.Errorf("MinInterval = %d, want %d", resp.MinInterval, w.Config.AnnounceInterval)

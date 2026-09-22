@@ -193,6 +193,18 @@ func (m *MockDB) RecordUserPasskey(id UserID, passkey string, canLeech, protectI
 	return nil
 }
 
+func (m *MockDB) DeleteTorrentHash(infoHash string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ReturnErr
+}
+
+func (m *MockDB) DeleteUserPasskey(passkey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ReturnErr
+}
+
 func (m *MockDB) AddWhitelistEntry(prefix string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -32,19 +32,23 @@ type Server struct {
 
 // Config holds server and tracker configuration.
 type Config struct {
-	ListenAddr       string
-	AnnounceInterval int
-	PeersTimeout     int
-	MaxMiddlemen     int
-	NumWantLimit     int
-	KeepaliveTimeout time.Duration
-	SitePassword     string
-	ReportPassword   string
-	ReadTimeout      time.Duration
-	WriteTimeout     time.Duration
-	ScheduleInterval int
-	GazelleURL       string
-	MetricsPort      string
+	ListenAddr        string
+	AnnounceInterval  int
+	PeersTimeout      int
+	MaxMiddlemen      int
+	MaxConnections    int
+	MaxReadBuffer     int
+	NumWantLimit      int
+	KeepaliveTimeout  time.Duration
+	SitePassword      string
+	ReportPassword    string
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	ScheduleInterval  int
+	ReapPeersInterval int
+	GazelleURL        string
+	MetricsPort       string
+	Readonly          bool
 }
 
 func NewServer(config *Config, worker *Worker) *Server {
@@ -115,7 +119,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 		tcpConn.SetKeepAlivePeriod(2 * time.Minute)
 	}
 
-	reader := bufio.NewReaderSize(conn, 4096)
+	readBuf := s.config.MaxReadBuffer
+	if readBuf <= 0 {
+		readBuf = 4096
+	}
+	reader := bufio.NewReaderSize(conn, readBuf)
 	keepalive := s.config.KeepaliveTimeout > 0
 
 	for {
@@ -154,6 +162,10 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool) {
+	if s.worker.RateLimiter != nil && !s.worker.RateLimiter.Allow(clientIP.String()) {
+		return s.errorResponse("rate limit exceeded", true), true
+	}
+
 	httpClose := true
 	if s.config.KeepaliveTimeout > 0 {
 		if req.ProtoMajor == 1 && req.ProtoMinor == 0 {
@@ -494,6 +506,8 @@ type DatabaseInterface interface {
 	// Admin writes
 	RecordTorrentHash(id TorrentID, infoHash string) error
 	RecordUserPasskey(id UserID, passkey string, canLeech, protectIP bool) error
+	DeleteTorrentHash(infoHash string) error
+	DeleteUserPasskey(passkey string) error
 	AddWhitelistEntry(prefix string) error
 	RemoveWhitelistEntry(prefix string) error
 

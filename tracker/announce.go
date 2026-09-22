@@ -183,13 +183,21 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 			default:
 				if hasToken {
 					expireToken = true
-					w.DB.RecordToken(user.ID, torrent.ID, downloadedChange)
+					if err := w.dbExec(func() error {
+						return w.DB.RecordToken(user.ID, torrent.ID, downloadedChange)
+					}); err != nil {
+						GetDefaultLogger().Error("RecordToken failed", err)
+					}
 					downloadedChange = 0
 				}
 			}
 
 			if uploadedChange > 0 || downloadedChange > 0 {
-				w.DB.RecordUserStats(user.ID, uploadedChange, downloadedChange)
+				if err := w.dbExec(func() error {
+					return w.DB.RecordUserStats(user.ID, uploadedChange, downloadedChange)
+				}); err != nil {
+					GetDefaultLogger().Error("RecordUserStats failed", err)
+				}
 			}
 		}
 	}
@@ -227,12 +235,22 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		if !user.ProtectIP.Load() {
 			ipStr = ip.String()
 		}
-		w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
-			upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
-			ipStr, string(req.PeerID), userAgent)
+		peerIDStr := string(req.PeerID)
+		if err := w.dbExec(func() error {
+			return w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
+				upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
+				ipStr, peerIDStr, userAgent)
+		}); err != nil {
+			GetDefaultLogger().Error("RecordPeer failed", err)
+		}
 	} else {
 		announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
-		w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, string(req.PeerID))
+		peerIDStr := string(req.PeerID)
+		if err := w.dbExec(func() error {
+			return w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, peerIDStr)
+		}); err != nil {
+			GetDefaultLogger().Error("RecordPeerLight failed", err)
+		}
 	}
 
 	numwant := req.NumWant
@@ -260,7 +278,11 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		if !user.ProtectIP.Load() {
 			ipStr = ip.String()
 		}
-		w.DB.RecordSnatch(user.ID, torrent.ID, now, ipStr)
+		if err := w.dbExec(func() error {
+			return w.DB.RecordSnatch(user.ID, torrent.ID, now, ipStr)
+		}); err != nil {
+			GetDefaultLogger().Error("RecordSnatch failed", err)
+		}
 
 		if !inserted {
 			torrent.mu.Lock()
@@ -322,8 +344,13 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	torrent.mu.Lock()
 	if updateTorrent || now.Sub(torrent.LastFlushed) > time.Hour {
 		torrent.LastFlushed = now
-		w.DB.RecordTorrent(torrent.ID, uint32(torrent.Seeders.Size()),
-			uint32(torrent.Leechers.Size()), snatched, torrent.Balance)
+		tID, tSeeders, tLeechers, tSnatched, tBalance :=
+			torrent.ID, uint32(torrent.Seeders.Size()), uint32(torrent.Leechers.Size()), snatched, torrent.Balance
+		if err := w.dbExec(func() error {
+			return w.DB.RecordTorrent(tID, tSeeders, tLeechers, tSnatched, tBalance)
+		}); err != nil {
+			GetDefaultLogger().Error("RecordTorrent failed", err)
+		}
 	}
 	seederCount := torrent.Seeders.Size()
 	leecherCount := torrent.Leechers.Size()
@@ -335,9 +362,6 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 
 	baseInterval := int32(w.Config.AnnounceInterval)
 	interval := AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval)
-	if interval < baseInterval {
-		interval = baseInterval
-	}
 	response := &AnnounceResponse{
 		Interval:    interval,
 		MinInterval: baseInterval,
@@ -349,7 +373,20 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		response.Warning = "Illegal character found in IP address"
 	}
 
+	if w.Metrics != nil {
+		w.Metrics.RecordAnnounce(req.Event, "ok", time.Since(now))
+		w.Metrics.UpdatePeerCounts(int(w.Stats.Seeders.Load()), int(w.Stats.Leechers.Load()))
+	}
+
 	return response, nil
+}
+
+// dbExec runs fn through the circuit breaker when one is configured, otherwise calls fn directly.
+func (w *Worker) dbExec(fn func() error) error {
+	if w.CircuitBreak != nil {
+		return w.CircuitBreak.Execute(fn)
+	}
+	return fn()
 }
 
 func (w *Worker) findOrCreatePeer(peerList *PeerList, peerKey string, user *User) (*Peer, bool) {
