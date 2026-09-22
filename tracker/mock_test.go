@@ -3,6 +3,8 @@ package tracker
 import (
 	"sync"
 	"time"
+
+	"github.com/mgdavisxvs/Ocelot/commons"
 )
 
 // ── MockDB ────────────────────────────────────────────────────────────────────
@@ -292,4 +294,79 @@ func (m *MockSiteComm) reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Expired = nil
+}
+
+// ── MockCommons ───────────────────────────────────────────────────────────────
+
+type settledPriority struct {
+	UserID uint32
+	PC     commons.PriorityClass
+}
+
+type settledBudget struct {
+	UserID, TorrentID uint32
+	MaxCredits        int64
+}
+
+// MockCommons implements CommonsInterface for tests.
+type MockCommons struct {
+	mu          sync.Mutex
+	Settled     []commons.AnnounceStats
+	Evaluated   []*commons.AllocationRequest
+	PrioritySet []settledPriority
+	BudgetSet   []settledBudget
+
+	// EvalDecision is returned by EvaluatePeers. When nil, a default accepted
+	// decision is constructed from the request's Candidates.
+	EvalDecision *commons.AllocationDecision
+	ReturnErr    error
+}
+
+func newMockCommons() *MockCommons { return &MockCommons{} }
+
+func (m *MockCommons) SettleAnnounce(stats *commons.AnnounceStats) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ReturnErr != nil {
+		return m.ReturnErr
+	}
+	m.Settled = append(m.Settled, *stats)
+	return nil
+}
+
+func (m *MockCommons) EvaluatePeers(req *commons.AllocationRequest) *commons.AllocationDecision {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Evaluated = append(m.Evaluated, req)
+	if m.EvalDecision != nil {
+		return m.EvalDecision
+	}
+	ranked := make([]*commons.SeederCandidate, len(req.Candidates))
+	copy(ranked, req.Candidates)
+	return &commons.AllocationDecision{
+		Accepted:      true,
+		RankedSeeders: ranked,
+	}
+}
+
+func (m *MockCommons) SetUserPriority(userID uint32, pc commons.PriorityClass) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ReturnErr != nil {
+		return m.ReturnErr
+	}
+	m.PrioritySet = append(m.PrioritySet, settledPriority{UserID: userID, PC: pc})
+	return nil
+}
+
+func (m *MockCommons) SetUserBudget(userID, torrentID uint32, maxCredits int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ReturnErr != nil {
+		return m.ReturnErr
+	}
+	m.BudgetSet = append(m.BudgetSet, settledBudget{
+		UserID: userID, TorrentID: torrentID, MaxCredits: maxCredits,
+	})
+	return nil
 }

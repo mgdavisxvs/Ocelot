@@ -473,3 +473,154 @@ func TestGetWhitelist_Empty(t *testing.T) {
 	json.Unmarshal(data, &list)
 	// null JSON array is fine for empty whitelist (allow-all)
 }
+
+// ── set_priority_class ────────────────────────────────────────────────────────
+
+func newAdminWorkerWithCommons() *Worker {
+	w := newAdminWorker()
+	w.Commons = newMockCommons()
+	return w
+}
+
+func TestHandleUpdate_SetPriorityClass(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	req := newAdminRequest(url.Values{
+		"action":         {"set_priority_class"},
+		"id":             {"42"},
+		"priority_class": {"1"},
+	})
+	data, err := w.HandleUpdate(req)
+	if err != nil {
+		t.Fatalf("set_priority_class: %v", err)
+	}
+	var resp map[string]string
+	json.Unmarshal(data, &resp)
+	if resp["status"] != "ok" {
+		t.Errorf("status = %q, want \"ok\"", resp["status"])
+	}
+
+	mc := w.Commons.(*MockCommons)
+	if len(mc.PrioritySet) != 1 {
+		t.Fatalf("PrioritySet len = %d, want 1", len(mc.PrioritySet))
+	}
+	if mc.PrioritySet[0].UserID != 42 {
+		t.Errorf("UserID = %d, want 42", mc.PrioritySet[0].UserID)
+	}
+}
+
+func TestHandleUpdate_SetPriorityClass_NoCommons(t *testing.T) {
+	w := newAdminWorker() // Commons = nil
+	req := newAdminRequest(url.Values{
+		"action":         {"set_priority_class"},
+		"id":             {"1"},
+		"priority_class": {"2"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when Commons is nil")
+	}
+}
+
+func TestHandleUpdate_SetPriorityClass_InvalidClass(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	req := newAdminRequest(url.Values{
+		"action":         {"set_priority_class"},
+		"id":             {"1"},
+		"priority_class": {"99"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for invalid priority class 99")
+	}
+}
+
+func TestHandleUpdate_SetPriorityClass_MissingID(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	req := newAdminRequest(url.Values{
+		"action":         {"set_priority_class"},
+		"priority_class": {"1"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when id is missing")
+	}
+}
+
+// ── set_budget ────────────────────────────────────────────────────────────────
+
+func TestHandleUpdate_SetBudget(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	req := newAdminRequest(url.Values{
+		"action":      {"set_budget"},
+		"id":          {"7"},
+		"max_credits": {"500"},
+		"torrent_id":  {"3"},
+	})
+	data, err := w.HandleUpdate(req)
+	if err != nil {
+		t.Fatalf("set_budget: %v", err)
+	}
+	var resp map[string]string
+	json.Unmarshal(data, &resp)
+	if resp["status"] != "ok" {
+		t.Errorf("status = %q, want \"ok\"", resp["status"])
+	}
+
+	mc := w.Commons.(*MockCommons)
+	if len(mc.BudgetSet) != 1 {
+		t.Fatalf("BudgetSet len = %d, want 1", len(mc.BudgetSet))
+	}
+	b := mc.BudgetSet[0]
+	if b.UserID != 7 {
+		t.Errorf("UserID = %d, want 7", b.UserID)
+	}
+	if b.TorrentID != 3 {
+		t.Errorf("TorrentID = %d, want 3", b.TorrentID)
+	}
+	if b.MaxCredits != 500 {
+		t.Errorf("MaxCredits = %d, want 500", b.MaxCredits)
+	}
+}
+
+func TestHandleUpdate_SetBudget_GlobalBudget(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	// No torrent_id → global budget (TorrentID=0)
+	req := newAdminRequest(url.Values{
+		"action":      {"set_budget"},
+		"id":          {"9"},
+		"max_credits": {"1000"},
+	})
+	if _, err := w.HandleUpdate(req); err != nil {
+		t.Fatalf("set_budget global: %v", err)
+	}
+
+	mc := w.Commons.(*MockCommons)
+	if mc.BudgetSet[0].TorrentID != 0 {
+		t.Errorf("global budget TorrentID = %d, want 0", mc.BudgetSet[0].TorrentID)
+	}
+}
+
+func TestHandleUpdate_SetBudget_NoCommons(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":      {"set_budget"},
+		"id":          {"1"},
+		"max_credits": {"100"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when Commons is nil")
+	}
+}
+
+func TestHandleUpdate_SetBudget_MissingID(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	req := newAdminRequest(url.Values{
+		"action":      {"set_budget"},
+		"max_credits": {"100"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when id is missing")
+	}
+}
