@@ -10,6 +10,7 @@ import (
 	"github.com/mgdavisxvs/Ocelot/virtualserver/domain"
 	vsmetrics "github.com/mgdavisxvs/Ocelot/virtualserver/metrics"
 	"github.com/mgdavisxvs/Ocelot/virtualserver/scheduler"
+	"github.com/mgdavisxvs/Ocelot/virtualserver/storage"
 	"github.com/mgdavisxvs/Ocelot/virtualserver/store"
 )
 
@@ -32,6 +33,17 @@ type StoreInterface interface {
 	IncrementRetryCount(ctx context.Context, instanceID string) error
 	UpdateRuntimeHandle(ctx context.Context, instanceID string, handle map[string]string) error
 	WriteAuditLog(ctx context.Context, action, resourceType, resourceID, ipAddr string, success bool, errMsg string) error
+
+	// Volume methods
+	ListVolumesByState(ctx context.Context, state domain.VolumeState) ([]domain.Volume, error)
+	GetVolumeByName(ctx context.Context, namespace, name string) (*domain.Volume, error)
+	UpdateVolumeState(ctx context.Context, id string, to domain.VolumeState) error
+	UpdateVolumeHandle(ctx context.Context, id string, handle map[string]string) error
+	UpdateVolumeBoundNode(ctx context.Context, id, nodeID string) error
+	UpdateVolumeFailure(ctx context.Context, id, reason string) error
+	BindMount(ctx context.Context, m domain.VolumeMount) (int64, error)
+	UpdateMountState(ctx context.Context, id int64, to domain.VolumeMountState) error
+	ListMountsByInstance(ctx context.Context, instanceID string) ([]domain.VolumeMount, error)
 }
 
 // ArtifactCatalog is the narrow interface bridging the reconciler to artifact availability.
@@ -42,11 +54,12 @@ type ArtifactCatalog interface {
 // VSReconciler drives instances from declared → running and handles failure recovery.
 // Only one reconciler loop runs at a time (overlap guard via runningMu).
 type VSReconciler struct {
-	store    StoreInterface
-	adapters map[string]adapter.BackendAdapter
-	sched    *scheduler.Scheduler
-	catalog  ArtifactCatalog
-	interval time.Duration
+	store        StoreInterface
+	adapters     map[string]adapter.BackendAdapter
+	classDrivers map[string]storage.StorageDriver // class name → driver
+	sched        *scheduler.Scheduler
+	catalog      ArtifactCatalog
+	interval     time.Duration
 
 	runningMu sync.Mutex
 
@@ -56,11 +69,12 @@ type VSReconciler struct {
 
 // Config holds VSReconciler construction parameters.
 type Config struct {
-	Store    StoreInterface
-	Adapters map[string]adapter.BackendAdapter
-	Sched    *scheduler.Scheduler
-	Catalog  ArtifactCatalog
-	Interval time.Duration
+	Store        StoreInterface
+	Adapters     map[string]adapter.BackendAdapter
+	ClassDrivers map[string]storage.StorageDriver
+	Sched        *scheduler.Scheduler
+	Catalog      ArtifactCatalog
+	Interval     time.Duration
 }
 
 // New creates a VSReconciler. Interval defaults to 15 s if zero.
@@ -69,14 +83,19 @@ func New(cfg Config) *VSReconciler {
 	if interval <= 0 {
 		interval = defaultInterval
 	}
+	drivers := cfg.ClassDrivers
+	if drivers == nil {
+		drivers = map[string]storage.StorageDriver{}
+	}
 	return &VSReconciler{
-		store:    cfg.Store,
-		adapters: cfg.Adapters,
-		sched:    cfg.Sched,
-		catalog:  cfg.Catalog,
-		interval: interval,
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		store:        cfg.Store,
+		adapters:     cfg.Adapters,
+		classDrivers: drivers,
+		sched:        cfg.Sched,
+		catalog:      cfg.Catalog,
+		interval:     interval,
+		stop:         make(chan struct{}),
+		done:         make(chan struct{}),
 	}
 }
 
@@ -139,6 +158,11 @@ func (r *VSReconciler) Reconcile(ctx context.Context) error {
 
 // reconcile is the internal single-pass implementation.
 func (r *VSReconciler) reconcile(ctx context.Context) error {
+	if err := r.reconcileVolumes(ctx); err != nil {
+		// Non-fatal: log and continue with instance reconciliation.
+		r.store.WriteAuditLog(ctx, "volume_reconcile_error", "volume", "", "", false, err.Error()) //nolint:errcheck
+	}
+
 	nodes, err := r.store.ListNodes(ctx, "")
 	if err != nil {
 		return fmt.Errorf("list nodes: %w", err)
@@ -196,6 +220,18 @@ func (r *VSReconciler) scheduleInstance(ctx context.Context, inst *domain.Servic
 		if n.State == domain.NodeReady {
 			eligible = append(eligible, n)
 		}
+	}
+
+	// HC-08: if any local-class volume declares a BoundNodeID, constrain eligible nodes to that one.
+	if pinnedNodeID := r.localVolumePinnedNode(ctx, svc.Manifest); pinnedNodeID != "" {
+		var pinned []domain.Node
+		for _, n := range eligible {
+			if n.ID == pinnedNodeID {
+				pinned = append(pinned, n)
+				break
+			}
+		}
+		eligible = pinned
 	}
 
 	decision, err := r.sched.Schedule(ctx, svc.Manifest, eligible, r.catalog)
@@ -265,6 +301,15 @@ func (r *VSReconciler) provisionInstance(ctx context.Context, inst *domain.Servi
 		}
 	}
 
+	// Resolve and mount volumes declared in the service manifest.
+	resolvedMounts, mountIDs, err := r.resolveMounts(ctx, svc.Manifest, inst.ID, inst.NodeID)
+	if err != nil {
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceFailed) //nolint:errcheck
+		return fmt.Errorf("resolve mounts: %w", err)
+	}
+	req.Mounts = resolvedMounts
+	_ = mountIDs // mount IDs tracked in DB; not needed by the adapter
+
 	t0 := time.Now()
 	handle, err := ad.Provision(ctx, req)
 	vsmetrics.AdapterDuration.WithLabelValues(ad.Name(), "provision").Observe(time.Since(t0).Seconds())
@@ -317,6 +362,138 @@ func (r *VSReconciler) startInstance(ctx context.Context, inst *domain.ServiceIn
 	vsmetrics.InstancesTotal.WithLabelValues(string(domain.InstanceRunning)).Inc()
 	r.store.WriteAuditLog(ctx, "started", "instance", inst.ID, "", true, "") //nolint:errcheck
 	return nil
+}
+
+// localVolumePinnedNode returns the BoundNodeID if any local-class volume in the manifest
+// has been bound to a specific node (HC-08 enforcement). Returns "" if unconstrained.
+func (r *VSReconciler) localVolumePinnedNode(ctx context.Context, manifest domain.ServiceManifest) string {
+	for _, m := range manifest.Spec.Mounts {
+		vol, err := r.store.GetVolumeByName(ctx, manifest.Metadata.Namespace, m.VolumeName)
+		if err != nil || vol == nil {
+			continue
+		}
+		drv, ok := r.classDrivers[vol.Manifest.Spec.Class]
+		if !ok || drv.Name() != "local" {
+			continue
+		}
+		if vol.BoundNodeID != "" {
+			return vol.BoundNodeID
+		}
+	}
+	return ""
+}
+
+// resolveMounts calls Mount on each volume declared in the service manifest and records
+// the mount in the store. Returns adapter.ResolvedMount slices and the DB mount IDs.
+func (r *VSReconciler) resolveMounts(ctx context.Context, manifest domain.ServiceManifest, instanceID, nodeID string) ([]adapter.ResolvedMount, []int64, error) {
+	var resolved []adapter.ResolvedMount
+	var ids []int64
+
+	for _, decl := range manifest.Spec.Mounts {
+		vol, err := r.store.GetVolumeByName(ctx, manifest.Metadata.Namespace, decl.VolumeName)
+		if err != nil {
+			return nil, nil, fmt.Errorf("volume %q not found: %w", decl.VolumeName, err)
+		}
+		if vol.State != domain.VolumeReady && vol.State != domain.VolumeBound {
+			return nil, nil, fmt.Errorf("volume %q is not ready (state=%s)", decl.VolumeName, vol.State)
+		}
+
+		drv, ok := r.classDrivers[vol.Manifest.Spec.Class]
+		if !ok {
+			return nil, nil, fmt.Errorf("no driver registered for class %q", vol.Manifest.Spec.Class)
+		}
+
+		t0 := time.Now()
+		mp, err := drv.Mount(ctx, storage.MountRequest{
+			VolumeID:   vol.ID,
+			NodeID:     nodeID,
+			Handle:     vol.DriverHandle,
+			TargetPath: decl.TargetPath,
+			ReadOnly:   decl.ReadOnly,
+		})
+		vsmetrics.VolumeOperations.WithLabelValues(drv.Name(), "mount", outcomeStr(err)).Inc()
+		_ = t0
+		if err != nil {
+			return nil, nil, fmt.Errorf("mount volume %q: %w", vol.ID, err)
+		}
+
+		mountID, err := r.store.BindMount(ctx, domain.VolumeMount{
+			VolumeID:   vol.ID,
+			InstanceID: instanceID,
+			TargetPath: decl.TargetPath,
+			ReadOnly:   decl.ReadOnly,
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("bind mount record: %w", err)
+		}
+		r.store.UpdateMountState(ctx, mountID, domain.MountActive) //nolint:errcheck
+
+		if vol.BoundNodeID == "" && drv.Name() == "local" {
+			r.store.UpdateVolumeBoundNode(ctx, vol.ID, nodeID) //nolint:errcheck
+		}
+		if vol.State == domain.VolumeReady {
+			r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeBound) //nolint:errcheck
+		}
+		vsmetrics.VolumeCount.WithLabelValues(vol.Manifest.Spec.Class, string(domain.VolumeBound)).Inc()
+
+		resolved = append(resolved, adapter.ResolvedMount{
+			HostPath:   mp.HostPath,
+			TargetPath: decl.TargetPath,
+			ReadOnly:   decl.ReadOnly,
+		})
+		ids = append(ids, mountID)
+	}
+	return resolved, ids, nil
+}
+
+// reconcileVolumes drives volumes in declared state through provisioning → ready.
+func (r *VSReconciler) reconcileVolumes(ctx context.Context) error {
+	declared, err := r.store.ListVolumesByState(ctx, domain.VolumeDeclared)
+	if err != nil {
+		return fmt.Errorf("list declared volumes: %w", err)
+	}
+	for i := range declared {
+		if err := r.provisionVolume(ctx, &declared[i]); err != nil {
+			r.store.WriteAuditLog(ctx, "volume_provision_failed", "volume", declared[i].ID, "", false, err.Error()) //nolint:errcheck
+		}
+	}
+	return nil
+}
+
+// provisionVolume calls the storage driver Create for a declared volume.
+func (r *VSReconciler) provisionVolume(ctx context.Context, vol *domain.Volume) error {
+	drv, ok := r.classDrivers[vol.Manifest.Spec.Class]
+	if !ok {
+		return fmt.Errorf("no driver registered for class %q", vol.Manifest.Spec.Class)
+	}
+
+	if err := r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeProvisioning); err != nil {
+		return fmt.Errorf("set provisioning: %w", err)
+	}
+	vsmetrics.VolumeCount.WithLabelValues(vol.Manifest.Spec.Class, string(domain.VolumeProvisioning)).Inc()
+
+	handle, err := drv.Create(ctx, vol.Manifest.Metadata.Namespace, vol.Manifest.Metadata.Name, vol.Manifest.Spec)
+	vsmetrics.VolumeOperations.WithLabelValues(drv.Name(), "create", outcomeStr(err)).Inc()
+	if err != nil {
+		r.store.UpdateVolumeFailure(ctx, vol.ID, err.Error()) //nolint:errcheck
+		vsmetrics.VolumeCount.WithLabelValues(vol.Manifest.Spec.Class, string(domain.VolumeFailed)).Inc()
+		return fmt.Errorf("driver create: %w", err)
+	}
+
+	r.store.UpdateVolumeHandle(ctx, vol.ID, handle)                     //nolint:errcheck
+	r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeReady)          //nolint:errcheck
+	vsmetrics.VolumeCount.WithLabelValues(vol.Manifest.Spec.Class, string(domain.VolumeReady)).Inc()
+	vsmetrics.VolumeCapacityMiB.WithLabelValues(vol.Manifest.Spec.Class).Add(float64(vol.Manifest.Spec.CapacityMiB))
+	r.store.WriteAuditLog(ctx, "volume_provisioned", "volume", vol.ID, "", true, //nolint:errcheck
+		fmt.Sprintf("class=%s driver=%s", vol.Manifest.Spec.Class, drv.Name()))
+	return nil
+}
+
+func outcomeStr(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	return "error"
 }
 
 func (r *VSReconciler) handleFailedInstance(ctx context.Context, inst *domain.ServiceInstance) {

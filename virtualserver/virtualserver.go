@@ -11,6 +11,8 @@ import (
 	"github.com/mgdavisxvs/Ocelot/virtualserver/config"
 	"github.com/mgdavisxvs/Ocelot/virtualserver/reconciler"
 	"github.com/mgdavisxvs/Ocelot/virtualserver/scheduler"
+	"github.com/mgdavisxvs/Ocelot/virtualserver/storage"
+	localstorage "github.com/mgdavisxvs/Ocelot/virtualserver/storage/local"
 	"github.com/mgdavisxvs/Ocelot/virtualserver/store"
 )
 
@@ -20,13 +22,24 @@ type DBProvider interface {
 }
 
 // VirtualServer is the top-level coordinator for the VS subsystem.
-// It owns the SQLite store, reconciler, HTTP API, and adapter registry.
+// It owns the SQLite store, reconciler, HTTP API, and adapter/driver registries.
 type VirtualServer struct {
-	cfg        config.VSConfig
-	store      *store.VSStore
-	reconciler *reconciler.VSReconciler
-	server     *vsapi.Server
-	adapters   map[string]adapter.BackendAdapter
+	cfg          config.VSConfig
+	store        *store.VSStore
+	reconciler   *reconciler.VSReconciler
+	server       *vsapi.Server
+	adapters     map[string]adapter.BackendAdapter
+	classDrivers map[string]storage.StorageDriver
+}
+
+// driverRegistry implements VolumeHandlerDrivers.
+type driverRegistry struct {
+	m map[string]storage.StorageDriver
+}
+
+func (r *driverRegistry) DriverForClass(class string) (storage.StorageDriver, bool) {
+	d, ok := r.m[class]
+	return d, ok
 }
 
 // New opens the VS SQLite database, runs migrations, and wires all components.
@@ -52,28 +65,50 @@ func New(cfg config.VSConfig, tracker DBProvider) (*VirtualServer, error) {
 	// Built-in adapters — extend by calling RegisterAdapter before Start.
 	adapters := map[string]adapter.BackendAdapter{}
 
+	// Build classDrivers map from StorageClasses config.
+	classDrivers := map[string]storage.StorageDriver{}
+	for _, sc := range cfg.StorageClasses {
+		switch sc.Driver {
+		case "local":
+			nodeID := sc.Params["nodeID"]
+			baseDir := sc.Params["baseDir"]
+			if baseDir == "" {
+				baseDir = "data/volumes/" + sc.Name
+			}
+			classDrivers[sc.Name] = localstorage.New(nodeID, baseDir)
+		}
+	}
+
 	rec := reconciler.New(reconciler.Config{
-		Store:    s,
-		Adapters: adapters,
-		Sched:    sched,
-		Catalog:  cat,
-		Interval: cfg.ReconcileEvery,
+		Store:        s,
+		Adapters:     adapters,
+		ClassDrivers: classDrivers,
+		Sched:        sched,
+		Catalog:      cat,
+		Interval:     cfg.ReconcileEvery,
 	})
 
-	srv := vsapi.NewServer(cfg, s)
+	reg := &driverRegistry{m: classDrivers}
+	srv := vsapi.NewServerWithDrivers(cfg, s, reg)
 
 	return &VirtualServer{
-		cfg:        cfg,
-		store:      s,
-		reconciler: rec,
-		server:     srv,
-		adapters:   adapters,
+		cfg:          cfg,
+		store:        s,
+		reconciler:   rec,
+		server:       srv,
+		adapters:     adapters,
+		classDrivers: classDrivers,
 	}, nil
 }
 
 // RegisterAdapter registers a BackendAdapter under its Name(). Must be called before Start.
 func (vs *VirtualServer) RegisterAdapter(a adapter.BackendAdapter) {
 	vs.adapters[a.Name()] = a
+}
+
+// RegisterStorageDriver registers a StorageDriver under a storage class name. Must be called before Start.
+func (vs *VirtualServer) RegisterStorageDriver(className string, d storage.StorageDriver) {
+	vs.classDrivers[className] = d
 }
 
 // Start launches the HTTP server and the reconciler loop.

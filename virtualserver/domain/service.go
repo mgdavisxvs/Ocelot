@@ -72,14 +72,15 @@ type RestartPolicy struct {
 
 // ServiceSpec is the desired-state specification for a service.
 type ServiceSpec struct {
-	Artifact         ArtifactReference `json:"artifact"`
-	Runtime          string            `json:"runtime"`
-	Instances        int               `json:"instances"`
-	Resources        ResourceRequest   `json:"resources"`
-	Placement        PlacementPolicy   `json:"placement,omitempty"`
-	Restart          RestartPolicy     `json:"restart,omitempty"`
-	MigrationAllowed bool              `json:"migrationAllowed"`
-	HealthCheck      map[string]string `json:"healthCheck,omitempty"`
+	Artifact         ArtifactReference  `json:"artifact"`
+	Runtime          string             `json:"runtime"`
+	Instances        int                `json:"instances"`
+	Resources        ResourceRequest    `json:"resources"`
+	Placement        PlacementPolicy    `json:"placement,omitempty"`
+	Restart          RestartPolicy      `json:"restart,omitempty"`
+	MigrationAllowed bool               `json:"migrationAllowed"`
+	HealthCheck      map[string]string  `json:"healthCheck,omitempty"`
+	Mounts           []ServiceVolumeMount `json:"mounts,omitempty"`
 }
 
 // ServiceManifest is the top-level declaration of a desired service.

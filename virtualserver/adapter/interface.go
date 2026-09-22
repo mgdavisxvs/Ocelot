@@ -36,6 +36,14 @@ type HealthResult struct {
 	Message string
 }
 
+// ResolvedMount is a volume mount that has been resolved to an actual host path.
+// The storage driver has already been called; this is what the adapter bind-mounts into the runtime.
+type ResolvedMount struct {
+	HostPath   string
+	TargetPath string
+	ReadOnly   bool
+}
+
 // ProvisionRequest contains all information needed to provision an instance.
 type ProvisionRequest struct {
 	InstanceID string
@@ -43,6 +51,7 @@ type ProvisionRequest struct {
 	NodeName   string
 	Manifest   domain.ServiceManifest
 	Allocation Allocation
+	Mounts     []ResolvedMount
 }
 
 // Allocation holds the resources reserved for a provision request.

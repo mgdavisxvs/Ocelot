@@ -7,8 +7,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/mgdavisxvs/Ocelot/virtualserver/domain"
+	"github.com/mgdavisxvs/Ocelot/virtualserver/storage"
 	"github.com/mgdavisxvs/Ocelot/virtualserver/store"
 )
 
@@ -34,16 +37,39 @@ type HandlerStore interface {
 	GetInstance(ctx context.Context, id string) (*domain.ServiceInstance, error)
 	ListInstancesByService(ctx context.Context, serviceID int64) ([]domain.ServiceInstance, error)
 	ListInstances(ctx context.Context, stateFilter string) ([]domain.ServiceInstance, error)
+
+	// Volumes
+	CreateVolume(ctx context.Context, v domain.Volume) (string, error)
+	GetVolume(ctx context.Context, id string) (*domain.Volume, error)
+	ListVolumes(ctx context.Context, namespace string) ([]domain.Volume, error)
+	UpdateVolumeState(ctx context.Context, id string, to domain.VolumeState) error
+	ListActiveMountsByVolume(ctx context.Context, volumeID string) ([]domain.VolumeMount, error)
+	DeleteVolume(ctx context.Context, id string) error
+	CreateSnapshot(ctx context.Context, snap domain.VolumeSnapshot) error
+	GetSnapshot(ctx context.Context, id string) (*domain.VolumeSnapshot, error)
+	ListSnapshots(ctx context.Context, volumeID string) ([]domain.VolumeSnapshot, error)
+}
+
+// VolumeHandlerDrivers gives the volume handlers access to storage drivers
+// so they can call Snapshot directly.
+type VolumeHandlerDrivers interface {
+	DriverForClass(class string) (storage.StorageDriver, bool)
 }
 
 // Handlers groups all VS HTTP route handlers.
 type Handlers struct {
-	store HandlerStore
+	store   HandlerStore
+	drivers VolumeHandlerDrivers // may be nil when no storage classes configured
 }
 
 // NewHandlers creates a Handlers bound to the given store.
 func NewHandlers(s HandlerStore) *Handlers {
 	return &Handlers{store: s}
+}
+
+// NewHandlersWithDrivers creates a Handlers with access to storage drivers for snapshot calls.
+func NewHandlersWithDrivers(s HandlerStore, d VolumeHandlerDrivers) *Handlers {
+	return &Handlers{store: s, drivers: d}
 }
 
 // ── Namespace handlers ────────────────────────────────────────────────────────
@@ -332,6 +358,185 @@ func (h *Handlers) ListServiceInstances(w http.ResponseWriter, r *http.Request) 
 		resp[i] = instanceToResponse(inst)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"instances": resp})
+}
+
+// ── Volume handlers ───────────────────────────────────────────────────────────
+
+// POST /v1/volumes
+func (h *Handlers) DeclareVolume(w http.ResponseWriter, r *http.Request) {
+	var req DeclareVolumeRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := req.Manifest.Validate(); err != nil {
+		writeError(w, r, http.StatusBadRequest, err.Error(), "INVALID_MANIFEST")
+		return
+	}
+	v := domain.Volume{
+		ID:       uuid.New().String(),
+		Manifest: req.Manifest,
+		State:    domain.VolumeDeclared,
+	}
+	id, err := h.store.CreateVolume(r.Context(), v)
+	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, r, http.StatusConflict, "volume already declared", "CONFLICT")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+	v.ID = id
+	v.CreatedAt = time.Now()
+	v.UpdatedAt = v.CreatedAt
+	writeJSON(w, http.StatusCreated, volumeToResponse(v))
+}
+
+// GET /v1/volumes
+func (h *Handlers) ListVolumes(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("namespace")
+	vols, err := h.store.ListVolumes(r.Context(), ns)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+	resp := make([]VolumeResponse, len(vols))
+	for i, v := range vols {
+		resp[i] = volumeToResponse(v)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"volumes": resp})
+}
+
+// GET /v1/volumes/{id}
+func (h *Handlers) GetVolume(w http.ResponseWriter, r *http.Request) {
+	id := pathSegment(r.URL.Path, "volumes")
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "missing volume id", "INVALID_REQUEST")
+		return
+	}
+	v, err := h.store.GetVolume(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "volume not found", "NOT_FOUND")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+	writeJSON(w, http.StatusOK, volumeToResponse(*v))
+}
+
+// DELETE /v1/volumes/{id}
+// Transitions the volume to releasing then released (synchronous delete for admin use).
+func (h *Handlers) DeleteVolume(w http.ResponseWriter, r *http.Request) {
+	id := pathSegment(r.URL.Path, "volumes")
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "missing volume id", "INVALID_REQUEST")
+		return
+	}
+	v, err := h.store.GetVolume(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "volume not found", "NOT_FOUND")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+	// Guard: cannot delete while mounts are active.
+	active, _ := h.store.ListActiveMountsByVolume(r.Context(), id)
+	if len(active) > 0 {
+		writeError(w, r, http.StatusConflict, "volume has active mounts", "CONFLICT")
+		return
+	}
+	// Transition ready/declared → releasing → released.
+	if v.State != domain.VolumeReleased {
+		if v.State == domain.VolumeReady || v.State == domain.VolumeDeclared || v.State == domain.VolumeBound {
+			_ = h.store.UpdateVolumeState(r.Context(), id, domain.VolumeReleasing)
+		}
+		_ = h.store.UpdateVolumeState(r.Context(), id, domain.VolumeReleased)
+	}
+	if err := h.store.DeleteVolume(r.Context(), id); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// POST /v1/volumes/{id}/snapshots
+func (h *Handlers) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := pathSegment(r.URL.Path, "volumes")
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "missing volume id", "INVALID_REQUEST")
+		return
+	}
+	var req CreateSnapshotRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	v, err := h.store.GetVolume(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "volume not found", "NOT_FOUND")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+	if v.State != domain.VolumeReady && v.State != domain.VolumeBound {
+		writeError(w, r, http.StatusUnprocessableEntity, "volume is not ready", "INVALID_STATE")
+		return
+	}
+
+	snap := domain.VolumeSnapshot{
+		ID:        uuid.New().String(),
+		VolumeID:  id,
+		Label:     req.Label,
+		State:     domain.SnapshotPending,
+		CreatedAt: time.Now(),
+	}
+	if err := h.store.CreateSnapshot(r.Context(), snap); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+
+	// Attempt synchronous snapshot via driver if available.
+	if h.drivers != nil {
+		if drv, ok := h.drivers.DriverForClass(v.Manifest.Spec.Class); ok {
+			ref, snapErr := drv.Snapshot(r.Context(), v.DriverHandle, req.Label)
+			if snapErr == nil {
+				snap.State = domain.SnapshotReady
+				snap.DriverRef = ref
+				h.store.GetSnapshot(r.Context(), snap.ID) //nolint:errcheck — fetched below
+			}
+		}
+	}
+
+	final, err := h.store.GetSnapshot(r.Context(), snap.ID)
+	if err != nil {
+		writeJSON(w, http.StatusCreated, snapshotToResponse(snap))
+		return
+	}
+	writeJSON(w, http.StatusCreated, snapshotToResponse(*final))
+}
+
+// GET /v1/volumes/{id}/snapshots
+func (h *Handlers) ListSnapshots(w http.ResponseWriter, r *http.Request) {
+	id := pathSegment(r.URL.Path, "volumes")
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "missing volume id", "INVALID_REQUEST")
+		return
+	}
+	snaps, err := h.store.ListSnapshots(r.Context(), id)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+	resp := make([]SnapshotResponse, len(snaps))
+	for i, s := range snaps {
+		resp[i] = snapshotToResponse(s)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"snapshots": resp})
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

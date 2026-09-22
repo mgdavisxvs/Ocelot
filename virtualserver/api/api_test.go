@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/mgdavisxvs/Ocelot/virtualserver/domain"
 	"github.com/mgdavisxvs/Ocelot/virtualserver/store"
@@ -20,7 +21,11 @@ type testStore struct {
 	nodes      map[string]*domain.Node
 	services   map[int64]*domain.Service
 	instances  map[string]*domain.ServiceInstance
+	volumes    map[string]*domain.Volume
+	mounts     map[int64]*domain.VolumeMount
+	snapshots  map[string]*domain.VolumeSnapshot
 	nextSvcID  int64
+	nextMntID  int64
 }
 
 func newTestStore() *testStore {
@@ -28,7 +33,11 @@ func newTestStore() *testStore {
 		nodes:     make(map[string]*domain.Node),
 		services:  make(map[int64]*domain.Service),
 		instances: make(map[string]*domain.ServiceInstance),
+		volumes:   make(map[string]*domain.Volume),
+		mounts:    make(map[int64]*domain.VolumeMount),
+		snapshots: make(map[string]*domain.VolumeSnapshot),
 		nextSvcID: 1,
+		nextMntID: 1,
 	}
 }
 
@@ -109,6 +118,77 @@ func (s *testStore) ListInstances(_ context.Context, _ string) ([]domain.Service
 	var out []domain.ServiceInstance
 	for _, inst := range s.instances {
 		out = append(out, *inst)
+	}
+	return out, nil
+}
+
+// Volume methods
+func (s *testStore) CreateVolume(_ context.Context, v domain.Volume) (string, error) {
+	for _, existing := range s.volumes {
+		if existing.Manifest.Metadata.Namespace == v.Manifest.Metadata.Namespace &&
+			existing.Manifest.Metadata.Name == v.Manifest.Metadata.Name {
+			return "", store.ErrConflict
+		}
+	}
+	s.volumes[v.ID] = &v
+	return v.ID, nil
+}
+func (s *testStore) GetVolume(_ context.Context, id string) (*domain.Volume, error) {
+	if v, ok := s.volumes[id]; ok {
+		return v, nil
+	}
+	return nil, store.ErrNotFound
+}
+func (s *testStore) ListVolumes(_ context.Context, ns string) ([]domain.Volume, error) {
+	var out []domain.Volume
+	for _, v := range s.volumes {
+		if ns == "" || v.Manifest.Metadata.Namespace == ns {
+			out = append(out, *v)
+		}
+	}
+	return out, nil
+}
+func (s *testStore) UpdateVolumeState(_ context.Context, id string, to domain.VolumeState) error {
+	if v, ok := s.volumes[id]; ok {
+		v.State = to
+		return nil
+	}
+	return store.ErrNotFound
+}
+func (s *testStore) ListActiveMountsByVolume(_ context.Context, volumeID string) ([]domain.VolumeMount, error) {
+	var out []domain.VolumeMount
+	for _, m := range s.mounts {
+		if m.VolumeID == volumeID && m.State != domain.MountReleased {
+			out = append(out, *m)
+		}
+	}
+	return out, nil
+}
+func (s *testStore) DeleteVolume(_ context.Context, id string) error {
+	if v, ok := s.volumes[id]; !ok {
+		return store.ErrNotFound
+	} else if v.State != domain.VolumeReleased {
+		return store.ErrConflict
+	}
+	delete(s.volumes, id)
+	return nil
+}
+func (s *testStore) CreateSnapshot(_ context.Context, snap domain.VolumeSnapshot) error {
+	s.snapshots[snap.ID] = &snap
+	return nil
+}
+func (s *testStore) GetSnapshot(_ context.Context, id string) (*domain.VolumeSnapshot, error) {
+	if snap, ok := s.snapshots[id]; ok {
+		return snap, nil
+	}
+	return nil, store.ErrNotFound
+}
+func (s *testStore) ListSnapshots(_ context.Context, volumeID string) ([]domain.VolumeSnapshot, error) {
+	var out []domain.VolumeSnapshot
+	for _, snap := range s.snapshots {
+		if snap.VolumeID == volumeID {
+			out = append(out, *snap)
+		}
 	}
 	return out, nil
 }
@@ -359,4 +439,176 @@ func TestAPI_Healthz(t *testing.T) {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+}
+
+// ── volume tests ──────────────────────────────────────────────────────────────
+
+func validVolumeManifest() domain.VolumeManifest {
+	return domain.VolumeManifest{
+		APIVersion: "virtualserver/v1",
+		Kind:       "Volume",
+		Metadata:   domain.VolumeMetadata{Namespace: "test", Name: "data-vol"},
+		Spec: domain.VolumeSpec{
+			Class:       "local",
+			CapacityMiB: 1024,
+			AccessMode:  domain.VolumeAccessRWO,
+		},
+	}
+}
+
+func TestAPI_DeclareVolume(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doRequest(t, srv, http.MethodPost, "/v1/volumes", DeclareVolumeRequest{Manifest: validVolumeManifest()})
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("expected 201, got %d", resp.StatusCode)
+	}
+	var vr VolumeResponse
+	decodeResponse(t, resp, &vr)
+	if vr.ID == "" {
+		t.Error("expected non-empty volume ID")
+	}
+	if vr.State != string(domain.VolumeDeclared) {
+		t.Errorf("expected state=declared, got %q", vr.State)
+	}
+}
+
+func TestAPI_DeclareVolume_InvalidManifest(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	bad := validVolumeManifest()
+	bad.Kind = "Wrong"
+	resp := doRequest(t, srv, http.MethodPost, "/v1/volumes", DeclareVolumeRequest{Manifest: bad})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestAPI_DeclareVolume_Conflict(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	doRequest(t, srv, http.MethodPost, "/v1/volumes", DeclareVolumeRequest{Manifest: validVolumeManifest()}).Body.Close()
+	resp := doRequest(t, srv, http.MethodPost, "/v1/volumes", DeclareVolumeRequest{Manifest: validVolumeManifest()})
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("expected 409 for duplicate, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestAPI_GetVolume_NotFound(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doRequest(t, srv, http.MethodGet, "/v1/volumes/no-such-id", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestAPI_ListVolumes(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	doRequest(t, srv, http.MethodPost, "/v1/volumes", DeclareVolumeRequest{Manifest: validVolumeManifest()}).Body.Close()
+
+	resp := doRequest(t, srv, http.MethodGet, "/v1/volumes", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var out map[string]interface{}
+	decodeResponse(t, resp, &out)
+	vols, _ := out["volumes"].([]interface{})
+	if len(vols) != 1 {
+		t.Errorf("expected 1 volume, got %d", len(vols))
+	}
+}
+
+func TestAPI_DeleteVolume_Bound(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	// Declare volume, transition to bound so we can test the active-mounts guard.
+	cr := doRequest(t, srv, http.MethodPost, "/v1/volumes", DeclareVolumeRequest{Manifest: validVolumeManifest()})
+	var vr VolumeResponse
+	decodeResponse(t, cr, &vr)
+
+	// Inject an active mount directly into testStore.
+	ts := newTestStore()
+	ts.volumes[vr.ID] = &domain.Volume{
+		ID:       vr.ID,
+		Manifest: validVolumeManifest(),
+		State:    domain.VolumeBound,
+	}
+	ts.mounts[1] = &domain.VolumeMount{
+		ID:       1,
+		VolumeID: vr.ID,
+		State:    domain.MountActive,
+	}
+	h := NewHandlers(ts)
+	mux := buildMux(h)
+	authMw := authMiddleware(testAdminKey)
+	publicMux := http.NewServeMux()
+	publicMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	publicMux.Handle("/", chain(mux, requestIDMiddleware, authMw))
+	boundSrv := httptest.NewServer(publicMux)
+	defer boundSrv.Close()
+
+	resp := doRequest(t, boundSrv, http.MethodDelete, "/v1/volumes/"+vr.ID, nil)
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("expected 409 for volume with active mounts, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestAPI_CreateSnapshot_VolumeNotReady(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	cr := doRequest(t, srv, http.MethodPost, "/v1/volumes", DeclareVolumeRequest{Manifest: validVolumeManifest()})
+	var vr VolumeResponse
+	decodeResponse(t, cr, &vr)
+
+	// Volume is still declared — snapshot should be rejected.
+	resp := doRequest(t, srv, http.MethodPost, "/v1/volumes/"+vr.ID+"/snapshots",
+		CreateSnapshotRequest{Label: "snap-1"})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestAPI_CreateSnapshot_Ready(t *testing.T) {
+	ts := newTestStore()
+	volID := "vol-abc"
+	ts.volumes[volID] = &domain.Volume{
+		ID:       volID,
+		Manifest: validVolumeManifest(),
+		State:    domain.VolumeReady,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	h := NewHandlers(ts)
+	mux := buildMux(h)
+	authMw := authMiddleware(testAdminKey)
+	publicMux := http.NewServeMux()
+	publicMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	publicMux.Handle("/", chain(mux, requestIDMiddleware, authMw))
+	snapSrv := httptest.NewServer(publicMux)
+	defer snapSrv.Close()
+
+	resp := doRequest(t, snapSrv, http.MethodPost, "/v1/volumes/"+volID+"/snapshots",
+		CreateSnapshotRequest{Label: "snap-ready"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("expected 201, got %d", resp.StatusCode)
+	}
+	var sr SnapshotResponse
+	decodeResponse(t, resp, &sr)
+	if sr.VolumeID != volID {
+		t.Errorf("expected volumeId=%s, got %q", volID, sr.VolumeID)
+	}
 }

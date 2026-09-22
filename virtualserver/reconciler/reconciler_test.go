@@ -143,6 +143,31 @@ func (m *mockStore) WriteAuditLog(_ context.Context, action, resourceType, resou
 	return nil
 }
 
+// Volume stubs — reconciler tests don't exercise volume logic; these satisfy the interface.
+func (m *mockStore) ListVolumesByState(_ context.Context, _ domain.VolumeState) ([]domain.Volume, error) {
+	return nil, nil
+}
+func (m *mockStore) GetVolumeByName(_ context.Context, _, _ string) (*domain.Volume, error) {
+	return nil, store.ErrNotFound
+}
+func (m *mockStore) UpdateVolumeState(_ context.Context, _ string, _ domain.VolumeState) error {
+	return nil
+}
+func (m *mockStore) UpdateVolumeHandle(_ context.Context, _ string, _ map[string]string) error {
+	return nil
+}
+func (m *mockStore) UpdateVolumeBoundNode(_ context.Context, _, _ string) error { return nil }
+func (m *mockStore) UpdateVolumeFailure(_ context.Context, _, _ string) error   { return nil }
+func (m *mockStore) BindMount(_ context.Context, _ domain.VolumeMount) (int64, error) {
+	return 0, nil
+}
+func (m *mockStore) UpdateMountState(_ context.Context, _ int64, _ domain.VolumeMountState) error {
+	return nil
+}
+func (m *mockStore) ListMountsByInstance(_ context.Context, _ string) ([]domain.VolumeMount, error) {
+	return nil, nil
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newTestService(runtime string) *domain.Service {

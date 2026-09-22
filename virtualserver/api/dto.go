@@ -1,6 +1,10 @@
 package api
 
-import "github.com/mgdavisxvs/Ocelot/virtualserver/domain"
+import (
+	"time"
+
+	"github.com/mgdavisxvs/Ocelot/virtualserver/domain"
+)
 
 // ── Request DTOs ──────────────────────────────────────────────────────────────
 
@@ -69,6 +73,51 @@ type InstanceResponse struct {
 	RetryCount int    `json:"retryCount"`
 }
 
+// DeclareVolumeRequest wraps a VolumeManifest for POST /v1/volumes.
+type DeclareVolumeRequest struct {
+	Manifest domain.VolumeManifest `json:"manifest"`
+}
+
+// CreateSnapshotRequest is the request body for POST /v1/volumes/{id}/snapshots.
+type CreateSnapshotRequest struct {
+	Label string `json:"label"`
+}
+
+// VolumeResponse is the API representation of a volume.
+type VolumeResponse struct {
+	ID            string                `json:"id"`
+	Manifest      domain.VolumeManifest `json:"manifest"`
+	State         string                `json:"state"`
+	BoundNodeID   string                `json:"boundNodeId,omitempty"`
+	FailureReason string                `json:"failureReason,omitempty"`
+	CreatedAt     time.Time             `json:"createdAt"`
+	UpdatedAt     time.Time             `json:"updatedAt"`
+}
+
+// VolumeMountResponse is the API representation of a volume mount.
+type VolumeMountResponse struct {
+	ID          int64      `json:"id"`
+	VolumeID    string     `json:"volumeId"`
+	InstanceID  string     `json:"instanceId"`
+	TargetPath  string     `json:"targetPath"`
+	ReadOnly    bool       `json:"readOnly"`
+	State       string     `json:"state"`
+	MountedAt   *time.Time `json:"mountedAt,omitempty"`
+	UnmountedAt *time.Time `json:"unmountedAt,omitempty"`
+}
+
+// SnapshotResponse is the API representation of a volume snapshot.
+type SnapshotResponse struct {
+	ID          string     `json:"id"`
+	VolumeID    string     `json:"volumeId"`
+	Label       string     `json:"label"`
+	State       string     `json:"state"`
+	DriverRef   string     `json:"driverRef,omitempty"`
+	SizeMiB     int64      `json:"sizeMiB"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+}
+
 // ErrorResponse is the standard error body.
 type ErrorResponse struct {
 	Error string `json:"error"`
@@ -119,5 +168,30 @@ func instanceToResponse(i domain.ServiceInstance) InstanceResponse {
 		VSPath:     i.VSPath.String(),
 		State:      string(i.State),
 		RetryCount: i.RetryCount,
+	}
+}
+
+func volumeToResponse(v domain.Volume) VolumeResponse {
+	return VolumeResponse{
+		ID:            v.ID,
+		Manifest:      v.Manifest,
+		State:         string(v.State),
+		BoundNodeID:   v.BoundNodeID,
+		FailureReason: v.FailureReason,
+		CreatedAt:     v.CreatedAt,
+		UpdatedAt:     v.UpdatedAt,
+	}
+}
+
+func snapshotToResponse(s domain.VolumeSnapshot) SnapshotResponse {
+	return SnapshotResponse{
+		ID:          s.ID,
+		VolumeID:    s.VolumeID,
+		Label:       s.Label,
+		State:       string(s.State),
+		DriverRef:   s.DriverRef,
+		SizeMiB:     s.SizeMiB,
+		CreatedAt:   s.CreatedAt,
+		CompletedAt: s.CompletedAt,
 	}
 }

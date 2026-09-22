@@ -19,10 +19,15 @@ type Server struct {
 // The server does not start listening until Start is called.
 // It panics if cfg.AdminKey is empty, since an empty key would accept any request.
 func NewServer(cfg config.VSConfig, store HandlerStore) *Server {
+	return NewServerWithDrivers(cfg, store, nil)
+}
+
+// NewServerWithDrivers creates a Server with volume handler access to storage drivers.
+func NewServerWithDrivers(cfg config.VSConfig, store HandlerStore, drivers VolumeHandlerDrivers) *Server {
 	if cfg.AdminKey == "" {
 		panic("virtualserver: AdminKey must not be empty")
 	}
-	h := NewHandlers(store)
+	h := NewHandlersWithDrivers(store, drivers)
 	mux := buildMux(h)
 
 	// /healthz is registered on an unauthenticated mux so probes work without credentials.
@@ -157,6 +162,41 @@ func buildMux(h *Handlers) *http.ServeMux {
 			return
 		}
 		h.GetInstance(w, r)
+	})
+
+	// Volumes — collection
+	mux.HandleFunc("/v1/volumes", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			h.ListVolumes(w, r)
+		case http.MethodPost:
+			h.DeclareVolume(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	// Volumes — singleton + sub-resources
+	mux.HandleFunc("/v1/volumes/", func(w http.ResponseWriter, r *http.Request) {
+		if hasSuffix(r.URL.Path, "/snapshots") {
+			switch r.Method {
+			case http.MethodGet:
+				h.ListSnapshots(w, r)
+			case http.MethodPost:
+				h.CreateSnapshot(w, r)
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			h.GetVolume(w, r)
+		case http.MethodDelete:
+			h.DeleteVolume(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	})
 
 	return mux

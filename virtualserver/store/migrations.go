@@ -328,4 +328,54 @@ var migrations = []migration{
 		);
 		CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(timestamp)`,
 	},
+	{
+		version:     14,
+		description: "virtualserver_volumes",
+		up: `CREATE TABLE IF NOT EXISTS virtualserver_volumes (
+			id             TEXT    PRIMARY KEY,
+			namespace      TEXT    NOT NULL,
+			name           TEXT    NOT NULL,
+			manifest_json  TEXT    NOT NULL,
+			state          TEXT    NOT NULL DEFAULT 'declared',
+			bound_node_id  TEXT    NOT NULL DEFAULT '',
+			driver_handle  TEXT    NOT NULL DEFAULT '{}',
+			failure_reason TEXT    NOT NULL DEFAULT '',
+			created_at     INTEGER NOT NULL,
+			updated_at     INTEGER NOT NULL,
+			UNIQUE(namespace, name)
+		);
+		CREATE INDEX IF NOT EXISTS idx_vol_ns_state ON virtualserver_volumes(namespace, state);
+		CREATE INDEX IF NOT EXISTS idx_vol_state    ON virtualserver_volumes(state)`,
+	},
+	{
+		version:     15,
+		description: "virtualserver_volume_mounts",
+		up: `CREATE TABLE IF NOT EXISTS virtualserver_volume_mounts (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			volume_id    TEXT    NOT NULL REFERENCES virtualserver_volumes(id),
+			instance_id  TEXT    NOT NULL REFERENCES virtualserver_instances(id),
+			target_path  TEXT    NOT NULL,
+			read_only    INTEGER NOT NULL DEFAULT 0,
+			state        TEXT    NOT NULL DEFAULT 'pending',
+			mounted_at   INTEGER,
+			unmounted_at INTEGER
+		);
+		CREATE INDEX IF NOT EXISTS idx_vmount_vol  ON virtualserver_volume_mounts(volume_id);
+		CREATE INDEX IF NOT EXISTS idx_vmount_inst ON virtualserver_volume_mounts(instance_id)`,
+	},
+	{
+		version:     16,
+		description: "virtualserver_volume_snapshots",
+		up: `CREATE TABLE IF NOT EXISTS virtualserver_volume_snapshots (
+			id           TEXT    PRIMARY KEY,
+			volume_id    TEXT    NOT NULL REFERENCES virtualserver_volumes(id),
+			label        TEXT    NOT NULL DEFAULT '',
+			state        TEXT    NOT NULL DEFAULT 'pending',
+			driver_ref   TEXT    NOT NULL DEFAULT '',
+			size_mib     INTEGER NOT NULL DEFAULT 0,
+			created_at   INTEGER NOT NULL,
+			completed_at INTEGER
+		);
+		CREATE INDEX IF NOT EXISTS idx_vsnap_vol ON virtualserver_volume_snapshots(volume_id)`,
+	},
 }

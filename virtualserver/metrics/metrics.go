@@ -94,4 +94,32 @@ var (
 		Name:      "artifact_lookups_total",
 		Help:      "Total artifact catalog lookups.",
 	}, []string{"outcome"}) // outcome: available, degraded, unavailable, error
+
+	// VolumeCount tracks live volume count by storage class and state.
+	VolumeCount = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "ocelot_vs",
+		Name:      "volumes_total",
+		Help:      "Number of volumes currently in each state per storage class.",
+	}, []string{"class", "state"})
+
+	// VolumeCapacityMiB tracks declared capacity across all ready/bound volumes per class.
+	VolumeCapacityMiB = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "ocelot_vs",
+		Name:      "volume_capacity_mib",
+		Help:      "Total declared capacity in MiB across ready and bound volumes per storage class.",
+	}, []string{"class"})
+
+	// VolumeUsedMiB tracks actual usage reported by the driver per class.
+	VolumeUsedMiB = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "ocelot_vs",
+		Name:      "volume_used_mib",
+		Help:      "Total used capacity in MiB reported by the storage driver per storage class.",
+	}, []string{"class"})
+
+	// VolumeOperations counts storage driver method calls by outcome.
+	VolumeOperations = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "ocelot_vs",
+		Name:      "volume_operations_total",
+		Help:      "Total storage driver operations by driver, operation type, and outcome.",
+	}, []string{"driver", "op", "outcome"}) // op: create, delete, mount, unmount, stat, snapshot
 )
