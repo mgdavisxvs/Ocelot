@@ -447,7 +447,7 @@ func TestAnnounce_LeecherReceivesSeeder(t *testing.T) {
 		Event:      "started",
 		NumWant:    50,
 	}
-	if _, err := w.Announce(seederReq, seeder, net.ParseIP("192.168.1.1"), ""); err != nil {
+	if _, err := w.Announce(seederReq, seeder, net.ParseIP("5.5.5.5"), ""); err != nil {
 		t.Fatalf("seeder announce: %v", err)
 	}
 

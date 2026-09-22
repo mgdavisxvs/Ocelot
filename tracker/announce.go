@@ -347,9 +347,15 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		return nil, fmt.Errorf("access denied, leeching forbidden")
 	}
 
+	minInterval := int32(w.Config.AnnounceInterval)
+	adaptive := AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval)
+	if adaptive < minInterval {
+		adaptive = minInterval
+	}
+
 	response := &AnnounceResponse{
-		Interval:    AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval),
-		MinInterval: int32(w.Config.AnnounceInterval),
+		Interval:    adaptive,
+		MinInterval: minInterval,
 		Complete:    int32(seederCount),
 		Incomplete:  int32(leecherCount),
 		Peers:       peers,
