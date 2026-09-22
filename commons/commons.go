@@ -210,6 +210,63 @@ func (c *ComputeCommons) AccountSummary(userID uint32) (string, error) {
 	return s, nil
 }
 
+// SetUserPriority sets the priority class on a user's account. Creates the
+// account with DefaultStartingBalance if it does not exist yet.
+func (c *ComputeCommons) SetUserPriority(userID uint32, pc PriorityClass) error {
+	if !pc.IsValid() {
+		return fmt.Errorf("commons: invalid priority class %d", pc)
+	}
+	now := time.Now().Unix()
+	acct, err := LoadAccount(c.db, userID)
+	if err != nil {
+		return err
+	}
+	if acct == nil {
+		acct = &Account{
+			UserID:        userID,
+			Balance:       DefaultStartingBalance,
+			PriorityClass: pc,
+			Reputation:    ReputationDefault,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		}
+	} else {
+		acct.PriorityClass = pc
+		acct.UpdatedAt = now
+	}
+	return UpsertAccount(c.db, acct)
+}
+
+// SetUserBudget replaces the per-torrent spending cap for a user.
+// maxCredits is in whole CC units (1 CC = CreditScale raw). Pass torrentID=0
+// to set a global (all-torrent) cap.
+func (c *ComputeCommons) SetUserBudget(userID, torrentID uint32, maxCredits int64) error {
+	rawCredits := FromCC(maxCredits).Raw()
+	_, err := c.db.Exec(
+		`DELETE FROM commons_budgets WHERE user_id = ? AND torrent_id IS ?`,
+		userID, nullableUint32(torrentID),
+	)
+	if err != nil {
+		return fmt.Errorf("commons: clear old budget: %w", err)
+	}
+	_, err = c.db.Exec(
+		`INSERT INTO commons_budgets (user_id, torrent_id, max_credits, consumed) VALUES (?, ?, ?, 0)`,
+		userID, nullableUint32(torrentID), rawCredits,
+	)
+	if err != nil {
+		return fmt.Errorf("commons: insert budget: %w", err)
+	}
+	return nil
+}
+
+// nullableUint32 returns nil when id==0 (represents a global/NULL FK).
+func nullableUint32(id uint32) interface{} {
+	if id == 0 {
+		return nil
+	}
+	return id
+}
+
 // announceTxnID generates a deterministic (user, torrent, nanos, direction) key
 // for idempotent settlement within one announce epoch.
 func announceTxnID(userID, torrentID uint32, nanos int64, direction string) string {

@@ -484,6 +484,9 @@ type Worker struct {
 // Defined as an interface to support mocking in tests.
 type CommonsInterface interface {
 	SettleAnnounce(stats *commons.AnnounceStats) error
+	EvaluatePeers(req *commons.AllocationRequest) *commons.AllocationDecision
+	SetUserPriority(userID uint32, pc commons.PriorityClass) error
+	SetUserBudget(userID, torrentID uint32, maxCredits int64) error
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/mgdavisxvs/Ocelot/commons"
 )
 
 // HandleUpdate processes tracker update requests from the admin panel.
@@ -39,6 +41,10 @@ func (w *Worker) HandleUpdate(req *http.Request) ([]byte, error) {
 		return w.addWhitelist(q)
 	case "remove_whitelist":
 		return w.removeWhitelist(q)
+	case "set_priority_class":
+		return w.setPriorityClass(q)
+	case "set_budget":
+		return w.setBudget(q)
 	default:
 		return w.updateError(fmt.Sprintf("unknown action: %s", action))
 	}
@@ -316,6 +322,75 @@ func (w *Worker) removeWhitelist(q map[string][]string) ([]byte, error) {
 		return w.updateError("missing prefix")
 	}
 	w.Whitelist.Remove(prefix)
+	return w.updateOK()
+}
+
+// setPriorityClass sets the ComputeCommons priority class (0–3) for a user.
+// Requires: id (user_id), priority_class (0=P0Critical … 3=P3Opportunistic).
+func (w *Worker) setPriorityClass(q map[string][]string) ([]byte, error) {
+	if w.Commons == nil {
+		return w.updateError("compute commons not enabled")
+	}
+	idStr := urlParam(q, "id")
+	if idStr == "" {
+		return w.updateError("missing id")
+	}
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil || id == 0 {
+		return w.updateError("invalid id")
+	}
+	pcStr := urlParam(q, "priority_class")
+	if pcStr == "" {
+		return w.updateError("missing priority_class")
+	}
+	pcInt, err := strconv.Atoi(pcStr)
+	if err != nil {
+		return w.updateError("invalid priority_class")
+	}
+	pc := commons.PriorityClass(pcInt)
+	if !pc.IsValid() {
+		return w.updateError(fmt.Sprintf("priority_class must be 0–3, got %d", pcInt))
+	}
+	if err := w.Commons.SetUserPriority(uint32(id), pc); err != nil {
+		return w.updateError(err.Error())
+	}
+	return w.updateOK()
+}
+
+// setBudget sets a per-torrent (or global) CC spending cap for a user.
+// Requires: id (user_id), max_credits (whole CC units).
+// Optional: torrent_id (omit or 0 for global cap).
+func (w *Worker) setBudget(q map[string][]string) ([]byte, error) {
+	if w.Commons == nil {
+		return w.updateError("compute commons not enabled")
+	}
+	idStr := urlParam(q, "id")
+	if idStr == "" {
+		return w.updateError("missing id")
+	}
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil || id == 0 {
+		return w.updateError("invalid id")
+	}
+	mcStr := urlParam(q, "max_credits")
+	if mcStr == "" {
+		return w.updateError("missing max_credits")
+	}
+	maxCredits, err := strconv.ParseInt(mcStr, 10, 64)
+	if err != nil || maxCredits < 0 {
+		return w.updateError("invalid max_credits")
+	}
+	var torrentID uint32
+	if tidStr := urlParam(q, "torrent_id"); tidStr != "" {
+		tid, err := strconv.ParseUint(tidStr, 10, 32)
+		if err != nil {
+			return w.updateError("invalid torrent_id")
+		}
+		torrentID = uint32(tid)
+	}
+	if err := w.Commons.SetUserBudget(uint32(id), torrentID, maxCredits); err != nil {
+		return w.updateError(err.Error())
+	}
 	return w.updateOK()
 }
 

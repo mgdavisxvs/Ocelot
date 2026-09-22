@@ -303,7 +303,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		numwant = 0
 	}
 
-	peers := SelectPeersOptimized(torrent, peer, user.ID, numwant, req.Left > 0)
+	peers := w.selectPeersWithEconomics(torrent, peer, user.ID, numwant, req.Left > 0)
 
 	w.Stats.SuccAnnouncements.Add(1)
 	if incLeechers {
