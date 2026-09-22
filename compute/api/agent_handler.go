@@ -357,6 +357,8 @@ func (h *AgentHandler) applyHealthEvent(ctx context.Context, nodeID string, ev n
 	var query string
 	var args []any
 
+	terminal := false
+
 	switch ev.Kind {
 	case node.EventStarted:
 		query = `UPDATE workloads SET status = 'running', started_at = ? WHERE id = ? AND node_id = ?`
@@ -365,14 +367,17 @@ func (h *AgentHandler) applyHealthEvent(ctx context.Context, nodeID string, ev n
 	case node.EventCompleted, node.EventStopped:
 		query = `UPDATE workloads SET status = 'completed', finished_at = ?, exit_code = ?, failure_msg = ? WHERE id = ? AND node_id = ?`
 		args = []any{ev.Ts, exitCode, ev.Message, ev.WorkloadID, nodeID}
+		terminal = true
 
 	case node.EventFailed, node.EventOOMKilled:
 		query = `UPDATE workloads SET status = 'failed', finished_at = ?, exit_code = ?, failure_msg = ? WHERE id = ? AND node_id = ?`
 		args = []any{ev.Ts, exitCode, ev.Message, ev.WorkloadID, nodeID}
+		terminal = true
 
 	case node.EventTimedOut:
 		query = `UPDATE workloads SET status = 'timed_out', finished_at = ?, exit_code = ?, failure_msg = ? WHERE id = ? AND node_id = ?`
 		args = []any{ev.Ts, exitCode, ev.Message, ev.WorkloadID, nodeID}
+		terminal = true
 
 	case node.EventCheckpoint:
 		_ = insertEvent(ctx, h.db, nodeID, "workload", ev.WorkloadID, "workload.checkpoint",
@@ -386,6 +391,9 @@ func (h *AgentHandler) applyHealthEvent(ctx context.Context, nodeID string, ev n
 
 	if _, err := h.db.ExecContext(ctx, query, args...); err != nil {
 		slog.Warn("health: update workload status", "workload_id", ev.WorkloadID, "kind", ev.Kind, "err", err)
+	}
+	if terminal {
+		releaseWorkloadResources(ctx, h.db, ev.WorkloadID, ev.Ts)
 	}
 	_ = insertEvent(ctx, h.db, nodeID, "workload", ev.WorkloadID,
 		"workload."+string(ev.Kind),

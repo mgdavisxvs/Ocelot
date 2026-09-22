@@ -1,5 +1,6 @@
 // ocelot-cp is the Ocelot compute-plane control server.
-// It exposes the agent API (AGENT_PROTOCOL.md) and runs the node-loss monitor.
+// It exposes the agent API (AGENT_PROTOCOL.md), runs the node-loss monitor,
+// and runs the workload scheduler.
 package main
 
 import (
@@ -24,6 +25,7 @@ func main() {
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file (PEM)")
 	tlsKey := flag.String("tls-key", "", "TLS private key file (PEM)")
 	heartbeatSec := flag.Int("heartbeat-interval", 30, "Expected heartbeat interval in seconds")
+	scheduleSec := flag.Int("schedule-interval", 5, "Scheduler tick interval in seconds")
 	flag.Parse()
 
 	bootstrapToken := os.Getenv("OCELOT_CP_BOOTSTRAP_TOKEN")
@@ -44,6 +46,7 @@ func main() {
 	defer db.Close()
 
 	heartbeatInterval := time.Duration(*heartbeatSec) * time.Second
+	scheduleInterval := time.Duration(*scheduleSec) * time.Second
 
 	mux := http.NewServeMux()
 
@@ -81,8 +84,10 @@ func main() {
 	defer stop()
 
 	monitor := api.NewNodeLossMonitor(db, heartbeatInterval)
+	scheduler := api.NewScheduler(db, scheduleInterval)
 
 	go monitor.Run(ctx)
+	go scheduler.Run(ctx)
 
 	errCh := make(chan error, 1)
 	go func() {
