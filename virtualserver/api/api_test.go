@@ -620,3 +620,125 @@ func TestAPI_CreateSnapshot_Ready(t *testing.T) {
 		t.Errorf("expected volumeId=%s, got %q", volID, sr.VolumeID)
 	}
 }
+
+func newStoreServer(t *testing.T, ts *testStore) *httptest.Server {
+	t.Helper()
+	h := NewHandlers(ts)
+	mux := buildMux(h)
+	authMw := authMiddleware(testAdminKey)
+	publicMux := http.NewServeMux()
+	publicMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	publicMux.Handle("/", chain(mux, requestIDMiddleware, authMw))
+	srv := httptest.NewServer(publicMux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestAPI_ListVolumeMounts_NotFound(t *testing.T) {
+	ts := newTestStore()
+	srv := newStoreServer(t, ts)
+
+	resp := doRequest(t, srv, http.MethodGet, "/v1/volumes/missing/mounts", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestAPI_ListVolumeMounts_Empty(t *testing.T) {
+	ts := newTestStore()
+	volID := "vol-mnt-1"
+	ts.volumes[volID] = &domain.Volume{
+		ID:        volID,
+		Manifest:  validVolumeManifest(),
+		State:     domain.VolumeReady,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	srv := newStoreServer(t, ts)
+
+	resp := doRequest(t, srv, http.MethodGet, "/v1/volumes/"+volID+"/mounts", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var body map[string]interface{}
+	decodeResponse(t, resp, &body)
+	mounts, ok := body["mounts"]
+	if !ok {
+		t.Fatal("response missing 'mounts' key")
+	}
+	arr, ok := mounts.([]interface{})
+	if !ok {
+		t.Fatalf("mounts is not array: %T", mounts)
+	}
+	if len(arr) != 0 {
+		t.Errorf("expected 0 mounts, got %d", len(arr))
+	}
+}
+
+func TestAPI_ListVolumeMounts_WithActive(t *testing.T) {
+	ts := newTestStore()
+	volID := "vol-mnt-2"
+	ts.volumes[volID] = &domain.Volume{
+		ID:        volID,
+		Manifest:  validVolumeManifest(),
+		State:     domain.VolumeBound,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	now := time.Now()
+	ts.mounts[1] = &domain.VolumeMount{
+		ID:         1,
+		VolumeID:   volID,
+		InstanceID: "inst-abc",
+		TargetPath: "/data",
+		ReadOnly:   false,
+		State:      domain.MountActive,
+		MountedAt:  &now,
+	}
+	ts.mounts[2] = &domain.VolumeMount{
+		ID:         2,
+		VolumeID:   volID,
+		InstanceID: "inst-def",
+		TargetPath: "/cache",
+		ReadOnly:   true,
+		State:      domain.MountReleased, // should be excluded
+		MountedAt:  &now,
+	}
+	srv := newStoreServer(t, ts)
+
+	resp := doRequest(t, srv, http.MethodGet, "/v1/volumes/"+volID+"/mounts", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var body struct {
+		Mounts []VolumeMountResponse `json:"mounts"`
+	}
+	decodeResponse(t, resp, &body)
+	if len(body.Mounts) != 1 {
+		t.Fatalf("expected 1 active mount, got %d", len(body.Mounts))
+	}
+	if body.Mounts[0].InstanceID != "inst-abc" {
+		t.Errorf("unexpected instance id: %q", body.Mounts[0].InstanceID)
+	}
+	if body.Mounts[0].TargetPath != "/data" {
+		t.Errorf("unexpected target path: %q", body.Mounts[0].TargetPath)
+	}
+}
+
+func TestAPI_ListVolumeMounts_MethodNotAllowed(t *testing.T) {
+	ts := newTestStore()
+	volID := "vol-mnt-3"
+	ts.volumes[volID] = &domain.Volume{
+		ID:        volID,
+		Manifest:  validVolumeManifest(),
+		State:     domain.VolumeReady,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	srv := newStoreServer(t, ts)
+
+	resp := doRequest(t, srv, http.MethodPost, "/v1/volumes/"+volID+"/mounts", nil)
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", resp.StatusCode)
+	}
+}

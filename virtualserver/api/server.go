@@ -189,6 +189,14 @@ func buildMux(h *Handlers) *http.ServeMux {
 			}
 			return
 		}
+		if hasSuffix(r.URL.Path, "/mounts") {
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			h.ListVolumeMounts(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			h.GetVolume(w, r)

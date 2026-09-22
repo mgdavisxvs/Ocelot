@@ -429,6 +429,8 @@ func (r *VSReconciler) resolveMounts(ctx context.Context, manifest domain.Servic
 			return nil, nil, fmt.Errorf("bind mount record: %w", err)
 		}
 		r.store.UpdateMountState(ctx, mountID, domain.MountActive) //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "mount_active", "volume", vol.ID, "", true, //nolint:errcheck
+			fmt.Sprintf("instance=%s target=%s mode=%s", instanceID, decl.TargetPath, vol.Manifest.Spec.AccessMode))
 
 		if vol.BoundNodeID == "" && drv.Name() == "local" {
 			r.store.UpdateVolumeBoundNode(ctx, vol.ID, nodeID) //nolint:errcheck

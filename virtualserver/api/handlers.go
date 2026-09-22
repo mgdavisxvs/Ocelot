@@ -464,6 +464,42 @@ func (h *Handlers) DeleteVolume(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// GET /v1/volumes/{id}/mounts
+func (h *Handlers) ListVolumeMounts(w http.ResponseWriter, r *http.Request) {
+	id := pathSegment(r.URL.Path, "volumes")
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "missing volume id", "INVALID_REQUEST")
+		return
+	}
+	if _, err := h.store.GetVolume(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "volume not found", "NOT_FOUND")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+	mounts, err := h.store.ListActiveMountsByVolume(r.Context(), id)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+	resp := make([]VolumeMountResponse, len(mounts))
+	for i, m := range mounts {
+		resp[i] = VolumeMountResponse{
+			ID:          m.ID,
+			VolumeID:    m.VolumeID,
+			InstanceID:  m.InstanceID,
+			TargetPath:  m.TargetPath,
+			ReadOnly:    m.ReadOnly,
+			State:       string(m.State),
+			MountedAt:   m.MountedAt,
+			UnmountedAt: m.UnmountedAt,
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"mounts": resp})
+}
+
 // POST /v1/volumes/{id}/snapshots
 func (h *Handlers) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
 	id := pathSegment(r.URL.Path, "volumes")
