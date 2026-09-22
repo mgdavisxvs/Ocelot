@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     storage_gb       INTEGER NOT NULL DEFAULT 0,
     labels           TEXT    NOT NULL DEFAULT '{}',  -- JSON key-value map
     status           TEXT    NOT NULL DEFAULT 'joining'
-                     CHECK (status IN ('joining','ready','draining','busy','degraded','lost','dead')),
+                     CHECK (status IN ('joining','ready','draining','busy','degraded','lost','dead','stopping')),
     last_heartbeat   INTEGER,           -- unix epoch ms
     agent_version    TEXT,
     node_secret_hash TEXT    NOT NULL,  -- SHA-256 hex of the HMAC secret

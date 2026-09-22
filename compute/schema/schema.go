@@ -18,7 +18,7 @@ var ddl string
 // and runs the DDL idempotently. Returns an error if any step fails.
 func Open(path string) (*sql.DB, error) {
 	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_foreign_keys=on&_synchronous=NORMAL", path)
-	db, err := sql.Open("sqlite3", dsn)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("compute/schema: open %s: %w", path, err)
 	}
