@@ -16,6 +16,7 @@ const (
 	StatusDegraded Status = "degraded"
 	StatusLost     Status = "lost"
 	StatusDead     Status = "dead"
+	StatusStopping Status = "stopping"
 )
 
 type GPUHealth string
