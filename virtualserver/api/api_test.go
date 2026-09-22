@@ -71,11 +71,15 @@ func (s *testStore) ListNodes(_ context.Context, _ string) ([]domain.Node, error
 	return out, nil
 }
 func (s *testStore) UpdateNodeState(_ context.Context, id string, to domain.NodeState) error {
-	if n, ok := s.nodes[id]; ok {
-		n.State = to
-		return nil
+	n, ok := s.nodes[id]
+	if !ok {
+		return store.ErrNotFound
 	}
-	return store.ErrNotFound
+	if err := domain.ValidateNodeTransition(n.State, to); err != nil {
+		return err
+	}
+	n.State = to
+	return nil
 }
 
 func (s *testStore) CreateService(_ context.Context, m domain.ServiceManifest) (int64, error) {
@@ -204,6 +208,21 @@ func (s *testStore) UpdateSnapshotState(_ context.Context, id string, state doma
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 const testAdminKey = "test-secret-key"
+
+func validServiceManifest(ns, name string) domain.ServiceManifest {
+	return domain.ServiceManifest{
+		APIVersion: "virtualserver/v1",
+		Kind:       "Service",
+		Metadata:   domain.ServiceMetadata{Namespace: ns, Name: name},
+		Spec: domain.ServiceSpec{
+			Artifact:  domain.ArtifactReference{Type: domain.ArtifactTypeOcelot, InfoHash: "0123456789abcdef0123456789abcdef01234567"},
+			Runtime:   "mock",
+			Instances: 1,
+			Resources: domain.ResourceRequest{RAMMiB: 1024, CPUThreads: 2},
+			Restart:   domain.RestartPolicy{Policy: "on-failure", MaximumAttempts: 3},
+		},
+	}
+}
 
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -740,5 +759,286 @@ func TestAPI_ListVolumeMounts_MethodNotAllowed(t *testing.T) {
 	resp := doRequest(t, srv, http.MethodPost, "/v1/volumes/"+volID+"/mounts", nil)
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", resp.StatusCode)
+	}
+}
+
+// ── ListNamespaces ────────────────────────────────────────────────────────────
+
+func TestAPI_ListNamespaces_Empty(t *testing.T) {
+	srv := newTestServer(t)
+	resp := doRequest(t, srv, http.MethodGet, "/v1/namespaces", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var body map[string]interface{}
+	decodeResponse(t, resp, &body)
+	if _, ok := body["namespaces"]; !ok {
+		t.Error("response missing 'namespaces' key")
+	}
+}
+
+func TestAPI_ListNamespaces_WithData(t *testing.T) {
+	ts := newTestStore()
+	ts.namespaces = []string{"alpha", "beta"}
+	srv := newStoreServer(t, ts)
+	resp := doRequest(t, srv, http.MethodGet, "/v1/namespaces", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var body struct {
+		Namespaces []string `json:"namespaces"`
+	}
+	decodeResponse(t, resp, &body)
+	if len(body.Namespaces) != 2 {
+		t.Errorf("expected 2 namespaces, got %d", len(body.Namespaces))
+	}
+}
+
+// ── GetNode ───────────────────────────────────────────────────────────────────
+
+func TestAPI_GetNode_Found(t *testing.T) {
+	ts := newTestStore()
+	id := "node-xyz"
+	ts.nodes[id] = &domain.Node{ID: id, Name: "gpu-01", Arch: "x86_64", State: domain.NodeReady}
+	srv := newStoreServer(t, ts)
+
+	resp := doRequest(t, srv, http.MethodGet, "/v1/nodes/"+id, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var nr NodeResponse
+	decodeResponse(t, resp, &nr)
+	if nr.ID != id {
+		t.Errorf("unexpected node id: %q", nr.ID)
+	}
+	if nr.Name != "gpu-01" {
+		t.Errorf("unexpected name: %q", nr.Name)
+	}
+}
+
+func TestAPI_GetNode_NotFound(t *testing.T) {
+	ts := newTestStore()
+	srv := newStoreServer(t, ts)
+	resp := doRequest(t, srv, http.MethodGet, "/v1/nodes/missing", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+// ── UpdateNodeState ───────────────────────────────────────────────────────────
+
+func TestAPI_UpdateNodeState_Success(t *testing.T) {
+	ts := newTestStore()
+	id := "node-st"
+	ts.nodes[id] = &domain.Node{ID: id, Name: "st-01", Arch: "x86_64", State: domain.NodeReady}
+	srv := newStoreServer(t, ts)
+
+	resp := doRequest(t, srv, http.MethodPut, "/v1/nodes/"+id+"/state",
+		UpdateNodeStateRequest{State: string(domain.NodeDraining)})
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var nr NodeResponse
+	decodeResponse(t, resp, &nr)
+	if nr.State != string(domain.NodeDraining) {
+		t.Errorf("expected draining, got %q", nr.State)
+	}
+}
+
+func TestAPI_UpdateNodeState_NotFound(t *testing.T) {
+	ts := newTestStore()
+	srv := newStoreServer(t, ts)
+	resp := doRequest(t, srv, http.MethodPut, "/v1/nodes/missing/state",
+		UpdateNodeStateRequest{State: "draining"})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestAPI_UpdateNodeState_IllegalTransition(t *testing.T) {
+	ts := newTestStore()
+	id := "node-ill"
+	ts.nodes[id] = &domain.Node{ID: id, Name: "ill-01", Arch: "x86_64", State: domain.NodeReady}
+	srv := newStoreServer(t, ts)
+	// retired is not reachable directly from ready
+	resp := doRequest(t, srv, http.MethodPut, "/v1/nodes/"+id+"/state",
+		UpdateNodeStateRequest{State: "retired"})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422, got %d", resp.StatusCode)
+	}
+}
+
+// ── ListServices ──────────────────────────────────────────────────────────────
+
+func TestAPI_ListServices_Empty(t *testing.T) {
+	srv := newTestServer(t)
+	resp := doRequest(t, srv, http.MethodGet, "/v1/services", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var body map[string]interface{}
+	decodeResponse(t, resp, &body)
+	if _, ok := body["services"]; !ok {
+		t.Error("response missing 'services' key")
+	}
+}
+
+func TestAPI_ListServices_WithData(t *testing.T) {
+	ts := newTestStore()
+	ts.services[1] = &domain.Service{ID: 1, Manifest: validServiceManifest("ns", "svc-a")}
+	ts.services[2] = &domain.Service{ID: 2, Manifest: validServiceManifest("ns", "svc-b")}
+	srv := newStoreServer(t, ts)
+
+	resp := doRequest(t, srv, http.MethodGet, "/v1/services", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var body struct {
+		Services []ServiceResponse `json:"services"`
+	}
+	decodeResponse(t, resp, &body)
+	if len(body.Services) != 2 {
+		t.Errorf("expected 2 services, got %d", len(body.Services))
+	}
+}
+
+// ── GetInstance / ListInstances / ListServiceInstances ────────────────────────
+
+func TestAPI_GetInstance_Found(t *testing.T) {
+	ts := newTestStore()
+	instID := "inst-001"
+	ts.instances[instID] = &domain.ServiceInstance{
+		ID:        instID,
+		ServiceID: 1,
+		State:     domain.InstanceRunning,
+	}
+	srv := newStoreServer(t, ts)
+
+	resp := doRequest(t, srv, http.MethodGet, "/v1/instances/"+instID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var ir InstanceResponse
+	decodeResponse(t, resp, &ir)
+	if ir.ID != instID {
+		t.Errorf("unexpected id: %q", ir.ID)
+	}
+}
+
+func TestAPI_GetInstance_NotFound(t *testing.T) {
+	srv := newTestServer(t)
+	resp := doRequest(t, srv, http.MethodGet, "/v1/instances/missing", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestAPI_ListInstances_WithData(t *testing.T) {
+	ts := newTestStore()
+	ts.instances["i1"] = &domain.ServiceInstance{ID: "i1", State: domain.InstanceRunning}
+	ts.instances["i2"] = &domain.ServiceInstance{ID: "i2", State: domain.InstanceDeclared}
+	srv := newStoreServer(t, ts)
+
+	resp := doRequest(t, srv, http.MethodGet, "/v1/instances", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var body struct {
+		Instances []InstanceResponse `json:"instances"`
+	}
+	decodeResponse(t, resp, &body)
+	if len(body.Instances) != 2 {
+		t.Errorf("expected 2 instances, got %d", len(body.Instances))
+	}
+}
+
+func TestAPI_ListServiceInstances(t *testing.T) {
+	ts := newTestStore()
+	svcID := int64(7)
+	ts.services[svcID] = &domain.Service{ID: svcID, Manifest: validServiceManifest("ns", "svc-x")}
+	srv := newStoreServer(t, ts)
+
+	resp := doRequest(t, srv, http.MethodGet, "/v1/services/7/instances", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var body struct {
+		Instances []InstanceResponse `json:"instances"`
+	}
+	decodeResponse(t, resp, &body)
+	// testStore returns nil for ListInstancesByService → empty slice is fine
+	_ = body.Instances
+}
+
+func TestAPI_ListServiceInstances_BadID(t *testing.T) {
+	srv := newTestServer(t)
+	resp := doRequest(t, srv, http.MethodGet, "/v1/services/notanumber/instances", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+// ── ListSnapshots ─────────────────────────────────────────────────────────────
+
+func TestAPI_ListSnapshots_Empty(t *testing.T) {
+	ts := newTestStore()
+	volID := "vol-snap-ls"
+	ts.volumes[volID] = &domain.Volume{
+		ID:        volID,
+		Manifest:  validVolumeManifest(),
+		State:     domain.VolumeReady,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	srv := newStoreServer(t, ts)
+
+	resp := doRequest(t, srv, http.MethodGet, "/v1/volumes/"+volID+"/snapshots", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var body struct {
+		Snapshots []SnapshotResponse `json:"snapshots"`
+	}
+	decodeResponse(t, resp, &body)
+	if len(body.Snapshots) != 0 {
+		t.Errorf("expected empty snapshots, got %d", len(body.Snapshots))
+	}
+}
+
+func TestAPI_ListSnapshots_WithData(t *testing.T) {
+	ts := newTestStore()
+	volID := "vol-snap-with"
+	ts.volumes[volID] = &domain.Volume{
+		ID:        volID,
+		Manifest:  validVolumeManifest(),
+		State:     domain.VolumeReady,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	now := time.Now()
+	ts.snapshots["snap-a"] = &domain.VolumeSnapshot{
+		ID: "snap-a", VolumeID: volID, Label: "v1",
+		State: domain.SnapshotReady, CreatedAt: now,
+	}
+	ts.snapshots["snap-b"] = &domain.VolumeSnapshot{
+		ID: "snap-b", VolumeID: volID, Label: "v2",
+		State: domain.SnapshotPending, CreatedAt: now,
+	}
+	ts.snapshots["snap-other"] = &domain.VolumeSnapshot{
+		ID: "snap-other", VolumeID: "other", Label: "x",
+		State: domain.SnapshotReady, CreatedAt: now,
+	}
+	srv := newStoreServer(t, ts)
+
+	resp := doRequest(t, srv, http.MethodGet, "/v1/volumes/"+volID+"/snapshots", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var body struct {
+		Snapshots []SnapshotResponse `json:"snapshots"`
+	}
+	decodeResponse(t, resp, &body)
+	if len(body.Snapshots) != 2 {
+		t.Errorf("expected 2 snapshots for %s, got %d", volID, len(body.Snapshots))
 	}
 }

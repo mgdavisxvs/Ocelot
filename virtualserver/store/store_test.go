@@ -533,3 +533,628 @@ func TestStore_ConcurrentNodeCreation(t *testing.T) {
 		t.Errorf("expected %d nodes, got %d", n, len(nodes))
 	}
 }
+
+// ── Node store extras ─────────────────────────────────────────────────────────
+
+func TestStore_Node_GetByName(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	id, err := s.CreateNode(ctx, makeNode("byname-node"))
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	n, err := s.GetNodeByName(ctx, "byname-node")
+	if err != nil {
+		t.Fatalf("GetNodeByName: %v", err)
+	}
+	if n.ID != id {
+		t.Errorf("id mismatch: got %q want %q", n.ID, id)
+	}
+}
+
+func TestStore_Node_GetByName_NotFound(t *testing.T) {
+	s := openStore(t)
+	if _, err := s.GetNodeByName(context.Background(), "missing"); err != store.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestStore_Node_UpdateState(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	id, _ := s.CreateNode(ctx, makeNode("state-node"))
+	if err := s.UpdateNodeState(ctx, id, domain.NodeDraining); err != nil {
+		t.Fatalf("UpdateNodeState ready→draining: %v", err)
+	}
+	n, _ := s.GetNode(ctx, id)
+	if n.State != domain.NodeDraining {
+		t.Errorf("expected draining, got %q", n.State)
+	}
+}
+
+func TestStore_Node_UpdateState_IllegalTransition(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	id, _ := s.CreateNode(ctx, makeNode("bad-trans-node"))
+	// Retired is a terminal state; moving ready → retired is illegal.
+	if err := s.UpdateNodeState(ctx, id, domain.NodeRetired); err == nil {
+		t.Error("expected error for illegal transition")
+	}
+}
+
+// ── Volume store ──────────────────────────────────────────────────────────────
+
+func makeVolumeManifest(ns, name string) domain.VolumeManifest {
+	return domain.VolumeManifest{
+		APIVersion: "virtualserver/v1",
+		Kind:       "Volume",
+		Metadata:   domain.VolumeMetadata{Namespace: ns, Name: name},
+		Spec:       domain.VolumeSpec{Class: "local", CapacityMiB: 1024, AccessMode: domain.VolumeAccessRWO},
+	}
+}
+
+func makeVolume(id, ns, name string) domain.Volume {
+	return domain.Volume{
+		ID:       id,
+		Manifest: makeVolumeManifest(ns, name),
+		State:    domain.VolumeDeclared,
+	}
+}
+
+func TestStore_Volume_CreateGet(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "vns", "") //nolint:errcheck
+	v := makeVolume("vol-001", "vns", "data")
+	id, err := s.CreateVolume(ctx, v)
+	if err != nil {
+		t.Fatalf("CreateVolume: %v", err)
+	}
+	if id != "vol-001" {
+		t.Errorf("unexpected id: %q", id)
+	}
+	got, err := s.GetVolume(ctx, id)
+	if err != nil {
+		t.Fatalf("GetVolume: %v", err)
+	}
+	if got.State != domain.VolumeDeclared {
+		t.Errorf("expected declared, got %q", got.State)
+	}
+	if got.Manifest.Metadata.Name != "data" {
+		t.Errorf("unexpected name: %q", got.Manifest.Metadata.Name)
+	}
+}
+
+func TestStore_Volume_GetByName(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "vns2", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-002", "vns2", "disk"))
+	v, err := s.GetVolumeByName(ctx, "vns2", "disk")
+	if err != nil {
+		t.Fatalf("GetVolumeByName: %v", err)
+	}
+	if v.ID != "vol-002" {
+		t.Errorf("unexpected id: %q", v.ID)
+	}
+}
+
+func TestStore_Volume_NotFound(t *testing.T) {
+	s := openStore(t)
+	if _, err := s.GetVolume(context.Background(), "nonexistent"); err != store.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestStore_Volume_Duplicate(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "vns3", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-dup", "vns3", "dup"))
+	if _, err := s.CreateVolume(ctx, makeVolume("vol-dup", "vns3", "dup")); err != store.ErrConflict {
+		t.Errorf("expected ErrConflict, got: %v", err)
+	}
+}
+
+func TestStore_Volume_ListAll(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "list-ns", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-l1", "list-ns", "a"))
+	s.CreateVolume(ctx, makeVolume("vol-l2", "list-ns", "b"))
+	vols, err := s.ListVolumes(ctx, "")
+	if err != nil {
+		t.Fatalf("ListVolumes: %v", err)
+	}
+	if len(vols) < 2 {
+		t.Errorf("expected >=2 volumes, got %d", len(vols))
+	}
+}
+
+func TestStore_Volume_ListByNamespace(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "nsA", "") //nolint:errcheck
+	s.CreateNamespace(ctx, "nsB", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-a", "nsA", "a"))
+	s.CreateVolume(ctx, makeVolume("vol-b", "nsB", "b"))
+	vols, err := s.ListVolumes(ctx, "nsA")
+	if err != nil {
+		t.Fatalf("ListVolumes(nsA): %v", err)
+	}
+	if len(vols) != 1 || vols[0].ID != "vol-a" {
+		t.Errorf("expected [vol-a], got %v", vols)
+	}
+}
+
+func TestStore_Volume_ListByState(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "stateNS", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-s1", "stateNS", "s1"))
+	s.CreateVolume(ctx, makeVolume("vol-s2", "stateNS", "s2"))
+
+	declared, err := s.ListVolumesByState(ctx, domain.VolumeDeclared)
+	if err != nil {
+		t.Fatalf("ListVolumesByState: %v", err)
+	}
+	if len(declared) < 2 {
+		t.Errorf("expected >=2 declared volumes, got %d", len(declared))
+	}
+}
+
+func TestStore_Volume_UpdateState(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "updNS", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-upd", "updNS", "upd"))
+	if err := s.UpdateVolumeState(ctx, "vol-upd", domain.VolumeProvisioning); err != nil {
+		t.Fatalf("UpdateVolumeState declared→provisioning: %v", err)
+	}
+	v, _ := s.GetVolume(ctx, "vol-upd")
+	if v.State != domain.VolumeProvisioning {
+		t.Errorf("expected provisioning, got %q", v.State)
+	}
+}
+
+func TestStore_Volume_UpdateState_IllegalTransition(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "illNS", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-ill", "illNS", "ill"))
+	if err := s.UpdateVolumeState(ctx, "vol-ill", domain.VolumeReady); err == nil {
+		t.Error("expected error for declared→ready (illegal)")
+	}
+}
+
+func TestStore_Volume_UpdateState_NotFound(t *testing.T) {
+	s := openStore(t)
+	if err := s.UpdateVolumeState(context.Background(), "missing", domain.VolumeProvisioning); err != store.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestStore_Volume_UpdateHandle(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "hNS", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-h", "hNS", "h"))
+	handle := map[string]string{"path": "/data/vol", "nodeID": "n1"}
+	if err := s.UpdateVolumeHandle(ctx, "vol-h", handle); err != nil {
+		t.Fatalf("UpdateVolumeHandle: %v", err)
+	}
+	v, _ := s.GetVolume(ctx, "vol-h")
+	if v.DriverHandle["path"] != "/data/vol" {
+		t.Errorf("unexpected path: %q", v.DriverHandle["path"])
+	}
+}
+
+func TestStore_Volume_UpdateBoundNode(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "bnNS", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-bn", "bnNS", "bn"))
+	if err := s.UpdateVolumeBoundNode(ctx, "vol-bn", "node-42"); err != nil {
+		t.Fatalf("UpdateVolumeBoundNode: %v", err)
+	}
+	v, _ := s.GetVolume(ctx, "vol-bn")
+	if v.BoundNodeID != "node-42" {
+		t.Errorf("expected boundNodeID=node-42, got %q", v.BoundNodeID)
+	}
+}
+
+func TestStore_Volume_UpdateFailure(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "failNS", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-fail", "failNS", "fail"))
+	if err := s.UpdateVolumeFailure(ctx, "vol-fail", "driver error"); err != nil {
+		t.Fatalf("UpdateVolumeFailure: %v", err)
+	}
+	v, _ := s.GetVolume(ctx, "vol-fail")
+	if v.State != domain.VolumeFailed {
+		t.Errorf("expected failed, got %q", v.State)
+	}
+	if v.FailureReason != "driver error" {
+		t.Errorf("unexpected failure reason: %q", v.FailureReason)
+	}
+}
+
+func TestStore_Volume_DeleteReleased(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "delNS", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-del", "delNS", "del"))
+	// Force state to released via intermediate transitions.
+	s.UpdateVolumeState(ctx, "vol-del", domain.VolumeProvisioning)
+	s.UpdateVolumeState(ctx, "vol-del", domain.VolumeReady)
+	s.UpdateVolumeState(ctx, "vol-del", domain.VolumeReleasing)
+	s.UpdateVolumeState(ctx, "vol-del", domain.VolumeReleased)
+
+	if err := s.DeleteVolume(ctx, "vol-del"); err != nil {
+		t.Fatalf("DeleteVolume: %v", err)
+	}
+	if _, err := s.GetVolume(ctx, "vol-del"); err != store.ErrNotFound {
+		t.Errorf("expected ErrNotFound after delete, got: %v", err)
+	}
+}
+
+func TestStore_Volume_DeleteNotReleased(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "nd2NS", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-nd2", "nd2NS", "nd2"))
+	if err := s.DeleteVolume(ctx, "vol-nd2"); err != store.ErrConflict {
+		t.Errorf("expected ErrConflict for non-released, got: %v", err)
+	}
+}
+
+func TestStore_Volume_DeleteNotFound(t *testing.T) {
+	s := openStore(t)
+	if err := s.DeleteVolume(context.Background(), "missing"); err != store.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+// ── Mount store ───────────────────────────────────────────────────────────────
+
+func TestStore_Mount_BindGetState(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "mntNS", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-mnt", "mntNS", "m1"))
+	svcID, _ := s.CreateService(ctx, makeManifest("mntNS", "mnt-svc1"))
+	instID, _ := s.CreateInstance(ctx, svcID, domain.VSPath{Namespace: "mntNS", Service: "mnt-svc1", Instance: "0"})
+
+	m := domain.VolumeMount{
+		VolumeID:   "vol-mnt",
+		InstanceID: instID,
+		TargetPath: "/data",
+		ReadOnly:   false,
+	}
+	id, err := s.BindMount(ctx, m)
+	if err != nil {
+		t.Fatalf("BindMount: %v", err)
+	}
+	if id <= 0 {
+		t.Errorf("expected positive id, got %d", id)
+	}
+	got, err := s.GetMount(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMount: %v", err)
+	}
+	if got.State != domain.MountPending {
+		t.Errorf("expected pending, got %q", got.State)
+	}
+	if got.InstanceID != instID {
+		t.Errorf("unexpected instanceID: %q", got.InstanceID)
+	}
+}
+
+func TestStore_Mount_UpdateStateToActive(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "mnt2NS", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-m2", "mnt2NS", "m2"))
+	svcID2, _ := s.CreateService(ctx, makeManifest("mnt2NS", "mnt-svc2"))
+	instID2, _ := s.CreateInstance(ctx, svcID2, domain.VSPath{Namespace: "mnt2NS", Service: "mnt-svc2", Instance: "0"})
+	id, _ := s.BindMount(ctx, domain.VolumeMount{VolumeID: "vol-m2", InstanceID: instID2, TargetPath: "/x"})
+
+	if err := s.UpdateMountState(ctx, id, domain.MountActive); err != nil {
+		t.Fatalf("UpdateMountState active: %v", err)
+	}
+	m, _ := s.GetMount(ctx, id)
+	if m.State != domain.MountActive {
+		t.Errorf("expected active, got %q", m.State)
+	}
+	if m.MountedAt == nil {
+		t.Error("expected MountedAt to be set")
+	}
+}
+
+func TestStore_Mount_UpdateStateToReleased(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "mnt3NS", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-m3", "mnt3NS", "m3"))
+	svcID3, _ := s.CreateService(ctx, makeManifest("mnt3NS", "mnt-svc3"))
+	instID3, _ := s.CreateInstance(ctx, svcID3, domain.VSPath{Namespace: "mnt3NS", Service: "mnt-svc3", Instance: "0"})
+	id, _ := s.BindMount(ctx, domain.VolumeMount{VolumeID: "vol-m3", InstanceID: instID3, TargetPath: "/y"})
+	s.UpdateMountState(ctx, id, domain.MountActive)
+
+	if err := s.UpdateMountState(ctx, id, domain.MountReleased); err != nil {
+		t.Fatalf("UpdateMountState released: %v", err)
+	}
+	m, _ := s.GetMount(ctx, id)
+	if m.State != domain.MountReleased {
+		t.Errorf("expected released, got %q", m.State)
+	}
+	if m.UnmountedAt == nil {
+		t.Error("expected UnmountedAt to be set")
+	}
+}
+
+func TestStore_Mount_ListByInstance(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "mntNS4", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-m4a", "mntNS4", "m4a"))
+	s.CreateVolume(ctx, makeVolume("vol-m4b", "mntNS4", "m4b"))
+	svcID4, _ := s.CreateService(ctx, makeManifest("mntNS4", "mnt-svc4"))
+	inst4a, _ := s.CreateInstance(ctx, svcID4, domain.VSPath{Namespace: "mntNS4", Service: "mnt-svc4", Instance: "0"})
+	inst4b, _ := s.CreateInstance(ctx, svcID4, domain.VSPath{Namespace: "mntNS4", Service: "mnt-svc4", Instance: "1"})
+	s.BindMount(ctx, domain.VolumeMount{VolumeID: "vol-m4a", InstanceID: inst4a, TargetPath: "/a"})
+	s.BindMount(ctx, domain.VolumeMount{VolumeID: "vol-m4b", InstanceID: inst4a, TargetPath: "/b"})
+	s.BindMount(ctx, domain.VolumeMount{VolumeID: "vol-m4a", InstanceID: inst4b, TargetPath: "/c"})
+
+	mounts, err := s.ListMountsByInstance(ctx, inst4a)
+	if err != nil {
+		t.Fatalf("ListMountsByInstance: %v", err)
+	}
+	if len(mounts) != 2 {
+		t.Errorf("expected 2 mounts for inst4a, got %d", len(mounts))
+	}
+}
+
+func TestStore_Mount_ListActiveByVolume(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "mntNS5", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-m5", "mntNS5", "m5"))
+	svcID5, _ := s.CreateService(ctx, makeManifest("mntNS5", "mnt-svc5"))
+	instA, _ := s.CreateInstance(ctx, svcID5, domain.VSPath{Namespace: "mntNS5", Service: "mnt-svc5", Instance: "0"})
+	instB, _ := s.CreateInstance(ctx, svcID5, domain.VSPath{Namespace: "mntNS5", Service: "mnt-svc5", Instance: "1"})
+	id1, _ := s.BindMount(ctx, domain.VolumeMount{VolumeID: "vol-m5", InstanceID: instA, TargetPath: "/p1"})
+	id2, _ := s.BindMount(ctx, domain.VolumeMount{VolumeID: "vol-m5", InstanceID: instB, TargetPath: "/p2"})
+	s.UpdateMountState(ctx, id1, domain.MountActive)
+	s.UpdateMountState(ctx, id2, domain.MountActive)
+	s.UpdateMountState(ctx, id2, domain.MountReleased) // released → excluded
+
+	active, err := s.ListActiveMountsByVolume(ctx, "vol-m5")
+	if err != nil {
+		t.Fatalf("ListActiveMountsByVolume: %v", err)
+	}
+	if len(active) != 1 {
+		t.Errorf("expected 1 active mount, got %d", len(active))
+	}
+}
+
+// ── Snapshot store ─────────────────────────────────────────────────────────────
+
+func TestStore_Snapshot_CreateGet(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "snapNS", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-snap", "snapNS", "sv"))
+
+	snap := domain.VolumeSnapshot{
+		ID:       "snap-001",
+		VolumeID: "vol-snap",
+		Label:    "initial",
+	}
+	if err := s.CreateSnapshot(ctx, snap); err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	got, err := s.GetSnapshot(ctx, "snap-001")
+	if err != nil {
+		t.Fatalf("GetSnapshot: %v", err)
+	}
+	if got.State != domain.SnapshotPending {
+		t.Errorf("expected pending, got %q", got.State)
+	}
+	if got.Label != "initial" {
+		t.Errorf("unexpected label: %q", got.Label)
+	}
+}
+
+func TestStore_Snapshot_NotFound(t *testing.T) {
+	s := openStore(t)
+	if _, err := s.GetSnapshot(context.Background(), "missing"); err != store.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestStore_Snapshot_DuplicateID(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "snapNS2", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-sd", "snapNS2", "sd"))
+	snap := domain.VolumeSnapshot{ID: "snap-dup", VolumeID: "vol-sd", Label: "x"}
+	s.CreateSnapshot(ctx, snap) //nolint:errcheck
+	if err := s.CreateSnapshot(ctx, snap); err != store.ErrConflict {
+		t.Errorf("expected ErrConflict, got: %v", err)
+	}
+}
+
+func TestStore_Snapshot_UpdateStateReady(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "snapNS3", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-su", "snapNS3", "su"))
+	s.CreateSnapshot(ctx, domain.VolumeSnapshot{ID: "snap-upd", VolumeID: "vol-su", Label: "v1"})
+
+	if err := s.UpdateSnapshotState(ctx, "snap-upd", domain.SnapshotReady, "/snapshots/v1", 512); err != nil {
+		t.Fatalf("UpdateSnapshotState ready: %v", err)
+	}
+	got, _ := s.GetSnapshot(ctx, "snap-upd")
+	if got.State != domain.SnapshotReady {
+		t.Errorf("expected ready, got %q", got.State)
+	}
+	if got.DriverRef != "/snapshots/v1" {
+		t.Errorf("unexpected driverRef: %q", got.DriverRef)
+	}
+	if got.SizeMiB != 512 {
+		t.Errorf("unexpected sizeMiB: %d", got.SizeMiB)
+	}
+	if got.CompletedAt == nil {
+		t.Error("expected CompletedAt to be set")
+	}
+}
+
+func TestStore_Snapshot_UpdateStateFailed(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "snapNS4", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-sf", "snapNS4", "sf"))
+	s.CreateSnapshot(ctx, domain.VolumeSnapshot{ID: "snap-fail", VolumeID: "vol-sf", Label: "v2"})
+
+	if err := s.UpdateSnapshotState(ctx, "snap-fail", domain.SnapshotFailed, "", 0); err != nil {
+		t.Fatalf("UpdateSnapshotState failed: %v", err)
+	}
+	got, _ := s.GetSnapshot(ctx, "snap-fail")
+	if got.State != domain.SnapshotFailed {
+		t.Errorf("expected failed, got %q", got.State)
+	}
+}
+
+func TestStore_Snapshot_List(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "snapNS5", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-sl", "snapNS5", "sl"))
+	s.CreateSnapshot(ctx, domain.VolumeSnapshot{ID: "sl-1", VolumeID: "vol-sl", Label: "a"})
+	s.CreateSnapshot(ctx, domain.VolumeSnapshot{ID: "sl-2", VolumeID: "vol-sl", Label: "b"})
+	s.CreateSnapshot(ctx, domain.VolumeSnapshot{ID: "sl-3", VolumeID: "other-vol", Label: "c"})
+
+	snaps, err := s.ListSnapshots(ctx, "vol-sl")
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	if len(snaps) != 2 {
+		t.Errorf("expected 2 snapshots for vol-sl, got %d", len(snaps))
+	}
+}
+
+// ── Operation store ────────────────────────────────────────────────────────────
+
+func makeOpInstance(t *testing.T, s *store.VSStore, ns, svcSuffix string) string {
+	t.Helper()
+	ctx := context.Background()
+	s.CreateNamespace(ctx, ns, "") //nolint:errcheck
+	svcID, _ := s.CreateService(ctx, makeManifest(ns, "op-svc-"+svcSuffix))
+	instID, err := s.CreateInstance(ctx, svcID, domain.VSPath{Namespace: ns, Service: "op-svc-" + svcSuffix, Instance: "0"})
+	if err != nil {
+		t.Fatalf("makeOpInstance CreateInstance: %v", err)
+	}
+	return instID
+}
+
+func TestStore_Operation_CreateGet(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	instID := makeOpInstance(t, s, "opNS1", "1")
+
+	id, err := s.CreateOperation(ctx, instID, domain.OpProvision, "mock")
+	if err != nil {
+		t.Fatalf("CreateOperation: %v", err)
+	}
+	if id == "" {
+		t.Fatal("expected non-empty id")
+	}
+	op, err := s.GetOperation(ctx, id)
+	if err != nil {
+		t.Fatalf("GetOperation: %v", err)
+	}
+	if op.State != domain.OperationPending {
+		t.Errorf("expected pending, got %q", op.State)
+	}
+	if op.Type != domain.OpProvision {
+		t.Errorf("expected provision, got %q", op.Type)
+	}
+	if op.Adapter != "mock" {
+		t.Errorf("expected adapter=mock, got %q", op.Adapter)
+	}
+}
+
+func TestStore_Operation_NotFound(t *testing.T) {
+	s := openStore(t)
+	if _, err := s.GetOperation(context.Background(), "missing"); err != store.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestStore_Operation_UpdateState(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	instID2 := makeOpInstance(t, s, "opNS2", "2")
+	id, _ := s.CreateOperation(ctx, instID2, domain.OpStart, "mock")
+
+	if err := s.UpdateOperationState(ctx, id, domain.OperationRunning); err != nil {
+		t.Fatalf("UpdateOperationState pending→running: %v", err)
+	}
+	op, _ := s.GetOperation(ctx, id)
+	if op.State != domain.OperationRunning {
+		t.Errorf("expected running, got %q", op.State)
+	}
+
+	if err := s.UpdateOperationState(ctx, id, domain.OperationSucceeded); err != nil {
+		t.Fatalf("UpdateOperationState running→succeeded: %v", err)
+	}
+	op, _ = s.GetOperation(ctx, id)
+	if op.State != domain.OperationSucceeded {
+		t.Errorf("expected succeeded, got %q", op.State)
+	}
+	if op.CompletedAt == nil {
+		t.Error("expected CompletedAt to be set on success")
+	}
+}
+
+func TestStore_Operation_UpdateState_IllegalTransition(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	instID3 := makeOpInstance(t, s, "opNS3", "3")
+	id, _ := s.CreateOperation(ctx, instID3, domain.OpStop, "mock")
+	// pending→succeeded is illegal (must go through running)
+	if err := s.UpdateOperationState(ctx, id, domain.OperationSucceeded); err == nil {
+		t.Error("expected error for illegal transition pending→succeeded")
+	}
+}
+
+func TestStore_Operation_AppendEvent(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	instID4 := makeOpInstance(t, s, "opNS4", "4")
+	id, _ := s.CreateOperation(ctx, instID4, domain.OpInspect, "mock")
+	payload := map[string]interface{}{"key": "value"}
+
+	if err := s.AppendOperationEvent(ctx, id, "info", "starting up", payload); err != nil {
+		t.Fatalf("AppendOperationEvent: %v", err)
+	}
+	if err := s.AppendOperationEvent(ctx, id, "warn", "slow disk", nil); err != nil {
+		t.Fatalf("AppendOperationEvent nil payload: %v", err)
+	}
+
+	op, err := s.GetOperation(ctx, id)
+	if err != nil {
+		t.Fatalf("GetOperation: %v", err)
+	}
+	if len(op.Events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(op.Events))
+	}
+	if op.Events[0].Message != "starting up" {
+		t.Errorf("unexpected message: %q", op.Events[0].Message)
+	}
+	if op.Events[0].Payload["key"] != "value" {
+		t.Errorf("unexpected payload: %v", op.Events[0].Payload)
+	}
+}
