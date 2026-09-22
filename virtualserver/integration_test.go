@@ -2,6 +2,7 @@ package virtualserver_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -11,6 +12,8 @@ import (
 	"github.com/mgdavisxvs/Ocelot/virtualserver/domain"
 	"github.com/mgdavisxvs/Ocelot/virtualserver/reconciler"
 	"github.com/mgdavisxvs/Ocelot/virtualserver/scheduler"
+	"github.com/mgdavisxvs/Ocelot/virtualserver/storage"
+	localstorage "github.com/mgdavisxvs/Ocelot/virtualserver/storage/local"
 	"github.com/mgdavisxvs/Ocelot/virtualserver/store"
 
 	virtualserver "github.com/mgdavisxvs/Ocelot/virtualserver"
@@ -152,6 +155,130 @@ func TestIntegration_DeclaredToRunning_E2E(t *testing.T) {
 	}
 
 	t.Logf("E2E complete: instance %s running on node %s", finalInst.ID, finalInst.NodeID)
+}
+
+// TestIntegration_Volume_DeclaredToReady verifies the volume provisioning path:
+// declare → reconcile → provisioning → ready, with driver handle persisted.
+func TestIntegration_Volume_DeclaredToReady(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.CreateNamespace(ctx, "vol-test", ""); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+
+	drv := localstorage.New("node-1", t.TempDir())
+
+	vol := domain.Volume{
+		ID: "vol-int-1",
+		Manifest: domain.VolumeManifest{
+			APIVersion: "virtualserver/v1",
+			Kind:       "Volume",
+			Metadata:   domain.VolumeMetadata{Namespace: "vol-test", Name: "data"},
+			Spec:       domain.VolumeSpec{Class: "local", CapacityMiB: 1024, AccessMode: domain.VolumeAccessRWO},
+		},
+		State: domain.VolumeDeclared,
+	}
+	if _, err := s.CreateVolume(ctx, vol); err != nil {
+		t.Fatalf("create volume: %v", err)
+	}
+
+	rec := reconciler.New(reconciler.Config{
+		Store:        s,
+		Adapters:     map[string]adapter.BackendAdapter{},
+		ClassDrivers: map[string]storage.StorageDriver{"local": drv},
+		Sched:        scheduler.New(scheduler.DefaultWeights()),
+		Interval:     100 * time.Millisecond,
+	})
+
+	for pass := 0; pass < 3; pass++ {
+		if err := rec.Reconcile(ctx); err != nil {
+			t.Logf("reconcile pass %d: %v", pass, err)
+		}
+	}
+
+	final, err := s.GetVolume(ctx, "vol-int-1")
+	if err != nil {
+		t.Fatalf("get volume: %v", err)
+	}
+	if final.State != domain.VolumeReady {
+		t.Errorf("expected ready, got %q", final.State)
+	}
+	if final.DriverHandle["path"] == "" {
+		t.Error("expected driver handle path to be set")
+	}
+	t.Logf("volume ready at path: %s", final.DriverHandle["path"])
+}
+
+// TestIntegration_Volume_ReleasingToReleased verifies the teardown path:
+// provision → set releasing → reconcile → driver.Delete → released state.
+func TestIntegration_Volume_ReleasingToReleased(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.CreateNamespace(ctx, "rel-test", ""); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+
+	drv := localstorage.New("node-1", t.TempDir())
+
+	vol := domain.Volume{
+		ID: "vol-rel-1",
+		Manifest: domain.VolumeManifest{
+			APIVersion: "virtualserver/v1",
+			Kind:       "Volume",
+			Metadata:   domain.VolumeMetadata{Namespace: "rel-test", Name: "ephemeral"},
+			Spec:       domain.VolumeSpec{Class: "local", CapacityMiB: 512, AccessMode: domain.VolumeAccessRWO},
+		},
+		State: domain.VolumeDeclared,
+	}
+	if _, err := s.CreateVolume(ctx, vol); err != nil {
+		t.Fatalf("create volume: %v", err)
+	}
+
+	rec := reconciler.New(reconciler.Config{
+		Store:        s,
+		Adapters:     map[string]adapter.BackendAdapter{},
+		ClassDrivers: map[string]storage.StorageDriver{"local": drv},
+		Sched:        scheduler.New(scheduler.DefaultWeights()),
+		Interval:     100 * time.Millisecond,
+	})
+
+	// Provision: declared → ready
+	for pass := 0; pass < 3; pass++ {
+		rec.Reconcile(ctx) //nolint:errcheck
+	}
+	provisioned, err := s.GetVolume(ctx, "vol-rel-1")
+	if err != nil {
+		t.Fatalf("get provisioned volume: %v", err)
+	}
+	if provisioned.State != domain.VolumeReady {
+		t.Fatalf("expected ready after provisioning, got %q", provisioned.State)
+	}
+	diskPath := provisioned.DriverHandle["path"]
+
+	// Transition to releasing (simulates API DELETE).
+	if err := s.UpdateVolumeState(ctx, "vol-rel-1", domain.VolumeReleasing); err != nil {
+		t.Fatalf("set releasing: %v", err)
+	}
+
+	// Reconcile: releasing → driver.Delete → released
+	for pass := 0; pass < 2; pass++ {
+		rec.Reconcile(ctx) //nolint:errcheck
+	}
+
+	final, err := s.GetVolume(ctx, "vol-rel-1")
+	if err != nil {
+		t.Fatalf("get released volume: %v", err)
+	}
+	if final.State != domain.VolumeReleased {
+		t.Errorf("expected released, got %q", final.State)
+	}
+	// Verify disk cleanup: directory must be gone after release.
+	if _, statErr := os.Stat(diskPath); !os.IsNotExist(statErr) {
+		t.Errorf("expected directory %s to be removed after release", diskPath)
+	}
+	t.Logf("volume released and disk cleaned: %s", diskPath)
 }
 
 // TestIntegration_Config_Disabled verifies that New returns nil when disabled.

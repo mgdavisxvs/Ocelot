@@ -48,6 +48,7 @@ type HandlerStore interface {
 	CreateSnapshot(ctx context.Context, snap domain.VolumeSnapshot) error
 	GetSnapshot(ctx context.Context, id string) (*domain.VolumeSnapshot, error)
 	ListSnapshots(ctx context.Context, volumeID string) ([]domain.VolumeSnapshot, error)
+	UpdateSnapshotState(ctx context.Context, id string, state domain.SnapshotState, driverRef string, sizeMiB int64) error
 }
 
 // VolumeHandlerDrivers gives the volume handlers access to storage drivers
@@ -505,9 +506,14 @@ func (h *Handlers) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
 		if drv, ok := h.drivers.DriverForClass(v.Manifest.Spec.Class); ok {
 			ref, snapErr := drv.Snapshot(r.Context(), v.DriverHandle, req.Label)
 			if snapErr == nil {
+				now := time.Now()
 				snap.State = domain.SnapshotReady
 				snap.DriverRef = ref
-				h.store.GetSnapshot(r.Context(), snap.ID) //nolint:errcheck — fetched below
+				snap.CompletedAt = &now
+				h.store.UpdateSnapshotState(r.Context(), snap.ID, domain.SnapshotReady, ref, 0) //nolint:errcheck
+			} else {
+				snap.State = domain.SnapshotFailed
+				h.store.UpdateSnapshotState(r.Context(), snap.ID, domain.SnapshotFailed, "", 0) //nolint:errcheck
 			}
 		}
 	}

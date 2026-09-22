@@ -36,6 +36,7 @@ type StoreInterface interface {
 
 	// Volume methods
 	ListVolumesByState(ctx context.Context, state domain.VolumeState) ([]domain.Volume, error)
+	GetVolume(ctx context.Context, id string) (*domain.Volume, error)
 	GetVolumeByName(ctx context.Context, namespace, name string) (*domain.Volume, error)
 	UpdateVolumeState(ctx context.Context, id string, to domain.VolumeState) error
 	UpdateVolumeHandle(ctx context.Context, id string, handle map[string]string) error
@@ -44,6 +45,7 @@ type StoreInterface interface {
 	BindMount(ctx context.Context, m domain.VolumeMount) (int64, error)
 	UpdateMountState(ctx context.Context, id int64, to domain.VolumeMountState) error
 	ListMountsByInstance(ctx context.Context, instanceID string) ([]domain.VolumeMount, error)
+	ListActiveMountsByVolume(ctx context.Context, volumeID string) ([]domain.VolumeMount, error)
 }
 
 // ArtifactCatalog is the narrow interface bridging the reconciler to artifact availability.
@@ -433,8 +435,8 @@ func (r *VSReconciler) resolveMounts(ctx context.Context, manifest domain.Servic
 		}
 		if vol.State == domain.VolumeReady {
 			r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeBound) //nolint:errcheck
+			volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeReady, domain.VolumeBound)
 		}
-		vsmetrics.VolumeCount.WithLabelValues(vol.Manifest.Spec.Class, string(domain.VolumeBound)).Inc()
 
 		resolved = append(resolved, adapter.ResolvedMount{
 			HostPath:   mp.HostPath,
@@ -446,7 +448,17 @@ func (r *VSReconciler) resolveMounts(ctx context.Context, manifest domain.Servic
 	return resolved, ids, nil
 }
 
-// reconcileVolumes drives volumes in declared state through provisioning → ready.
+// volumeStateTransition updates the VolumeCount gauge atomically: decrements the old
+// state label and increments the new one so the gauge stays accurate as a live count.
+func volumeStateTransition(class string, from, to domain.VolumeState) {
+	vsmetrics.VolumeCount.WithLabelValues(class, string(from)).Dec()
+	vsmetrics.VolumeCount.WithLabelValues(class, string(to)).Inc()
+}
+
+// reconcileVolumes drives all volume lifecycle passes in order:
+//  1. declared  → provisioning → ready
+//  2. releasing → (driver.Delete) → released
+//  3. bound     → quota check   → quota_exceeded (or back to bound)
 func (r *VSReconciler) reconcileVolumes(ctx context.Context) error {
 	declared, err := r.store.ListVolumesByState(ctx, domain.VolumeDeclared)
 	if err != nil {
@@ -457,7 +469,79 @@ func (r *VSReconciler) reconcileVolumes(ctx context.Context) error {
 			r.store.WriteAuditLog(ctx, "volume_provision_failed", "volume", declared[i].ID, "", false, err.Error()) //nolint:errcheck
 		}
 	}
+
+	if err := r.reconcileReleasingVolumes(ctx); err != nil {
+		r.store.WriteAuditLog(ctx, "volume_release_error", "volume", "", "", false, err.Error()) //nolint:errcheck
+	}
+
+	r.reconcileQuotaCheck(ctx)
 	return nil
+}
+
+// reconcileReleasingVolumes calls the storage driver to delete the backing storage for
+// every volume in the releasing state, then transitions it to released.
+func (r *VSReconciler) reconcileReleasingVolumes(ctx context.Context) error {
+	releasing, err := r.store.ListVolumesByState(ctx, domain.VolumeReleasing)
+	if err != nil {
+		return fmt.Errorf("list releasing volumes: %w", err)
+	}
+	for i := range releasing {
+		vol := &releasing[i]
+		drv, ok := r.classDrivers[vol.Manifest.Spec.Class]
+		if !ok {
+			r.store.UpdateVolumeFailure(ctx, vol.ID, fmt.Sprintf("no driver for class %q", vol.Manifest.Spec.Class)) //nolint:errcheck
+			continue
+		}
+		err := drv.Delete(ctx, vol.DriverHandle)
+		vsmetrics.VolumeOperations.WithLabelValues(drv.Name(), "delete", outcomeStr(err)).Inc()
+		if err != nil {
+			r.store.UpdateVolumeFailure(ctx, vol.ID, err.Error()) //nolint:errcheck
+			continue
+		}
+		r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeReleased)          //nolint:errcheck
+		volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeReleasing, domain.VolumeReleased)
+		vsmetrics.VolumeCapacityMiB.WithLabelValues(vol.Manifest.Spec.Class).Sub(float64(vol.Manifest.Spec.CapacityMiB))
+		r.store.WriteAuditLog(ctx, "volume_released", "volume", vol.ID, "", true, //nolint:errcheck
+			fmt.Sprintf("class=%s driver=%s", vol.Manifest.Spec.Class, drv.Name()))
+	}
+	return nil
+}
+
+// reconcileQuotaCheck calls driver.Stat for each bound volume and transitions to
+// quota_exceeded when UsedMiB >= CapacityMiB. Transitions back to bound when the
+// volume drops below quota (e.g. after data removal).
+func (r *VSReconciler) reconcileQuotaCheck(ctx context.Context) {
+	bound, _ := r.store.ListVolumesByState(ctx, domain.VolumeBound)
+	exceeded, _ := r.store.ListVolumesByState(ctx, domain.VolumeQuotaExceeded)
+	candidates := append(bound, exceeded...)
+
+	for i := range candidates {
+		vol := &candidates[i]
+		drv, ok := r.classDrivers[vol.Manifest.Spec.Class]
+		if !ok {
+			continue
+		}
+		stat, err := drv.Stat(ctx, vol.DriverHandle)
+		vsmetrics.VolumeOperations.WithLabelValues(drv.Name(), "stat", outcomeStr(err)).Inc()
+		if err != nil || !stat.Available {
+			continue
+		}
+		vsmetrics.VolumeUsedMiB.WithLabelValues(vol.Manifest.Spec.Class).Set(float64(stat.UsedMiB))
+
+		overQuota := vol.Manifest.Spec.CapacityMiB > 0 && stat.UsedMiB >= vol.Manifest.Spec.CapacityMiB
+		switch {
+		case overQuota && vol.State == domain.VolumeBound:
+			if err := r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeQuotaExceeded); err == nil {
+				volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeBound, domain.VolumeQuotaExceeded)
+				r.store.WriteAuditLog(ctx, "volume_quota_exceeded", "volume", vol.ID, "", false, //nolint:errcheck
+					fmt.Sprintf("used=%dMiB capacity=%dMiB", stat.UsedMiB, vol.Manifest.Spec.CapacityMiB))
+			}
+		case !overQuota && vol.State == domain.VolumeQuotaExceeded:
+			if err := r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeBound); err == nil {
+				volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeQuotaExceeded, domain.VolumeBound)
+			}
+		}
+	}
 }
 
 // provisionVolume calls the storage driver Create for a declared volume.
@@ -470,23 +554,62 @@ func (r *VSReconciler) provisionVolume(ctx context.Context, vol *domain.Volume) 
 	if err := r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeProvisioning); err != nil {
 		return fmt.Errorf("set provisioning: %w", err)
 	}
-	vsmetrics.VolumeCount.WithLabelValues(vol.Manifest.Spec.Class, string(domain.VolumeProvisioning)).Inc()
+	volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeDeclared, domain.VolumeProvisioning)
 
 	handle, err := drv.Create(ctx, vol.Manifest.Metadata.Namespace, vol.Manifest.Metadata.Name, vol.Manifest.Spec)
 	vsmetrics.VolumeOperations.WithLabelValues(drv.Name(), "create", outcomeStr(err)).Inc()
 	if err != nil {
 		r.store.UpdateVolumeFailure(ctx, vol.ID, err.Error()) //nolint:errcheck
-		vsmetrics.VolumeCount.WithLabelValues(vol.Manifest.Spec.Class, string(domain.VolumeFailed)).Inc()
+		volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeProvisioning, domain.VolumeFailed)
 		return fmt.Errorf("driver create: %w", err)
 	}
 
 	r.store.UpdateVolumeHandle(ctx, vol.ID, handle)                     //nolint:errcheck
 	r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeReady)          //nolint:errcheck
-	vsmetrics.VolumeCount.WithLabelValues(vol.Manifest.Spec.Class, string(domain.VolumeReady)).Inc()
+	volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeProvisioning, domain.VolumeReady)
 	vsmetrics.VolumeCapacityMiB.WithLabelValues(vol.Manifest.Spec.Class).Add(float64(vol.Manifest.Spec.CapacityMiB))
 	r.store.WriteAuditLog(ctx, "volume_provisioned", "volume", vol.ID, "", true, //nolint:errcheck
 		fmt.Sprintf("class=%s driver=%s", vol.Manifest.Spec.Class, drv.Name()))
 	return nil
+}
+
+// teardownMounts releases all active mounts held by an instance. For each active
+// mount it calls driver.Unmount, marks the mount released in the store, and
+// transitions the volume from bound → ready when no other instance holds it.
+func (r *VSReconciler) teardownMounts(ctx context.Context, instanceID string) {
+	mounts, err := r.store.ListMountsByInstance(ctx, instanceID)
+	if err != nil {
+		return
+	}
+	for _, m := range mounts {
+		if m.State != domain.MountActive && m.State != domain.MountPending {
+			continue
+		}
+		r.store.UpdateMountState(ctx, m.ID, domain.MountReleased) //nolint:errcheck
+
+		vol, err := r.store.GetVolume(ctx, m.VolumeID)
+		if err != nil || vol == nil {
+			continue
+		}
+		drv, ok := r.classDrivers[vol.Manifest.Spec.Class]
+		if ok {
+			mp := storage.MountPoint{HostPath: vol.DriverHandle["path"], ReadOnly: m.ReadOnly}
+			umErr := drv.Unmount(ctx, mp)
+			vsmetrics.VolumeOperations.WithLabelValues(drv.Name(), "unmount", outcomeStr(umErr)).Inc()
+		}
+
+		// Transition bound→ready when this was the last active mount.
+		if vol.State == domain.VolumeBound {
+			active, aerr := r.store.ListActiveMountsByVolume(ctx, m.VolumeID)
+			if aerr == nil && len(active) == 0 {
+				if err := r.store.UpdateVolumeState(ctx, m.VolumeID, domain.VolumeReady); err == nil {
+					volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeBound, domain.VolumeReady)
+				}
+			}
+		}
+		r.store.WriteAuditLog(ctx, "mount_released", "volume", m.VolumeID, "", true, //nolint:errcheck
+			fmt.Sprintf("instance=%s mount=%d", instanceID, m.ID))
+	}
 }
 
 func outcomeStr(err error) string {
@@ -526,6 +649,7 @@ func (r *VSReconciler) handleFailedInstance(ctx context.Context, inst *domain.Se
 		return // too soon; next loop will check again
 	}
 
+	r.teardownMounts(ctx, inst.ID)
 	r.store.ReleaseAllocation(ctx, inst.ID)                                      //nolint:errcheck
 	r.store.IncrementRetryCount(ctx, inst.ID)                                    //nolint:errcheck
 	r.store.WriteAuditLog(ctx, "retry_scheduled", "instance", inst.ID, "", true, //nolint:errcheck

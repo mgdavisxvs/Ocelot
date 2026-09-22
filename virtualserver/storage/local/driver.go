@@ -3,9 +3,11 @@ package local
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/mgdavisxvs/Ocelot/virtualserver/domain"
 	"github.com/mgdavisxvs/Ocelot/virtualserver/storage"
@@ -93,7 +95,60 @@ func (d *Driver) Stat(_ context.Context, handle storage.VolumeHandle) (storage.V
 	}, nil
 }
 
-// Snapshot is not supported by the local driver.
-func (d *Driver) Snapshot(_ context.Context, _ storage.VolumeHandle, _ string) (string, error) {
-	return "", fmt.Errorf("local driver does not support snapshots")
+// Snapshot creates a crash-consistent point-in-time copy of the volume directory.
+// Snapshots are stored under {baseDir}/.snapshots/{label}-{timestamp} and can be
+// used for backup or manual restore. Application-consistent snapshots require
+// quiescing the workload before calling this (a FUTURE-tier capability).
+func (d *Driver) Snapshot(_ context.Context, handle storage.VolumeHandle, label string) (string, error) {
+	srcPath := handle["path"]
+	if srcPath == "" {
+		return "", fmt.Errorf("local.Snapshot: empty path in handle")
+	}
+	snapDir := filepath.Join(d.baseDir, ".snapshots")
+	if err := os.MkdirAll(snapDir, 0o755); err != nil {
+		return "", fmt.Errorf("local.Snapshot mkdir: %w", err)
+	}
+	ts := time.Now().UTC().Format("20060102T150405Z")
+	snapPath := filepath.Join(snapDir, label+"-"+ts)
+	if err := copyDirTree(srcPath, snapPath); err != nil {
+		// Clean up partial snapshot on failure.
+		os.RemoveAll(snapPath) //nolint:errcheck
+		return "", fmt.Errorf("local.Snapshot copy: %w", err)
+	}
+	return snapPath, nil
+}
+
+func copyDirTree(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		return copyFile(path, target, info.Mode())
+	})
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }

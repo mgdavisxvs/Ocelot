@@ -192,6 +192,14 @@ func (s *testStore) ListSnapshots(_ context.Context, volumeID string) ([]domain.
 	}
 	return out, nil
 }
+func (s *testStore) UpdateSnapshotState(_ context.Context, id string, state domain.SnapshotState, driverRef string, _ int64) error {
+	if snap, ok := s.snapshots[id]; ok {
+		snap.State = state
+		snap.DriverRef = driverRef
+		return nil
+	}
+	return store.ErrNotFound
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 

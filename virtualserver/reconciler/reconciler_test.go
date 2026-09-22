@@ -147,6 +147,9 @@ func (m *mockStore) WriteAuditLog(_ context.Context, action, resourceType, resou
 func (m *mockStore) ListVolumesByState(_ context.Context, _ domain.VolumeState) ([]domain.Volume, error) {
 	return nil, nil
 }
+func (m *mockStore) GetVolume(_ context.Context, _ string) (*domain.Volume, error) {
+	return nil, store.ErrNotFound
+}
 func (m *mockStore) GetVolumeByName(_ context.Context, _, _ string) (*domain.Volume, error) {
 	return nil, store.ErrNotFound
 }
@@ -165,6 +168,9 @@ func (m *mockStore) UpdateMountState(_ context.Context, _ int64, _ domain.Volume
 	return nil
 }
 func (m *mockStore) ListMountsByInstance(_ context.Context, _ string) ([]domain.VolumeMount, error) {
+	return nil, nil
+}
+func (m *mockStore) ListActiveMountsByVolume(_ context.Context, _ string) ([]domain.VolumeMount, error) {
 	return nil, nil
 }
 
