@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/mgdavisxvs/Ocelot/commons"
 )
 
 // AnnounceRequest represents a parsed BitTorrent announce request.
@@ -190,6 +192,23 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 
 			if uploadedChange > 0 || downloadedChange > 0 {
 				w.DB.RecordUserStats(user.ID, uploadedChange, downloadedChange)
+
+				// Async economic settlement — non-blocking on the announce critical path.
+				if w.Commons != nil {
+					ul, dl := uploadedChange, downloadedChange
+					cStats := &commons.AnnounceStats{
+						UserID:              uint32(user.ID),
+						TorrentID:           uint32(torrent.ID),
+						EffectiveUploaded:   ul,
+						EffectiveDownloaded: dl,
+						Seeders:             torrent.Seeders.Size(),
+						Leechers:            torrent.Leechers.Size(),
+						IsSeeder:            req.Left == 0,
+						IsStopped:           stoppedTorrent,
+						Timestamp:           now,
+					}
+					go func() { _ = w.Commons.SettleAnnounce(cStats) }()
+				}
 			}
 		}
 	}

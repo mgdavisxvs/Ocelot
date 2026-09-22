@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mgdavisxvs/Ocelot/commons"
 )
 
 // Server is the high-performance tracker server.
@@ -475,6 +477,13 @@ type Worker struct {
 	CircuitBreak *CircuitBreaker
 	AuditLog     *AuditLogger
 	Metrics      *MetricsRecorder
+	Commons      CommonsInterface // optional: nil disables economic settlement
+}
+
+// CommonsInterface is the subset of commons.ComputeCommons used by the tracker.
+// Defined as an interface to support mocking in tests.
+type CommonsInterface interface {
+	SettleAnnounce(stats *commons.AnnounceStats) error
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.

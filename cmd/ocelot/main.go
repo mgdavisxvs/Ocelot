@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mgdavisxvs/Ocelot/commons"
 	"github.com/mgdavisxvs/Ocelot/tracker"
 )
 
@@ -89,6 +90,22 @@ func main() {
 		log.Println("No gazelle_url configured; token expiry callbacks disabled")
 	}
 
+	// ── Compute Commons ───────────────────────────────────────────────────────
+	commonsDB := db.CurrentDB()
+	if err := commons.InitSchema(commonsDB); err != nil {
+		log.Printf("Warning: commons schema init failed: %v", err)
+	}
+	if err := commons.UpsertDefaultPrices(commonsDB); err != nil {
+		log.Printf("Warning: commons default prices upsert failed: %v", err)
+	}
+	cc, err := commons.New(commonsDB, nil)
+	if err != nil {
+		log.Printf("Warning: compute commons init failed (economic settlement disabled): %v", err)
+		cc = nil
+	} else {
+		log.Println("Compute Commons economic settlement enabled")
+	}
+
 	// ── Worker ────────────────────────────────────────────────────────────────
 	worker := &tracker.Worker{
 		Config:       config,
@@ -102,6 +119,7 @@ func main() {
 		CircuitBreak: circuitBreaker,
 		AuditLog:     auditLog,
 		Metrics:      metrics,
+		Commons:      cc,
 	}
 
 	// ── Background subsystems ─────────────────────────────────────────────────

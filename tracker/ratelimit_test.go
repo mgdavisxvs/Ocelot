@@ -6,7 +6,7 @@ import (
 )
 
 func TestRateLimiterAllow(t *testing.T) {
-	limiter := NewRateLimiter(10, 20) // 10 req/sec, burst 20
+	limiter := NewRateLimiter(10, 20, 1000) // 10 req/sec, burst 20
 
 	ip := "192.0.2.1"
 
@@ -24,7 +24,7 @@ func TestRateLimiterAllow(t *testing.T) {
 }
 
 func TestRateLimiterRefill(t *testing.T) {
-	limiter := NewRateLimiter(10, 10) // 10 req/sec, burst 10
+	limiter := NewRateLimiter(10, 10, 1000) // 10 req/sec, burst 10
 
 	ip := "192.0.2.2"
 
@@ -43,7 +43,7 @@ func TestRateLimiterRefill(t *testing.T) {
 }
 
 func TestRateLimiterMultipleIPs(t *testing.T) {
-	limiter := NewRateLimiter(10, 10)
+	limiter := NewRateLimiter(10, 10, 1000)
 
 	// Different IPs should have independent limits
 	if !limiter.Allow("192.0.2.1") {
