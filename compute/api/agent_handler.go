@@ -358,6 +358,7 @@ func (h *AgentHandler) applyHealthEvent(ctx context.Context, nodeID string, ev n
 	var args []any
 
 	terminal := false
+	retryable := false
 
 	switch ev.Kind {
 	case node.EventStarted:
@@ -373,11 +374,13 @@ func (h *AgentHandler) applyHealthEvent(ctx context.Context, nodeID string, ev n
 		query = `UPDATE workloads SET status = 'failed', finished_at = ?, exit_code = ?, failure_msg = ? WHERE id = ? AND node_id = ?`
 		args = []any{ev.Ts, exitCode, ev.Message, ev.WorkloadID, nodeID}
 		terminal = true
+		retryable = true
 
 	case node.EventTimedOut:
 		query = `UPDATE workloads SET status = 'timed_out', finished_at = ?, exit_code = ?, failure_msg = ? WHERE id = ? AND node_id = ?`
 		args = []any{ev.Ts, exitCode, ev.Message, ev.WorkloadID, nodeID}
 		terminal = true
+		retryable = true
 
 	case node.EventCheckpoint:
 		_ = insertEvent(ctx, h.db, nodeID, "workload", ev.WorkloadID, "workload.checkpoint",
@@ -394,6 +397,9 @@ func (h *AgentHandler) applyHealthEvent(ctx context.Context, nodeID string, ev n
 	}
 	if terminal {
 		releaseWorkloadResources(ctx, h.db, ev.WorkloadID, ev.Ts)
+		if retryable {
+			tryRequeueIfEligible(ctx, h.db, ev.WorkloadID, ev.Message)
+		}
 	}
 	_ = insertEvent(ctx, h.db, nodeID, "workload", ev.WorkloadID,
 		"workload."+string(ev.Kind),

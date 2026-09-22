@@ -74,11 +74,56 @@ func (m *NodeLossMonitor) check(ctx context.Context) {
 			slog.Error("monitor: mark lost", "node_id", id, "err", err)
 			continue
 		}
-		if n, _ := res.RowsAffected(); n > 0 {
-			slog.Warn("monitor: node marked lost (heartbeat timeout)",
-				"node_id", id, "threshold_sec", int(m.lossAfter.Seconds()))
-			_ = insertEvent(ctx, m.db, "system", "node", id, "node.lost",
-				map[string]any{"reason": "heartbeat_timeout", "threshold_sec": int(m.lossAfter.Seconds())})
+		if n, _ := res.RowsAffected(); n == 0 {
+			continue
+		}
+		slog.Warn("monitor: node marked lost (heartbeat timeout)",
+			"node_id", id, "threshold_sec", int(m.lossAfter.Seconds()))
+		_ = insertEvent(ctx, m.db, "system", "node", id, "node.lost",
+			map[string]any{"reason": "heartbeat_timeout", "threshold_sec": int(m.lossAfter.Seconds())})
+		m.recoverNodeWorkloads(ctx, id)
+	}
+}
+
+// recoverNodeWorkloads requeues or fails all active workloads on a lost node.
+func (m *NodeLossMonitor) recoverNodeWorkloads(ctx context.Context, nodeID string) {
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT id FROM workloads
+		WHERE node_id = ?
+		  AND status IN ('dispatched','running','checkpointing','stopping')`, nodeID)
+	if err != nil {
+		slog.Error("monitor: query node workloads", "node_id", nodeID, "err", err)
+		return
+	}
+	defer rows.Close()
+
+	var wIDs []string
+	for rows.Next() {
+		var wid string
+		if err := rows.Scan(&wid); err == nil {
+			wIDs = append(wIDs, wid)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("monitor: scan node workloads", "node_id", nodeID, "err", err)
+		return
+	}
+
+	now := nowMs()
+	for _, wid := range wIDs {
+		// First mark the workload failed so tryRequeueIfEligible can pick it up.
+		if _, err := m.db.ExecContext(ctx, `
+			UPDATE workloads SET status = 'failed', finished_at = ?, failure_msg = 'node lost'
+			WHERE id = ? AND status NOT IN ('completed','failed','timed_out','cancelled')`,
+			now, wid); err != nil {
+			slog.Warn("monitor: mark workload failed", "workload_id", wid, "err", err)
+			continue
+		}
+		releaseWorkloadResources(ctx, m.db, wid, now)
+		if !tryRequeueIfEligible(ctx, m.db, wid, "node_lost") {
+			_ = insertEvent(ctx, m.db, "system", "workload", wid, "workload.failed",
+				map[string]any{"reason": "node_lost", "node_id": nodeID})
+			slog.Warn("monitor: workload failed (node lost, no retries)", "workload_id", wid, "node_id", nodeID)
 		}
 	}
 }

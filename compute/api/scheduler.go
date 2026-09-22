@@ -262,6 +262,30 @@ func (s *Scheduler) findFreeGPU(ctx context.Context, tx *sql.Tx, nodeID string, 
 	return
 }
 
+// tryRequeueIfEligible requeues a failed/timed-out workload when it still has
+// retries remaining. Returns true and emits workload.requeued when requeued.
+func tryRequeueIfEligible(ctx context.Context, db *sql.DB, workloadID string, reason string) bool {
+	now := nowMs()
+	res, err := db.ExecContext(ctx, `
+		UPDATE workloads
+		SET status = 'queued', queued_at = ?, node_id = NULL,
+		    retry_count = retry_count + 1, failure_msg = ?
+		WHERE id = ? AND retry_count < max_retries
+		  AND status IN ('failed','timed_out')`,
+		now, reason, workloadID)
+	if err != nil {
+		slog.Warn("tryRequeue: update", "workload_id", workloadID, "err", err)
+		return false
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		slog.Info("workload requeued for retry", "workload_id", workloadID, "reason", reason)
+		_ = insertEvent(ctx, db, "system", "workload", workloadID, "workload.requeued",
+			map[string]any{"reason": reason})
+		return true
+	}
+	return false
+}
+
 // releaseWorkloadResources marks the workload's reservation released and frees
 // any GPU it held. Safe to call multiple times (idempotent via state guard).
 func releaseWorkloadResources(ctx context.Context, db execer, workloadID string, finishedAt int64) {

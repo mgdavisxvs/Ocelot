@@ -25,12 +25,18 @@ func main() {
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file (PEM)")
 	tlsKey := flag.String("tls-key", "", "TLS private key file (PEM)")
 	heartbeatSec := flag.Int("heartbeat-interval", 30, "Expected heartbeat interval in seconds")
-	scheduleSec := flag.Int("schedule-interval", 5, "Scheduler tick interval in seconds")
+	scheduleSec  := flag.Int("schedule-interval", 5, "Scheduler tick interval in seconds")
+	timeoutSec   := flag.Int("timeout-interval", 30, "Workload deadline check interval in seconds")
 	flag.Parse()
 
 	bootstrapToken := os.Getenv("OCELOT_CP_BOOTSTRAP_TOKEN")
 	if bootstrapToken == "" {
 		slog.Error("OCELOT_CP_BOOTSTRAP_TOKEN must be set")
+		os.Exit(1)
+	}
+	jwtSecret := os.Getenv("OCELOT_CP_JWT_SECRET")
+	if jwtSecret == "" {
+		slog.Error("OCELOT_CP_JWT_SECRET must be set")
 		os.Exit(1)
 	}
 
@@ -46,12 +52,21 @@ func main() {
 	defer db.Close()
 
 	heartbeatInterval := time.Duration(*heartbeatSec) * time.Second
-	scheduleInterval := time.Duration(*scheduleSec) * time.Second
+	scheduleInterval  := time.Duration(*scheduleSec) * time.Second
+	timeoutInterval   := time.Duration(*timeoutSec) * time.Second
 
 	mux := http.NewServeMux()
 
 	handler := api.New(db, bootstrapToken)
 	handler.Mount(mux)
+
+	auth := api.NewAuthHandler(db, bootstrapToken, []byte(jwtSecret))
+	auth.Mount(mux)
+
+	api.NewWorkloadAPI(db, auth).Mount(mux)
+	api.NewNodeAPI(db, auth).Mount(mux)
+	api.NewArtifactAPI(db, auth).Mount(mux)
+	api.NewEventAPI(db, auth).Mount(mux)
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := db.PingContext(r.Context()); err != nil {
@@ -83,11 +98,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	monitor := api.NewNodeLossMonitor(db, heartbeatInterval)
-	scheduler := api.NewScheduler(db, scheduleInterval)
+	monitor        := api.NewNodeLossMonitor(db, heartbeatInterval)
+	scheduler      := api.NewScheduler(db, scheduleInterval)
+	timeoutMonitor := api.NewWorkloadTimeoutMonitor(db, timeoutInterval)
 
 	go monitor.Run(ctx)
 	go scheduler.Run(ctx)
+	go timeoutMonitor.Run(ctx)
 
 	errCh := make(chan error, 1)
 	go func() {
