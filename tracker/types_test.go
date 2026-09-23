@@ -214,6 +214,37 @@ func TestUserList_Reset(t *testing.T) {
 	}
 }
 
+func TestUserList_ForEach(t *testing.T) {
+	ul := NewUserList()
+	ul.Set("pk1", NewUser(1, true, false))
+	ul.Set("pk2", NewUser(2, false, true))
+	ul.Set("pk3", NewUser(3, true, true))
+
+	seen := map[string]bool{}
+	ul.ForEach(func(passkey string, _ *User) bool {
+		seen[passkey] = true
+		return true
+	})
+	if len(seen) != 3 {
+		t.Errorf("ForEach visited %d users, want 3", len(seen))
+	}
+}
+
+func TestUserList_ForEach_EarlyStop(t *testing.T) {
+	ul := NewUserList()
+	for i := 0; i < 5; i++ {
+		ul.Set(string(rune('a'+i)), NewUser(UserID(i+1), true, false))
+	}
+	count := 0
+	ul.ForEach(func(_ string, _ *User) bool {
+		count++
+		return count < 2
+	})
+	if count != 2 {
+		t.Errorf("ForEach stopped after %d iterations, want 2", count)
+	}
+}
+
 // ── Whitelist ─────────────────────────────────────────────────────────────────
 
 func TestWhitelist_AllowAll_WhenEmpty(t *testing.T) {

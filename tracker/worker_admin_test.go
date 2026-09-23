@@ -624,3 +624,302 @@ func TestHandleUpdate_SetBudget_MissingID(t *testing.T) {
 		t.Error("expected error when id is missing")
 	}
 }
+
+// ── change_freeleech ───────────────────────────────────────────────────────────
+
+func TestHandleUpdate_ChangeFreeleech(t *testing.T) {
+	w := newAdminWorker()
+	w.Torrents.Set("hash1", NewTorrent(1))
+
+	req := newAdminRequest(url.Values{
+		"action":    {"change_freeleech"},
+		"info_hash": {"hash1"},
+		"free_type": {"1"},
+	})
+	data, err := w.HandleUpdate(req)
+	if err != nil {
+		t.Fatalf("change_freeleech: %v", err)
+	}
+	var resp map[string]string
+	json.Unmarshal(data, &resp)
+	if resp["status"] != "ok" {
+		t.Errorf("status = %q, want \"ok\"", resp["status"])
+	}
+
+	tor, _ := w.Torrents.Get("hash1")
+	if tor.FreeType != FreeFree {
+		t.Errorf("FreeType = %d, want FreeFree (%d)", tor.FreeType, FreeFree)
+	}
+}
+
+func TestHandleUpdate_ChangeFreeleech_ToNeutral(t *testing.T) {
+	w := newAdminWorker()
+	tor := NewTorrent(2)
+	tor.FreeType = FreeFree
+	w.Torrents.Set("hash2", tor)
+
+	req := newAdminRequest(url.Values{
+		"action":    {"change_freeleech"},
+		"info_hash": {"hash2"},
+		"free_type": {"2"},
+	})
+	if _, err := w.HandleUpdate(req); err != nil {
+		t.Fatalf("change_freeleech neutral: %v", err)
+	}
+	got, _ := w.Torrents.Get("hash2")
+	if got.FreeType != FreeNeutral {
+		t.Errorf("FreeType = %d, want FreeNeutral (%d)", got.FreeType, FreeNeutral)
+	}
+}
+
+func TestHandleUpdate_ChangeFreeleech_MissingInfoHash(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":    {"change_freeleech"},
+		"free_type": {"1"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when info_hash is missing")
+	}
+}
+
+func TestHandleUpdate_ChangeFreeleech_NotFound(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":    {"change_freeleech"},
+		"info_hash": {"doesnotexist"},
+		"free_type": {"0"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for non-existent torrent")
+	}
+}
+
+func TestHandleUpdate_ChangeFreeleech_InvalidFreeType(t *testing.T) {
+	w := newAdminWorker()
+	w.Torrents.Set("hash1", NewTorrent(1))
+
+	req := newAdminRequest(url.Values{
+		"action":    {"change_freeleech"},
+		"info_hash": {"hash1"},
+		"free_type": {"99"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for invalid free_type")
+	}
+}
+
+// ── update_user ────────────────────────────────────────────────────────────────
+
+func TestHandleUpdate_UpdateUser_CanLeech(t *testing.T) {
+	w := newAdminWorker()
+	w.Users.Set("testpasskey0000000000000000000u", NewUser(5, true, false))
+
+	req := newAdminRequest(url.Values{
+		"action":    {"update_user"},
+		"passkey":   {"testpasskey0000000000000000000u"},
+		"can_leech": {"0"},
+	})
+	data, err := w.HandleUpdate(req)
+	if err != nil {
+		t.Fatalf("update_user: %v", err)
+	}
+	var resp map[string]string
+	json.Unmarshal(data, &resp)
+	if resp["status"] != "ok" {
+		t.Errorf("status = %q, want \"ok\"", resp["status"])
+	}
+
+	u, _ := w.Users.Get("testpasskey0000000000000000000u")
+	if u.CanLeech.Load() {
+		t.Error("CanLeech should be false after update")
+	}
+}
+
+func TestHandleUpdate_UpdateUser_ProtectIP(t *testing.T) {
+	w := newAdminWorker()
+	w.Users.Set("testpasskey0000000000000000000p", NewUser(6, true, false))
+
+	req := newAdminRequest(url.Values{
+		"action":     {"update_user"},
+		"passkey":    {"testpasskey0000000000000000000p"},
+		"protect_ip": {"1"},
+	})
+	if _, err := w.HandleUpdate(req); err != nil {
+		t.Fatalf("update_user protect_ip: %v", err)
+	}
+
+	u, _ := w.Users.Get("testpasskey0000000000000000000p")
+	if !u.ProtectIP.Load() {
+		t.Error("ProtectIP should be true after update")
+	}
+}
+
+func TestHandleUpdate_UpdateUser_NoPasskey(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":    {"update_user"},
+		"can_leech": {"1"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when passkey is missing")
+	}
+}
+
+func TestHandleUpdate_UpdateUser_NotFound(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":    {"update_user"},
+		"passkey":   {"doesnotexist0000000000000000000"},
+		"can_leech": {"0"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for non-existent user")
+	}
+}
+
+// ── add_token ─────────────────────────────────────────────────────────────────
+
+func TestHandleUpdate_AddToken(t *testing.T) {
+	w := newAdminWorker()
+	w.Torrents.Set("tokenh", NewTorrent(10))
+
+	req := newAdminRequest(url.Values{
+		"action":    {"add_token"},
+		"user_id":   {"99"},
+		"info_hash": {"tokenh"},
+	})
+	data, err := w.HandleUpdate(req)
+	if err != nil {
+		t.Fatalf("add_token: %v", err)
+	}
+	var resp map[string]string
+	json.Unmarshal(data, &resp)
+	if resp["status"] != "ok" {
+		t.Errorf("status = %q, want \"ok\"", resp["status"])
+	}
+
+	tor, _ := w.Torrents.Get("tokenh")
+	if _, ok := tor.TokenedUsers[UserID(99)]; !ok {
+		t.Error("UserID 99 not in TokenedUsers after add_token")
+	}
+}
+
+func TestHandleUpdate_AddToken_ViaIDParam(t *testing.T) {
+	w := newAdminWorker()
+	w.Torrents.Set("tokenh2", NewTorrent(11))
+
+	// Should also work with "id" param when "user_id" is absent.
+	req := newAdminRequest(url.Values{
+		"action":    {"add_token"},
+		"id":        {"55"},
+		"info_hash": {"tokenh2"},
+	})
+	if _, err := w.HandleUpdate(req); err != nil {
+		t.Fatalf("add_token via id: %v", err)
+	}
+	tor, _ := w.Torrents.Get("tokenh2")
+	if _, ok := tor.TokenedUsers[UserID(55)]; !ok {
+		t.Error("UserID 55 not in TokenedUsers")
+	}
+}
+
+func TestHandleUpdate_AddToken_MissingUserID(t *testing.T) {
+	w := newAdminWorker()
+	w.Torrents.Set("tokenh3", NewTorrent(12))
+	req := newAdminRequest(url.Values{
+		"action":    {"add_token"},
+		"info_hash": {"tokenh3"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when user_id is missing")
+	}
+}
+
+func TestHandleUpdate_AddToken_TorrentNotFound(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":    {"add_token"},
+		"user_id":   {"1"},
+		"info_hash": {"nonexistent"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for non-existent torrent")
+	}
+}
+
+// ── remove_token ──────────────────────────────────────────────────────────────
+
+func TestHandleUpdate_RemoveToken(t *testing.T) {
+	w := newAdminWorker()
+	tor := NewTorrent(20)
+	tor.TokenedUsers[UserID(77)] = struct{}{}
+	w.Torrents.Set("rmtokenh", tor)
+
+	req := newAdminRequest(url.Values{
+		"action":    {"remove_token"},
+		"user_id":   {"77"},
+		"info_hash": {"rmtokenh"},
+	})
+	data, err := w.HandleUpdate(req)
+	if err != nil {
+		t.Fatalf("remove_token: %v", err)
+	}
+	var resp map[string]string
+	json.Unmarshal(data, &resp)
+	if resp["status"] != "ok" {
+		t.Errorf("status = %q, want \"ok\"", resp["status"])
+	}
+
+	torAfter, _ := w.Torrents.Get("rmtokenh")
+	if _, ok := torAfter.TokenedUsers[UserID(77)]; ok {
+		t.Error("UserID 77 still in TokenedUsers after remove_token")
+	}
+}
+
+func TestHandleUpdate_RemoveToken_Idempotent(t *testing.T) {
+	w := newAdminWorker()
+	w.Torrents.Set("rmtokenh2", NewTorrent(21))
+
+	// Removing a token that was never added is not an error (delete from map is safe).
+	req := newAdminRequest(url.Values{
+		"action":    {"remove_token"},
+		"user_id":   {"42"},
+		"info_hash": {"rmtokenh2"},
+	})
+	if _, err := w.HandleUpdate(req); err != nil {
+		t.Fatalf("remove_token idempotent: %v", err)
+	}
+}
+
+func TestHandleUpdate_RemoveToken_MissingUserID(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":    {"remove_token"},
+		"info_hash": {"somehash"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when user_id is missing")
+	}
+}
+
+func TestHandleUpdate_RemoveToken_TorrentNotFound(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":    {"remove_token"},
+		"user_id":   {"1"},
+		"info_hash": {"nonexistent"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for non-existent torrent")
+	}
+}
