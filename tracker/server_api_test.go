@@ -453,6 +453,18 @@ func TestResponse_HTMLTrue_SetsHTMLContentType(t *testing.T) {
 
 // ── handleRequest — update route + jsonResponse keep-alive ───────────────────
 
+// TestHandleUpdate_ErrorPath covers the if err != nil → errorResponse branch in
+// server.go handleUpdate when HandleUpdate returns an error (unknown action).
+func TestHandleUpdate_ErrorPath_ErrorResponse(t *testing.T) {
+	f := newTestFixture()
+	req, _ := http.NewRequest("GET", "/update?action=completely_unknown_action", nil)
+	raw := f.server.handleUpdate(req, true)
+	body := string(raw)
+	if !strings.Contains(body, "completely_unknown_action") {
+		t.Errorf("expected error message in response, got: %s", body)
+	}
+}
+
 func TestHandleRequest_UpdateRoute_KeepAlive(t *testing.T) {
 	f := newTestFixture()
 	// Enable keep-alive so httpClose=false on HTTP/1.1 requests,
