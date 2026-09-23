@@ -676,3 +676,61 @@ func TestLoadHistoricalDBs_NonExistentDir_ReturnsNil(t *testing.T) {
 		t.Errorf("expected nil for non-existent dir, got: %v", err)
 	}
 }
+
+// ── LoadAll error paths (drop individual tables) ──────────────────────────────
+
+func newSMForErrorTest(t *testing.T) *SQLiteShardManager {
+	t.Helper()
+	dir := t.TempDir()
+	sm, err := NewSQLiteShardManager(dir)
+	if err != nil {
+		t.Fatalf("NewSQLiteShardManager: %v", err)
+	}
+	t.Cleanup(func() { sm.Close() })
+	return sm
+}
+
+func TestLoadAll_TorrentsError(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	// Drop torrent_hashes so the LoadTorrents JOIN fails.
+	sm.currentDB.Exec("DROP TABLE torrent_hashes")
+
+	loader := NewLoader(sm, NewTorrentList(), NewUserList(), NewWhitelist())
+	err := loader.LoadAll()
+	if err == nil {
+		t.Fatal("expected error when torrent_hashes table missing, got nil")
+	}
+}
+
+func TestLoadAll_UsersError(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	sm.currentDB.Exec("DROP TABLE user_passkeys")
+
+	loader := NewLoader(sm, NewTorrentList(), NewUserList(), NewWhitelist())
+	err := loader.LoadAll()
+	if err == nil {
+		t.Fatal("expected error when user_passkeys table missing, got nil")
+	}
+}
+
+func TestLoadAll_WhitelistError(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	sm.currentDB.Exec("DROP TABLE whitelist")
+
+	loader := NewLoader(sm, NewTorrentList(), NewUserList(), NewWhitelist())
+	err := loader.LoadAll()
+	if err == nil {
+		t.Fatal("expected error when whitelist table missing, got nil")
+	}
+}
+
+func TestLoadAll_TokensError(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	sm.currentDB.Exec("DROP TABLE tokens")
+
+	loader := NewLoader(sm, NewTorrentList(), NewUserList(), NewWhitelist())
+	err := loader.LoadAll()
+	if err == nil {
+		t.Fatal("expected error when tokens table missing, got nil")
+	}
+}

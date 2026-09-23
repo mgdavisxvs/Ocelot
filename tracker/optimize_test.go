@@ -272,3 +272,47 @@ func BenchmarkWhitelistTrie(b *testing.B) {
 		trie.IsAllowed(peerID)
 	}
 }
+
+// ── ValidateIPNotPrivate ──────────────────────────────────────────────────────
+
+func TestValidateIPNotPrivate_NilIP(t *testing.T) {
+	if ValidateIPNotPrivate(nil) {
+		t.Error("nil IP should return false")
+	}
+}
+
+func TestValidateIPNotPrivate_IPv6(t *testing.T) {
+	if !ValidateIPNotPrivate(net.ParseIP("2001:db8::1")) {
+		t.Error("IPv6 address should return true")
+	}
+}
+
+func TestValidateIPNotPrivate_PublicIP(t *testing.T) {
+	if !ValidateIPNotPrivate(net.ParseIP("8.8.8.8")) {
+		t.Error("public IP 8.8.8.8 should return true")
+	}
+}
+
+func TestValidateIPNotPrivate_PrivateRanges(t *testing.T) {
+	cases := []struct {
+		ip   string
+		want bool
+	}{
+		{"0.1.2.3", false},       // 0.0.0.0/8
+		{"10.0.0.1", false},      // 10.0.0.0/8
+		{"127.0.0.1", false},     // loopback
+		{"169.254.1.1", false},   // link-local
+		{"172.16.0.1", false},    // 172.16.0.0/12
+		{"172.31.255.255", false}, // top of 172.16/12
+		{"192.168.1.1", false},   // 192.168.0.0/16
+		{"224.0.0.1", false},     // multicast
+		{"255.255.255.255", false}, // broadcast
+		{"1.2.3.4", true},        // public
+	}
+	for _, c := range cases {
+		got := ValidateIPNotPrivate(net.ParseIP(c.ip))
+		if got != c.want {
+			t.Errorf("ValidateIPNotPrivate(%s) = %v, want %v", c.ip, got, c.want)
+		}
+	}
+}

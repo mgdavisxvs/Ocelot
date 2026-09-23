@@ -47,3 +47,24 @@ func TestSetDefaultLogger(t *testing.T) {
 	// Restore
 	SetDefaultLogger(orig)
 }
+
+func TestNewLogger_LevelDebug(t *testing.T) {
+	l := NewLogger("debug")
+	if l == nil {
+		t.Fatal("NewLogger(debug) returned nil")
+	}
+}
+
+func TestNewLogger_LevelError(t *testing.T) {
+	l := NewLogger("error")
+	if l == nil {
+		t.Fatal("NewLogger(error) returned nil")
+	}
+}
+
+func TestNewLogger_LevelDefault(t *testing.T) {
+	l := NewLogger("unknown_level")
+	if l == nil {
+		t.Fatal("NewLogger(unknown) returned nil")
+	}
+}
