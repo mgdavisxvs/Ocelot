@@ -533,6 +533,88 @@ func TestSelectPeers_ExcludesSelf(t *testing.T) {
 	}
 }
 
+// ── selectPeers additional paths ─────────────────────────────────────────────
+
+func TestSelectPeers_ZeroNumwant(t *testing.T) {
+	w, _, _ := newTestWorker()
+	tor := NewTorrent(1)
+	self := &Peer{UserID: 1}
+	got := w.selectPeers(tor, self, 1, 0, true)
+	if len(got) != 0 {
+		t.Errorf("numwant=0 should return empty bytes, got %d", len(got))
+	}
+}
+
+func TestSelectPeers_SeederReceivesLeechers(t *testing.T) {
+	w, _, _ := newTestWorker()
+	tor := NewTorrent(1)
+
+	// Add 2 leechers
+	for i := 0; i < 2; i++ {
+		p := &Peer{
+			UserID:  UserID(10 + i),
+			IP:      net.ParseIP("2.3.4.5"),
+			Port:    uint16(7000 + i),
+			Visible: true,
+		}
+		p.IPPort = CompactIPPort(p.IP, p.Port)
+		tor.Leechers.Set(string(rune('x'+i)), p)
+	}
+
+	// Call from a seeder perspective (isLeecher=false)
+	self := &Peer{UserID: 99}
+	got := w.selectPeers(tor, self, 99, 50, false)
+	if len(got) != 12 { // 2 leechers × 6 bytes
+		t.Errorf("seeder selectPeers: got %d bytes, want 12", len(got))
+	}
+}
+
+func TestSelectPeers_InvisiblePeersExcluded(t *testing.T) {
+	w, _, _ := newTestWorker()
+	tor := NewTorrent(1)
+
+	visible := &Peer{UserID: 1, IP: net.ParseIP("1.1.1.1"), Port: 6000, Visible: true}
+	visible.IPPort = CompactIPPort(visible.IP, visible.Port)
+	invisible := &Peer{UserID: 2, IP: net.ParseIP("1.1.1.2"), Port: 6001, Visible: false}
+	invisible.IPPort = CompactIPPort(invisible.IP, invisible.Port)
+
+	tor.Seeders.Set("vis", visible)
+	tor.Seeders.Set("inv", invisible)
+
+	self := &Peer{UserID: 99}
+	got := w.selectPeers(tor, self, 99, 50, true)
+	if len(got) != 6 { // only 1 visible seeder
+		t.Errorf("expected 6 bytes (1 visible peer), got %d", len(got))
+	}
+}
+
+func TestSelectPeers_LastSelectedSeederRoundRobin(t *testing.T) {
+	w, _, _ := newTestWorker()
+	tor := NewTorrent(1)
+
+	// Add 3 seeders with deterministic keys
+	for i := 0; i < 3; i++ {
+		p := &Peer{
+			UserID:  UserID(i + 1),
+			IP:      net.ParseIP("5.5.5.5"),
+			Port:    uint16(6000 + i),
+			Visible: true,
+		}
+		p.IPPort = CompactIPPort(p.IP, p.Port)
+		tor.Seeders.Set(string(rune('a'+i)), p)
+	}
+
+	// Set a LastSelectedSeeder so the round-robin path is exercised.
+	tor.LastSelectedSeeder = "a"
+
+	self := &Peer{UserID: 99}
+	got := w.selectPeers(tor, self, 99, 1, true)
+	// Should return exactly 1 seeder (6 bytes), starting from the next seeder.
+	if len(got) != 6 {
+		t.Errorf("expected 6 bytes (1 seeder after round-robin), got %d", len(got))
+	}
+}
+
 // ── minInt ────────────────────────────────────────────────────────────────────
 
 func TestMinInt(t *testing.T) {

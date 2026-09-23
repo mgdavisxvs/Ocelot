@@ -163,6 +163,63 @@ func TestToTrackerConfig(t *testing.T) {
 	}
 }
 
+func TestParseConfigFile_RemainingKeys(t *testing.T) {
+	path := writeConf(t, `
+max_connections = 200
+max_middlemen = 50
+max_read_buffer = 8192
+connection_timeout = 30
+keepalive_timeout = 60
+max_request_size = 4096
+request_log_size = 1000
+report_password = reportpass1234567890123456789
+del_reason_lifetime = 86400
+reap_peers_interval = 120
+schedule_interval = 10
+metrics_port = 9090
+`)
+	cfg, err := ParseConfigFile(path)
+	if err != nil {
+		t.Fatalf("ParseConfigFile: %v", err)
+	}
+	if cfg.MaxConnections != 200 {
+		t.Errorf("MaxConnections = %d, want 200", cfg.MaxConnections)
+	}
+	if cfg.MaxMiddlemen != 50 {
+		t.Errorf("MaxMiddlemen = %d, want 50", cfg.MaxMiddlemen)
+	}
+	if cfg.MaxReadBuffer != 8192 {
+		t.Errorf("MaxReadBuffer = %d, want 8192", cfg.MaxReadBuffer)
+	}
+	if cfg.ConnectionTimeout != 30 {
+		t.Errorf("ConnectionTimeout = %d, want 30", cfg.ConnectionTimeout)
+	}
+	if cfg.KeepaliveTimeout != 60 {
+		t.Errorf("KeepaliveTimeout = %d, want 60", cfg.KeepaliveTimeout)
+	}
+	if cfg.MaxRequestSize != 4096 {
+		t.Errorf("MaxRequestSize = %d, want 4096", cfg.MaxRequestSize)
+	}
+	if cfg.RequestLogSize != 1000 {
+		t.Errorf("RequestLogSize = %d, want 1000", cfg.RequestLogSize)
+	}
+	if cfg.ReportPassword != "reportpass1234567890123456789" {
+		t.Errorf("ReportPassword = %q", cfg.ReportPassword)
+	}
+	if cfg.DelReasonLifetime != 86400 {
+		t.Errorf("DelReasonLifetime = %d, want 86400", cfg.DelReasonLifetime)
+	}
+	if cfg.ReapPeersInterval != 120 {
+		t.Errorf("ReapPeersInterval = %d, want 120", cfg.ReapPeersInterval)
+	}
+	if cfg.ScheduleInterval != 10 {
+		t.Errorf("ScheduleInterval = %d, want 10", cfg.ScheduleInterval)
+	}
+	if cfg.MetricsPort != "9090" {
+		t.Errorf("MetricsPort = %q, want \"9090\"", cfg.MetricsPort)
+	}
+}
+
 func TestDefaultFileConfig_Sensible(t *testing.T) {
 	d := DefaultFileConfig()
 	if d.ListenPort <= 0 || d.ListenPort > 65535 {

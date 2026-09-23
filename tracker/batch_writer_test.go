@@ -111,6 +111,24 @@ func TestQueueTorrentUpdate_DoesNotPanic(t *testing.T) {
 	bw.QueueTorrentUpdate("infohash", 3, 1)
 }
 
+func TestQueueTorrentUpdate_DropWhenFull(t *testing.T) {
+	db := newBatchDB(t)
+	bw := &BatchWriter{
+		db:            db,
+		buffer:        make(chan DBOperation, 1),
+		ticker:        time.NewTicker(time.Hour),
+		batchSize:     1,
+		flushInterval: time.Hour,
+		stopChan:      make(chan struct{}),
+		logger:        GetDefaultLogger(),
+		metrics:       GetMetricsRecorder(),
+	}
+	// Fill the buffer so the next call hits the default branch.
+	bw.buffer <- DBOperation{Type: "torrent_update"}
+	bw.QueueTorrentUpdate("overflow", 1, 1) // must not block
+	bw.ticker.Stop()
+}
+
 // ── Size ──────────────────────────────────────────────────────────────────────
 
 func TestSize_ReflectsBuffer(t *testing.T) {
@@ -189,6 +207,25 @@ func TestQueuePeerAnnounce_DropWhenFull(t *testing.T) {
 }
 
 // ── Full flush integration ────────────────────────────────────────────────────
+
+func TestBatchWriter_FlushTorrentUpdate(t *testing.T) {
+	db := newBatchDB(t)
+	// Pre-insert a torrent row so the UPDATE hits an existing record.
+	db.Exec("INSERT INTO torrents (info_hash, seeders, leechers, last_action) VALUES ('th', 0, 0, 0)")
+
+	// batchSize=1: every item immediately triggers a flush.
+	bw := NewBatchWriter(db, 1, time.Hour)
+
+	bw.QueueTorrentUpdate("th", 4, 2)
+	time.Sleep(30 * time.Millisecond)
+	bw.Stop()
+
+	var seeders int
+	db.QueryRow("SELECT seeders FROM torrents WHERE info_hash = 'th'").Scan(&seeders)
+	if seeders != 4 {
+		t.Errorf("seeders = %d, want 4 after flush", seeders)
+	}
+}
 
 func TestBatchWriter_FlushPeerAnnounce(t *testing.T) {
 	db := newBatchDB(t)
