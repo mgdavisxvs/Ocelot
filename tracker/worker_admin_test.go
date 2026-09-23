@@ -1228,3 +1228,70 @@ func TestRemoveUser_MissingPasskey(t *testing.T) {
 		t.Errorf("status = %q, want \"error\"", result["status"])
 	}
 }
+
+// ── deleteTorrent — torrent not found ─────────────────────────────────────────
+
+func TestHandleUpdate_DeleteTorrent_NotFound(t *testing.T) {
+	w := newAdminWorker()
+	// info_hash is present but no such torrent in the map.
+	req := newAdminRequest(url.Values{
+		"action":    {"delete_torrent"},
+		"info_hash": {"nosuchhashatall"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when torrent not found")
+	}
+}
+
+// ── addUser — missing id / missing passkey ────────────────────────────────────
+
+func TestHandleUpdate_AddUser_MissingID(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":  {"add_user"},
+		"passkey": {"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when id is missing")
+	}
+}
+
+func TestHandleUpdate_AddUser_MissingPasskey(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action": {"add_user"},
+		"id":     {"42"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when passkey is missing")
+	}
+}
+
+// ── addToken — invalid user_id / missing info_hash ────────────────────────────
+
+func TestHandleUpdate_AddToken_InvalidUserID(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":  {"add_token"},
+		"user_id": {"-5"}, // non-positive → invalid
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for invalid user_id")
+	}
+}
+
+func TestHandleUpdate_AddToken_MissingInfoHash(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":  {"add_token"},
+		"user_id": {"7"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when info_hash is missing")
+	}
+}

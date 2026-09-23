@@ -955,6 +955,30 @@ func TestLoadHistoricalDBs_UnreadableEntry_Warns(t *testing.T) {
 	}
 }
 
+// ── GetUserStats — closed DB returns error ────────────────────────────────────
+
+func TestGetUserStats_ClosedDB_ReturnsError(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	sm.currentDB.Close()
+	_, _, err := sm.GetUserStats(1)
+	if err == nil {
+		t.Error("expected error from GetUserStats with closed DB, got nil")
+	}
+}
+
+// ── GetDBStats — bad currentPath returns error ────────────────────────────────
+
+func TestGetDBStats_BadCurrentPath_ReturnsError(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	sm.mu.Lock()
+	sm.currentPath = "/nonexistent/path/to/db.db"
+	sm.mu.Unlock()
+	_, _, _, err := sm.GetDBStats()
+	if err == nil {
+		t.Error("expected error from GetDBStats with nonexistent currentPath, got nil")
+	}
+}
+
 // ── loadTokens — skip unknown torrent ─────────────────────────────────────────
 
 func TestLoadTokens_SkipsUnknownTorrent(t *testing.T) {

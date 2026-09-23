@@ -424,3 +424,29 @@ func TestWhitelistAPI_WrongPassword(t *testing.T) {
 		t.Errorf("whitelist wrong password should yield Authentication failure: %s", string(raw))
 	}
 }
+
+// ── handleAnnounce — Announce error path ──────────────────────────────────────
+
+func TestHandleAnnounce_NonCompact_ReturnsError(t *testing.T) {
+	f := newTestFixture()
+	// compact=0 causes Announce to return "your client does not support compact announces".
+	q := "info_hash=" + urlEscapeRaw(testInfoHash) +
+		"&peer_id=" + urlEscapeRaw(testPeerID) +
+		"&port=6881&uploaded=0&downloaded=0&left=1024&compact=0"
+	req, _ := http.NewRequest("GET", "/"+testPasskey+"/announce?"+q, nil)
+	raw, _ := f.server.handleRequest(req, net.ParseIP(testIP))
+	body := httpBody(raw)
+	if !strings.Contains(body, "failure reason") {
+		t.Errorf("non-compact announce should return failure reason: %s", body)
+	}
+}
+
+// ── response — html=true branch ───────────────────────────────────────────────
+
+func TestResponse_HTMLTrue_SetsHTMLContentType(t *testing.T) {
+	f := newTestFixture()
+	raw := f.server.response("<p>hello</p>", true, true)
+	if !strings.Contains(string(raw), "text/html") {
+		t.Errorf("html=true response should have text/html content-type: %s", string(raw))
+	}
+}
