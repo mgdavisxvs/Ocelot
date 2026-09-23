@@ -23,6 +23,11 @@ func (s *VSStore) CreateVolume(ctx context.Context, v domain.Volume) (string, er
 		return "", fmt.Errorf("marshal driver handle: %w", err)
 	}
 
+	state := v.State
+	if state == "" {
+		state = domain.VolumeDeclared
+	}
+
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
@@ -35,8 +40,8 @@ func (s *VSStore) CreateVolume(ctx context.Context, v domain.Volume) (string, er
 		v.Manifest.Metadata.Namespace,
 		v.Manifest.Metadata.Name,
 		string(raw),
-		string(domain.VolumeDeclared),
-		"",
+		string(state),
+		v.BoundNodeID,
 		string(handle),
 		"",
 		now,
@@ -172,6 +177,55 @@ func (s *VSStore) DeleteVolume(ctx context.Context, id string) error {
 	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM virtualserver_volumes WHERE id = ?`, id)
 	return err
+}
+
+// StartVolumeRelease atomically checks for active mounts and transitions the volume
+// to releasing. Returns ErrConflict if active mounts exist, ErrNotFound if the volume
+// is missing, or a domain error if the transition is invalid from the current state.
+func (s *VSStore) StartVolumeRelease(ctx context.Context, id string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var current string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM virtualserver_volumes WHERE id = ?`, id).Scan(&current); err != nil {
+		if err == sql.ErrNoRows {
+			return ErrNotFound
+		}
+		return fmt.Errorf("get volume state: %w", err)
+	}
+
+	// Already in a terminal-release state — idempotent.
+	if current == string(domain.VolumeReleasing) || current == string(domain.VolumeReleased) {
+		return nil
+	}
+
+	if err := domain.ValidateVolumeTransition(domain.VolumeState(current), domain.VolumeReleasing); err != nil {
+		return err
+	}
+
+	var activeCount int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM virtualserver_volume_mounts WHERE volume_id = ? AND state NOT IN ('released')`, id,
+	).Scan(&activeCount); err != nil {
+		return fmt.Errorf("count active mounts: %w", err)
+	}
+	if activeCount > 0 {
+		return ErrConflict
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE virtualserver_volumes SET state = ?, updated_at = ? WHERE id = ?`,
+		string(domain.VolumeReleasing), time.Now().Unix(), id)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ── Mount CRUD ─────────────────────────────────────────────────────────────────

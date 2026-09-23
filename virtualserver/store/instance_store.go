@@ -86,11 +86,17 @@ func (s *VSStore) UpdateInstanceState(ctx context.Context, id string, to domain.
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE virtualserver_instances SET state=?, updated_at=? WHERE id=?`,
-		string(to), time.Now().Unix(), id,
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE virtualserver_instances SET state=?, updated_at=? WHERE id=? AND state=?`,
+		string(to), time.Now().Unix(), id, string(inst.State),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return fmt.Errorf("concurrent state change on instance %s", id)
+	}
+	return nil
 }
 
 // AssignNode sets the node_id and transitions to scheduled state.
@@ -105,13 +111,19 @@ func (s *VSStore) AssignNode(ctx context.Context, instanceID, nodeID string) err
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	now := time.Now().Unix()
-	_, err = s.db.ExecContext(ctx, `
+	res, err := s.db.ExecContext(ctx, `
 		UPDATE virtualserver_instances
 		SET node_id=?, state=?, updated_at=?
-		WHERE id=?`,
-		nodeID, string(domain.InstanceScheduled), now, instanceID,
+		WHERE id=? AND state=?`,
+		nodeID, string(domain.InstanceScheduled), now, instanceID, string(inst.State),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return fmt.Errorf("concurrent state change on instance %s", instanceID)
+	}
+	return nil
 }
 
 // UpdateRuntimeHandle stores adapter-specific handle data on an instance.

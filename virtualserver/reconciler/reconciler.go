@@ -160,7 +160,7 @@ func (r *VSReconciler) tryRun() {
 	defer r.runningMu.Unlock()
 
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), r.interval)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*r.interval)
 	defer cancel()
 
 	err := r.reconcile(ctx)
@@ -198,6 +198,19 @@ func (r *VSReconciler) reconcile(ctx context.Context) error {
 	nodes, err := r.store.ListNodes(ctx, "")
 	if err != nil {
 		return fmt.Errorf("list nodes: %w", err)
+	}
+
+	// Populate ActiveInstances for load-aware scheduling (ExistingLoadPenalty score).
+	if allInsts, err := r.store.ListInstances(ctx, ""); err == nil {
+		activePerNode := make(map[string]int, len(nodes))
+		for _, inst := range allInsts {
+			if !domain.IsTerminalInstanceState(inst.State) && inst.NodeID != "" {
+				activePerNode[inst.NodeID]++
+			}
+		}
+		for i := range nodes {
+			nodes[i].ActiveInstances = activePerNode[nodes[i].ID]
+		}
 	}
 
 	declared, err := r.store.ListInstances(ctx, string(domain.InstanceDeclared))
@@ -713,11 +726,12 @@ func (r *VSReconciler) reconcileDesiredCount(ctx context.Context) error {
 			}
 		}
 		needed := svc.DesiredCount - active
+		nextSlot := len(insts) // use total (including terminal) to avoid VSPath collisions
 		for idx := 0; idx < needed; idx++ {
 			vsPath := domain.VSPath{
 				Namespace: svc.Manifest.Metadata.Namespace,
 				Service:   svc.Manifest.Metadata.Name,
-				Instance:  fmt.Sprintf("%d", active+idx),
+				Instance:  fmt.Sprintf("%d", nextSlot+idx),
 			}
 			id, err := r.store.CreateInstance(ctx, svc.ID, vsPath)
 			if err != nil {
@@ -847,8 +861,8 @@ func (r *VSReconciler) stopInstance(ctx context.Context, inst *domain.ServiceIns
 	vsmetrics.AdapterDuration.WithLabelValues(ad.Name(), "stop").Observe(time.Since(t0).Seconds())
 	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "stop", outcomeStr(stopErr)).Inc()
 
-	_ = ad.Destroy(ctx, handle) // best-effort cleanup regardless of stop outcome
-	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "destroy", "ok").Inc()
+	destroyErr := ad.Destroy(ctx, handle) // best-effort cleanup regardless of stop outcome
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "destroy", outcomeStr(destroyErr)).Inc()
 
 	r.teardownMounts(ctx, inst.ID)
 	r.store.ReleaseAllocation(ctx, inst.ID)                                    //nolint:errcheck

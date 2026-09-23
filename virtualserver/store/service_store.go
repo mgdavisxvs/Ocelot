@@ -21,7 +21,13 @@ func (s *VSStore) CreateService(ctx context.Context, m domain.ServiceManifest) (
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	res, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx, `
 		INSERT INTO virtualserver_services
 		(namespace,name,manifest_json,desired_count,state,created_at,updated_at)
 		VALUES (?,?,?,?,?,?,?)`,
@@ -33,8 +39,8 @@ func (s *VSStore) CreateService(ctx context.Context, m domain.ServiceManifest) (
 	}
 	id, _ := res.LastInsertId()
 
-	// Record version 1
-	_, err = s.db.ExecContext(ctx, `
+	// Record version 1 in the same transaction
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO virtualserver_service_versions(service_id,version,manifest_json,created_at)
 		VALUES (?,?,?,?)`,
 		id, 1, string(data), now,
@@ -42,7 +48,7 @@ func (s *VSStore) CreateService(ctx context.Context, m domain.ServiceManifest) (
 	if err != nil {
 		return 0, fmt.Errorf("insert service version: %w", err)
 	}
-	return id, nil
+	return id, tx.Commit()
 }
 
 // GetService retrieves a service by integer ID.
@@ -104,17 +110,17 @@ func (s *VSStore) UpdateService(ctx context.Context, id int64, m domain.ServiceM
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	// Determine next version number
-	var maxVer int
-	s.db.QueryRowContext(ctx,
-		"SELECT COALESCE(MAX(version),0) FROM virtualserver_service_versions WHERE service_id=?", id,
-	).Scan(&maxVer)
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+
+	// Determine next version number inside the transaction to prevent TOCTOU.
+	var maxVer int
+	tx.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(version),0) FROM virtualserver_service_versions WHERE service_id=?", id,
+	).Scan(&maxVer)
 
 	_, err = tx.ExecContext(ctx, `
 		UPDATE virtualserver_services

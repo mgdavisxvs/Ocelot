@@ -44,6 +44,7 @@ type HandlerStore interface {
 	ListVolumes(ctx context.Context, namespace string) ([]domain.Volume, error)
 	UpdateVolumeState(ctx context.Context, id string, to domain.VolumeState) error
 	ListActiveMountsByVolume(ctx context.Context, volumeID string) ([]domain.VolumeMount, error)
+	StartVolumeRelease(ctx context.Context, id string) error
 	DeleteVolume(ctx context.Context, id string) error
 	CreateSnapshot(ctx context.Context, snap domain.VolumeSnapshot) error
 	GetSnapshot(ctx context.Context, id string) (*domain.VolumeSnapshot, error)
@@ -439,29 +440,17 @@ func (h *Handlers) DeleteVolume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "missing volume id", "INVALID_REQUEST")
 		return
 	}
-	v, err := h.store.GetVolume(r.Context(), id)
-	if err != nil {
+	// StartVolumeRelease atomically checks for active mounts and transitions to
+	// releasing, preventing the TOCTOU race between mount-check and state update.
+	if err := h.store.StartVolumeRelease(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, r, http.StatusConflict, "volume has active mounts", "CONFLICT")
+			return
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "volume not found", "NOT_FOUND")
 			return
 		}
-		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
-		return
-	}
-	// Guard: cannot delete while mounts are active.
-	active, _ := h.store.ListActiveMountsByVolume(r.Context(), id)
-	if len(active) > 0 {
-		writeError(w, r, http.StatusConflict, "volume has active mounts", "CONFLICT")
-		return
-	}
-	// Already queued or completed — nothing more to do.
-	if v.State == domain.VolumeReleasing || v.State == domain.VolumeReleased {
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-	// Transition to releasing; the reconciler drives driver.Delete() asynchronously
-	// so physical storage is always cleaned up before the DB row is removed.
-	if err := h.store.UpdateVolumeState(r.Context(), id, domain.VolumeReleasing); err != nil {
 		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
 		return
 	}

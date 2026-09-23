@@ -94,26 +94,28 @@ type GPUDevice struct {
 
 // Node is a registered compute node in the VirtualServer registry.
 type Node struct {
-	ID              string
-	Name            string
-	BackendType     string
-	Arch            string
-	OS              string
-	CPUModel        string
-	CPUThreads      int
-	TotalRAMMiB     int64
-	AvailRAMMiB     int64
-	StorageMiB      int64
-	AvailStorageMiB int64
-	GPUDevices      []GPUDevice
-	Labels          map[string]string
-	Location        string
-	TrustClass      string
-	State           NodeState
-	LastHeartbeat   *time.Time
-	AgentMeta       map[string]string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID               string
+	Name             string
+	BackendType      string
+	Arch             string
+	OS               string
+	CPUModel         string
+	CPUThreads       int
+	AvailCPUThreads  int // available CPU threads (decremented by active allocations)
+	TotalRAMMiB      int64
+	AvailRAMMiB      int64
+	StorageMiB       int64
+	AvailStorageMiB  int64
+	GPUDevices       []GPUDevice
+	Labels           map[string]string
+	Location         string
+	TrustClass       string
+	State            NodeState
+	LastHeartbeat    *time.Time
+	AgentMeta        map[string]string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	ActiveInstances  int // transient: populated by reconciler for load-aware scheduling
 }
 
 // EligibleGPUs returns GPU devices that are unallocated and satisfy the minimum VRAM.

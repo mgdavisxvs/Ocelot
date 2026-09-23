@@ -172,6 +172,8 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
+	if _, err = io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
 }

@@ -41,18 +41,32 @@ func computeScore(n domain.Node, spec domain.ServiceSpec, catalog ArtifactCatalo
 	artifact := artifactTransferScore(n, spec, catalog)
 	preferred := preferredNodeScore(n, spec)
 
+	load := existingLoadPenaltyScore(n)
+
 	score := w.Health*health +
 		w.CapacityFit*capacity +
 		w.AcceleratorFit*accel +
 		w.DataLocality*locality +
 		w.Reliability*1.0 + // reliability requires historical op data; default 1.0
 		w.PreferredNodeBonus*preferred -
-		w.ArtifactTransfer*artifact
+		w.ArtifactTransfer*artifact -
+		w.ExistingLoadPenalty*load
 
 	if score < 0 {
 		score = 0
 	}
 	return score
+}
+
+func existingLoadPenaltyScore(n domain.Node) float64 {
+	if n.CPUThreads == 0 {
+		return 0
+	}
+	ratio := float64(n.ActiveInstances) / float64(n.CPUThreads)
+	if ratio > 1 {
+		return 1
+	}
+	return ratio
 }
 
 func healthScore(n domain.Node) float64 {
@@ -72,7 +86,7 @@ func capacityFitScore(n domain.Node, spec domain.ServiceSpec) float64 {
 	ramRatio := float64(n.AvailRAMMiB) / float64(n.TotalRAMMiB)
 	cpuRatio := 1.0
 	if n.CPUThreads > 0 && spec.Resources.CPUThreads > 0 {
-		remaining := n.CPUThreads - spec.Resources.CPUThreads
+		remaining := n.AvailCPUThreads - spec.Resources.CPUThreads
 		if remaining < 0 {
 			remaining = 0
 		}

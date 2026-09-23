@@ -168,6 +168,22 @@ func (s *testStore) ListActiveMountsByVolume(_ context.Context, volumeID string)
 	}
 	return out, nil
 }
+func (s *testStore) StartVolumeRelease(_ context.Context, id string) error {
+	v, ok := s.volumes[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	for _, m := range s.mounts {
+		if m.VolumeID == id && m.State != domain.MountReleased {
+			return store.ErrConflict
+		}
+	}
+	if v.State == domain.VolumeReleasing || v.State == domain.VolumeReleased {
+		return nil
+	}
+	v.State = domain.VolumeReleasing
+	return nil
+}
 func (s *testStore) DeleteVolume(_ context.Context, id string) error {
 	if v, ok := s.volumes[id]; !ok {
 		return store.ErrNotFound

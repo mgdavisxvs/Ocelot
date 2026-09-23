@@ -29,14 +29,18 @@ func (s *VSStore) CreateNode(ctx context.Context, n domain.Node) (string, error)
 	}
 	defer tx.Rollback()
 
+	availCPU := n.AvailCPUThreads
+	if availCPU == 0 {
+		availCPU = n.CPUThreads
+	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO virtualserver_nodes
-		(id,name,backend_type,arch,os,cpu_model,cpu_threads,ram_mib,avail_ram_mib,
+		(id,name,backend_type,arch,os,cpu_model,cpu_threads,avail_cpu_threads,ram_mib,avail_ram_mib,
 		 storage_mib,avail_storage_mib,labels,location,trust_class,state,
 		 agent_metadata,created_at,updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		n.ID, n.Name, n.BackendType, n.Arch, n.OS, n.CPUModel,
-		n.CPUThreads, n.TotalRAMMiB, n.AvailRAMMiB,
+		n.CPUThreads, availCPU, n.TotalRAMMiB, n.AvailRAMMiB,
 		n.StorageMiB, n.AvailStorageMiB,
 		string(labelsJSON), n.Location, n.TrustClass, string(n.State),
 		string(metaJSON), now, now,
@@ -63,7 +67,7 @@ func (s *VSStore) CreateNode(ctx context.Context, n domain.Node) (string, error)
 // GetNode retrieves a node by ID.
 func (s *VSStore) GetNode(ctx context.Context, id string) (*domain.Node, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id,name,backend_type,arch,os,cpu_model,cpu_threads,
+		SELECT id,name,backend_type,arch,os,cpu_model,cpu_threads,avail_cpu_threads,
 		       ram_mib,avail_ram_mib,storage_mib,avail_storage_mib,
 		       labels,location,trust_class,state,last_heartbeat,
 		       agent_metadata,created_at,updated_at
@@ -86,7 +90,7 @@ func (s *VSStore) GetNode(ctx context.Context, id string) (*domain.Node, error) 
 // GetNodeByName retrieves a node by its human-readable name.
 func (s *VSStore) GetNodeByName(ctx context.Context, name string) (*domain.Node, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id,name,backend_type,arch,os,cpu_model,cpu_threads,
+		SELECT id,name,backend_type,arch,os,cpu_model,cpu_threads,avail_cpu_threads,
 		       ram_mib,avail_ram_mib,storage_mib,avail_storage_mib,
 		       labels,location,trust_class,state,last_heartbeat,
 		       agent_metadata,created_at,updated_at
@@ -107,48 +111,87 @@ func (s *VSStore) GetNodeByName(ctx context.Context, name string) (*domain.Node,
 }
 
 // ListNodes returns all nodes, optionally filtered by state.
+// Uses a single LEFT JOIN to fetch GPU devices, eliminating the prior N+1 query pattern.
 func (s *VSStore) ListNodes(ctx context.Context, stateFilter string) ([]domain.Node, error) {
-	var rows *sql.Rows
-	var err error
+	q := `
+		SELECT n.id, n.name, n.backend_type, n.arch, n.os, n.cpu_model,
+		       n.cpu_threads, n.avail_cpu_threads,
+		       n.ram_mib, n.avail_ram_mib, n.storage_mib, n.avail_storage_mib,
+		       n.labels, n.location, n.trust_class, n.state, n.last_heartbeat,
+		       n.agent_metadata, n.created_at, n.updated_at,
+		       c.device_index, c.vendor, c.model, c.vram_mib, c.allocated
+		FROM virtualserver_nodes n
+		LEFT JOIN virtualserver_node_capabilities c ON c.node_id = n.id AND c.cap_type = 'gpu'`
+	var args []interface{}
 	if stateFilter != "" {
-		rows, err = s.db.QueryContext(ctx, `
-			SELECT id,name,backend_type,arch,os,cpu_model,cpu_threads,
-			       ram_mib,avail_ram_mib,storage_mib,avail_storage_mib,
-			       labels,location,trust_class,state,last_heartbeat,
-			       agent_metadata,created_at,updated_at
-			FROM virtualserver_nodes WHERE state=? ORDER BY name`, stateFilter)
-	} else {
-		rows, err = s.db.QueryContext(ctx, `
-			SELECT id,name,backend_type,arch,os,cpu_model,cpu_threads,
-			       ram_mib,avail_ram_mib,storage_mib,avail_storage_mib,
-			       labels,location,trust_class,state,last_heartbeat,
-			       agent_metadata,created_at,updated_at
-			FROM virtualserver_nodes ORDER BY name`)
+		q += " WHERE n.state = ?"
+		args = append(args, stateFilter)
 	}
+	q += " ORDER BY n.name, c.device_index"
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
 	defer rows.Close()
 
-	var nodes []domain.Node
+	var nodeOrder []string
+	nodeMap := make(map[string]*domain.Node)
+
 	for rows.Next() {
-		n, err := scanNodeRow(rows)
-		if err != nil {
+		var n domain.Node
+		var state, labelsJSON, metaJSON string
+		var lastHB sql.NullInt64
+		var createdAt, updatedAt int64
+		var gpuIdx, gpuVRAM, gpuAlloc sql.NullInt64
+		var gpuVendor, gpuModel sql.NullString
+
+		if err := rows.Scan(
+			&n.ID, &n.Name, &n.BackendType, &n.Arch, &n.OS, &n.CPUModel,
+			&n.CPUThreads, &n.AvailCPUThreads,
+			&n.TotalRAMMiB, &n.AvailRAMMiB, &n.StorageMiB, &n.AvailStorageMiB,
+			&labelsJSON, &n.Location, &n.TrustClass, &state, &lastHB,
+			&metaJSON, &createdAt, &updatedAt,
+			&gpuIdx, &gpuVendor, &gpuModel, &gpuVRAM, &gpuAlloc,
+		); err != nil {
 			return nil, err
 		}
-		nodes = append(nodes, *n)
+
+		existing, seen := nodeMap[n.ID]
+		if !seen {
+			n.State = domain.NodeState(state)
+			if lastHB.Valid {
+				t := time.Unix(lastHB.Int64, 0)
+				n.LastHeartbeat = &t
+			}
+			n.Labels = make(map[string]string)
+			json.Unmarshal([]byte(labelsJSON), &n.Labels) //nolint:errcheck
+			n.AgentMeta = make(map[string]string)
+			json.Unmarshal([]byte(metaJSON), &n.AgentMeta) //nolint:errcheck
+			n.CreatedAt = time.Unix(createdAt, 0)
+			n.UpdatedAt = time.Unix(updatedAt, 0)
+			nodeMap[n.ID] = &n
+			nodeOrder = append(nodeOrder, n.ID)
+			existing = nodeMap[n.ID]
+		}
+
+		if gpuIdx.Valid {
+			existing.GPUDevices = append(existing.GPUDevices, domain.GPUDevice{
+				Index:     int(gpuIdx.Int64),
+				Vendor:    gpuVendor.String,
+				Model:     gpuModel.String,
+				VRAMMiB:   gpuVRAM.Int64,
+				Allocated: gpuAlloc.Int64 != 0,
+			})
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	rows.Close() // release connection before issuing per-node GPU queries
 
-	for i := range nodes {
-		gpus, err := s.loadGPUDevices(ctx, nodes[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		nodes[i].GPUDevices = gpus
+	nodes := make([]domain.Node, 0, len(nodeOrder))
+	for _, id := range nodeOrder {
+		nodes = append(nodes, *nodeMap[id])
 	}
 	return nodes, nil
 }
@@ -166,11 +209,17 @@ func (s *VSStore) UpdateNodeState(ctx context.Context, id string, to domain.Node
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	_, err = s.db.ExecContext(ctx,
-		"UPDATE virtualserver_nodes SET state=?, updated_at=? WHERE id=?",
-		string(to), time.Now().Unix(), id,
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE virtualserver_nodes SET state=?, updated_at=? WHERE id=? AND state=?",
+		string(to), time.Now().Unix(), id, string(n.State),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return fmt.Errorf("concurrent state change on node %s", id)
+	}
+	return nil
 }
 
 // Heartbeat updates last_heartbeat and available resources.
@@ -195,9 +244,9 @@ func (s *VSStore) Heartbeat(ctx context.Context, id string, availRAMMiB int64, a
 
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE virtualserver_nodes
-		SET last_heartbeat=?, avail_ram_mib=?, state=?, updated_at=?
+		SET last_heartbeat=?, avail_ram_mib=?, avail_cpu_threads=?, state=?, updated_at=?
 		WHERE id=?`,
-		now, availRAMMiB, newState, now, id,
+		now, availRAMMiB, availCPU, newState, now, id,
 	)
 	return err
 }
@@ -260,7 +309,7 @@ func scanNodeFields(r nodeScanner) (*domain.Node, error) {
 	var createdAt, updatedAt int64
 	err := r.Scan(
 		&n.ID, &n.Name, &n.BackendType, &n.Arch, &n.OS, &n.CPUModel,
-		&n.CPUThreads, &n.TotalRAMMiB, &n.AvailRAMMiB,
+		&n.CPUThreads, &n.AvailCPUThreads, &n.TotalRAMMiB, &n.AvailRAMMiB,
 		&n.StorageMiB, &n.AvailStorageMiB,
 		&labelsJSON, &n.Location, &n.TrustClass, &state,
 		&lastHB, &metaJSON, &createdAt, &updatedAt,

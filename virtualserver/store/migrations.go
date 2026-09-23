@@ -105,14 +105,23 @@ func (s *VSStore) runMigrations() error {
 		if count > 0 {
 			continue
 		}
-		if _, err := s.db.Exec(m.up); err != nil {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration %d tx: %w", m.version, err)
+		}
+		if _, err := tx.Exec(m.up); err != nil {
+			tx.Rollback() //nolint:errcheck
 			return fmt.Errorf("apply migration %d (%s): %w", m.version, m.description, err)
 		}
-		if _, err := s.db.Exec(
+		if _, err := tx.Exec(
 			"INSERT INTO schema_migrations(version,applied_at,description) VALUES(?,?,?)",
 			m.version, time.Now().Unix(), m.description,
 		); err != nil {
+			tx.Rollback() //nolint:errcheck
 			return fmt.Errorf("record migration %d: %w", m.version, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %d: %w", m.version, err)
 		}
 	}
 	return nil
@@ -377,5 +386,10 @@ var migrations = []migration{
 			completed_at INTEGER
 		);
 		CREATE INDEX IF NOT EXISTS idx_vsnap_vol ON virtualserver_volume_snapshots(volume_id)`,
+	},
+	{
+		version:     17,
+		description: "nodes_avail_cpu_threads",
+		up:          `ALTER TABLE virtualserver_nodes ADD COLUMN avail_cpu_threads INTEGER NOT NULL DEFAULT 0`,
 	},
 }

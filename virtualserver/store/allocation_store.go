@@ -36,7 +36,7 @@ func (s *VSStore) AllocateResources(ctx context.Context, instanceID, nodeID stri
 	var availRAM int64
 	var availCPU int
 	row := tx.QueryRowContext(ctx,
-		"SELECT avail_ram_mib, cpu_threads FROM virtualserver_nodes WHERE id=?", nodeID)
+		"SELECT avail_ram_mib, avail_cpu_threads FROM virtualserver_nodes WHERE id=?", nodeID)
 	if err := row.Scan(&availRAM, &availCPU); err == sql.ErrNoRows {
 		return ErrNotFound
 	} else if err != nil {
@@ -46,9 +46,9 @@ func (s *VSStore) AllocateResources(ctx context.Context, instanceID, nodeID stri
 	if availRAM < ramMiB {
 		return fmt.Errorf("%w: node %s has %d MiB RAM available, need %d", ErrAllocationConflict, nodeID, availRAM, ramMiB)
 	}
-	// Note: we track avail_ram but not avail_cpu separately in DB yet; use
-	// cpu_threads as total. For a full implementation avail_cpu would be tracked.
-	_ = availCPU
+	if cpuThreads > 0 && availCPU < cpuThreads {
+		return fmt.Errorf("%w: node %s has %d CPU threads available, need %d", ErrAllocationConflict, nodeID, availCPU, cpuThreads)
+	}
 
 	// Check GPU device availability if required
 	if gpuDeviceIndex != nil {
@@ -79,10 +79,12 @@ func (s *VSStore) AllocateResources(ctx context.Context, instanceID, nodeID stri
 		return fmt.Errorf("insert allocation: %w", err)
 	}
 
-	// Update node available RAM
+	// Update node available RAM and CPU
 	_, err = tx.ExecContext(ctx, `
-		UPDATE virtualserver_nodes SET avail_ram_mib=avail_ram_mib-?, updated_at=? WHERE id=?`,
-		ramMiB, now, nodeID,
+		UPDATE virtualserver_nodes
+		SET avail_ram_mib=avail_ram_mib-?, avail_cpu_threads=avail_cpu_threads-?, updated_at=?
+		WHERE id=?`,
+		ramMiB, cpuThreads, now, nodeID,
 	)
 	if err != nil {
 		return fmt.Errorf("update node ram: %w", err)
@@ -134,8 +136,10 @@ func (s *VSStore) ReleaseAllocation(ctx context.Context, instanceID string) erro
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `
-		UPDATE virtualserver_nodes SET avail_ram_mib=avail_ram_mib+?, updated_at=? WHERE id=?`,
-		alloc.RAMMiB, now, alloc.NodeID,
+		UPDATE virtualserver_nodes
+		SET avail_ram_mib=avail_ram_mib+?, avail_cpu_threads=avail_cpu_threads+?, updated_at=?
+		WHERE id=?`,
+		alloc.RAMMiB, alloc.CPUThreads, now, alloc.NodeID,
 	)
 	if err != nil {
 		return err
