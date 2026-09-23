@@ -226,3 +226,30 @@ func TestCircuitBreaker_ExecuteWithContext_OpenRejects(t *testing.T) {
 		t.Error("expected error from ExecuteWithContext on open circuit")
 	}
 }
+
+// ── canExecute edge cases ─────────────────────────────────────────────────────
+
+func TestCircuitBreaker_HalfOpen_ExhaustsMax(t *testing.T) {
+	cb := newTestCB(1)
+	cb.mu.Lock()
+	cb.state = StateHalfOpen
+	cb.halfOpenCount = 2 // == halfOpenMax(2); no slots remain
+	cb.mu.Unlock()
+
+	err := cb.Execute(func() error { return nil })
+	if err == nil {
+		t.Error("expected ErrCircuitOpen when HalfOpen slots exhausted")
+	}
+}
+
+func TestCircuitBreaker_UnknownState_Rejects(t *testing.T) {
+	cb := newTestCB(1)
+	cb.mu.Lock()
+	cb.state = CircuitState(99) // hits default branch
+	cb.mu.Unlock()
+
+	err := cb.Execute(func() error { return nil })
+	if err == nil {
+		t.Error("expected rejection for unknown circuit state")
+	}
+}

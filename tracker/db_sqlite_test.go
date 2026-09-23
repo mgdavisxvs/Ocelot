@@ -734,3 +734,77 @@ func TestLoadAll_TokensError(t *testing.T) {
 		t.Fatal("expected error when tokens table missing, got nil")
 	}
 }
+
+// ── Reload — existing entry update branches ───────────────────────────────────
+
+func TestReload_UpdatesExistingTorrent(t *testing.T) {
+	sm := newSMForErrorTest(t)
+
+	// Persist torrent with balance=500 in DB
+	sm.RecordTorrent(7, 0, 0, 0, 500)
+	sm.RecordTorrentHash(7, "reloadhash7")
+
+	torrents := NewTorrentList()
+	// Pre-populate with old balance so the existing-update branch fires
+	old := NewTorrent(7)
+	old.Balance = 999
+	torrents.Set("reloadhash7", old)
+
+	loader := NewLoader(sm, torrents, NewUserList(), NewWhitelist())
+	if err := loader.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	updated, ok := torrents.Get("reloadhash7")
+	if !ok {
+		t.Fatal("torrent not found after Reload")
+	}
+	updated.mu.RLock()
+	bal := updated.Balance
+	updated.mu.RUnlock()
+	if bal != 500 {
+		t.Errorf("Balance = %d, want 500 after Reload update", bal)
+	}
+}
+
+func TestReload_UpdatesExistingUser(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	sm.RecordUserPasskey(3, "pk_reload3", true, false)
+
+	users := NewUserList()
+	// Pre-populate so the existing user branch fires
+	users.Set("pk_reload3", NewUser(3, false, true))
+
+	loader := NewLoader(sm, NewTorrentList(), users, NewWhitelist())
+	if err := loader.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	u, ok := users.Get("pk_reload3")
+	if !ok {
+		t.Fatal("user not found after Reload")
+	}
+	if !u.CanLeech.Load() {
+		t.Error("CanLeech should be true after Reload update")
+	}
+}
+
+func TestReload_TorrentsError(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	sm.currentDB.Exec("DROP TABLE torrent_hashes")
+
+	loader := NewLoader(sm, NewTorrentList(), NewUserList(), NewWhitelist())
+	if err := loader.Reload(); err == nil {
+		t.Fatal("expected error when torrent_hashes missing, got nil")
+	}
+}
+
+func TestReload_UsersError(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	sm.currentDB.Exec("DROP TABLE user_passkeys")
+
+	loader := NewLoader(sm, NewTorrentList(), NewUserList(), NewWhitelist())
+	if err := loader.Reload(); err == nil {
+		t.Fatal("expected error when user_passkeys missing, got nil")
+	}
+}

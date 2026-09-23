@@ -239,3 +239,23 @@ func TestAuditLogger_Query_FilterByResourceType(t *testing.T) {
 		t.Errorf("expected 1 torrent entry, got %d", len(entries))
 	}
 }
+
+// ── error paths ───────────────────────────────────────────────────────────────
+
+func TestAuditLogger_Log_DBClosed_ReturnsError(t *testing.T) {
+	db := newAuditDB(t)
+	db.Close()
+	al := NewAuditLogger(db)
+	if err := al.Log(context.Background(), "test", "res", "id", true, nil); err == nil {
+		t.Error("expected error when DB is closed, got nil")
+	}
+}
+
+func TestAuditLogger_Query_DBClosed_ReturnsError(t *testing.T) {
+	db := newAuditDB(t)
+	db.Close()
+	al := NewAuditLogger(db)
+	if _, err := al.Query(AuditFilters{Limit: 10}); err == nil {
+		t.Error("expected error when DB is closed, got nil")
+	}
+}
