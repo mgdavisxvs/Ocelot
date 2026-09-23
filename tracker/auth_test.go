@@ -292,6 +292,71 @@ func TestAuthMiddleware_InvalidBearerToken_Returns401(t *testing.T) {
 	}
 }
 
+func TestValidateAPIKey_FutureExpiry_Succeeds(t *testing.T) {
+	db := newAuthDB(t)
+	future := time.Now().Add(time.Hour)
+	key, err := CreateAPIKey(db, 11, []string{"read"}, &future)
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+
+	ak, err := ValidateAPIKey(db, key)
+	if err != nil {
+		t.Fatalf("ValidateAPIKey with future expiry: %v", err)
+	}
+	if ak.UserID != 11 {
+		t.Errorf("UserID = %d, want 11", ak.UserID)
+	}
+}
+
+func TestValidateAPIKey_ValidKey(t *testing.T) {
+	db := newAuthDB(t)
+	key, err := CreateAPIKey(db, 10, []string{"read", "write"}, nil)
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+
+	ak, err := ValidateAPIKey(db, key)
+	if err != nil {
+		t.Fatalf("ValidateAPIKey: %v", err)
+	}
+	if ak.UserID != 10 {
+		t.Errorf("UserID = %d, want 10", ak.UserID)
+	}
+	if len(ak.Permissions) == 0 {
+		t.Error("expected non-empty permissions")
+	}
+}
+
+func TestAuthMiddleware_ValidAPIKey_Passes(t *testing.T) {
+	db := newAuthDB(t)
+	cfg := AuthConfig{JWTSecret: []byte("testsecret"), TokenDuration: time.Hour}
+
+	key, err := CreateAPIKey(db, 7, []string{"read"}, nil)
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+
+	reached := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := AuthMiddleware(cfg, db)(next)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-API-Key", key)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 with valid API key, got %d", rec.Code)
+	}
+	if !reached {
+		t.Error("next handler was not called with valid API key")
+	}
+}
+
 func TestAuthMiddleware_ValidBearerToken_Passes(t *testing.T) {
 	db := newAuthDB(t)
 	secret := []byte("mw-secret")

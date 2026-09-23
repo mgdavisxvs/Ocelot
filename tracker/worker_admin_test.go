@@ -1425,6 +1425,37 @@ func TestHandleUpdate_SetPriorityClass_CommonsError(t *testing.T) {
 	}
 }
 
+// ── setPriorityClass — missing priority_class ─────────────────────────────────
+
+func TestHandleUpdate_SetPriorityClass_MissingClass(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	req := newAdminRequest(url.Values{
+		"action": {"set_priority_class"},
+		"id":     {"1"},
+		// priority_class intentionally omitted
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when priority_class is missing")
+	}
+}
+
+// ── setBudget — SetUserBudget error path ─────────────────────────────────────
+
+func TestHandleUpdate_SetBudget_CommonsError(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	w.Commons.(*MockCommons).ReturnErr = fmt.Errorf("budget service unavailable")
+	req := newAdminRequest(url.Values{
+		"action":      {"set_budget"},
+		"id":          {"1"},
+		"max_credits": {"100"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when SetUserBudget returns error")
+	}
+}
+
 // ── GetPeers — leecher ForEach early exit ────────────────────────────────────
 
 func TestGetPeers_LeeacherLimit_EarlyExit(t *testing.T) {

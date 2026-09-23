@@ -940,6 +940,30 @@ func TestAnnounce_Completed_PeerAlreadySeeder_CompletedFlagCleared(t *testing.T)
 	}
 }
 
+// ── Announce — decSeeders path (peer in both Leechers and Seeders) ───────────
+
+func TestAnnounce_Completed_PeerInBothLists_DecSeeders(t *testing.T) {
+	w, _, _, u := setupAnnounce(t)
+	req := newAnnounceReq("completed", 0)
+
+	torrent, _ := w.Torrents.Get(req.InfoHash)
+
+	// Pre-populate peer in BOTH Leechers and Seeders under the same key.
+	peerID := make([]byte, 20)
+	copy(peerID, "-qB4test000000000000")
+	peerKey := PeerKeyPrime(peerID, u.ID, torrent.ID)
+	preExisting := &Peer{UserID: u.ID}
+	torrent.Leechers.Set(peerKey, preExisting)
+	torrent.Seeders.Set(peerKey, preExisting)
+
+	// Announce with event=completed and left=0: code finds peer in Leechers,
+	// then checks Seeders — both exist → decSeeders = true.
+	_, err := w.Announce(req, u, net.ParseIP("10.0.0.1"), "")
+	if err != nil {
+		t.Fatalf("Announce: %v", err)
+	}
+}
+
 // ── ParseAnnounceParams — ipv4 fallback ───────────────────────────────────────
 
 func TestParseAnnounceParams_IPv4Fallback(t *testing.T) {
