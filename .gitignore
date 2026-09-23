@@ -1,2 +1,4 @@
 *.tar.*
 build/
+coverage.out
+*.out
