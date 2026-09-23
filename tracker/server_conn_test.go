@@ -286,6 +286,53 @@ func TestListenAndServe_AcceptAndShutdown(t *testing.T) {
 	}
 }
 
+// TestListenAndServe_AcceptError_DefaultBranch covers server.go:80-81 — the
+// "Accept error: %v; continue" branch — by closing the server's listener
+// directly (without calling Shutdown) so Accept returns a non-shutdown error.
+// Shutdown is then called to stop the tight error loop.
+func TestListenAndServe_AcceptError_DefaultBranch(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	f := newTestFixture()
+	f.server.config.ListenAddr = addr
+
+	done := make(chan error, 1)
+	go func() { done <- f.server.ListenAndServe() }()
+
+	// Retry-connect until the server is listening (listener assigned).
+	var clientConn net.Conn
+	for i := 0; i < 100; i++ {
+		time.Sleep(2 * time.Millisecond)
+		c, dialErr := net.DialTimeout("tcp", addr, time.Second)
+		if dialErr == nil {
+			clientConn = c
+			break
+		}
+	}
+	if clientConn == nil {
+		t.Fatal("could not connect to ListenAndServe within 200 ms")
+	}
+	clientConn.Close()
+
+	// Close the listener directly without Shutdown — triggers the default
+	// (non-shutdown) Accept error branch.
+	f.server.listener.Close()
+	time.Sleep(5 * time.Millisecond)
+
+	// Now call Shutdown to break the error loop cleanly.
+	if err := f.server.Shutdown(); err != nil {
+		t.Errorf("Shutdown: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Errorf("ListenAndServe returned: %v", err)
+	}
+}
+
 // TestListenAndServe_MaxMiddlemen_DropsConnection covers the MaxMiddlemen
 // branch (server.go:86-89) by setting MaxMiddlemen to 0 so every incoming
 // connection is immediately closed.

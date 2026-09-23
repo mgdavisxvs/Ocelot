@@ -256,3 +256,14 @@ func TestParseConfigFile_LineWithoutEquals_Skipped(t *testing.T) {
 		t.Errorf("ListenPort = %d, want 1234", cfg.ListenPort)
 	}
 }
+
+// TestParseConfigFile_DirectoryPath_ScanError covers config.go:141 — scanner.Err()
+// returns a non-nil error when the path points to a directory: os.Open succeeds
+// but the subsequent Read on a directory fd returns syscall.EISDIR.
+func TestParseConfigFile_DirectoryPath_ScanError(t *testing.T) {
+	dir := t.TempDir()
+	_, err := ParseConfigFile(dir)
+	if err == nil {
+		t.Error("expected error when path is a directory, got nil")
+	}
+}

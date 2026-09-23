@@ -250,6 +250,17 @@ func TestAddWhitelistEntry_Idempotent(t *testing.T) {
 	}
 }
 
+// TestLoadWhitelist_DBClosed_ReturnsError covers db_sqlite.go:495-496 —
+// the db.Query error path — by closing the DB before calling LoadWhitelist.
+func TestLoadWhitelist_DBClosed_ReturnsError(t *testing.T) {
+	sm := newTestDB(t)
+	sm.currentDB.Close()
+	_, err := sm.LoadWhitelist()
+	if err == nil {
+		t.Error("expected error when DB is closed, got nil")
+	}
+}
+
 // ── LoadTokens ────────────────────────────────────────────────────────────────
 
 func TestLoadTokens_JoinsHash(t *testing.T) {
@@ -923,7 +934,6 @@ func TestPrepareStatements_ClosedDB_ReturnsError(t *testing.T) {
 	}
 }
 
-
 // ── openCurrentDB — existing-path branch (no rotation) ───────────────────────
 
 func TestOpenCurrentDB_WithExistingPath_SkipsRotation(t *testing.T) {
@@ -1102,5 +1112,66 @@ func TestOpenCurrentDB_RotationBranch(t *testing.T) {
 		t.Error("currentDB nil after rotation")
 	}
 	_ = prevPath // consumed above
+}
+
+// ── Load* scan-error paths ────────────────────────────────────────────────────
+
+// TestLoadTorrents_ScanError_ReturnsError inserts a torrent row whose
+// snatched column holds a non-numeric string, causing rows.Scan to fail
+// when it tries to scan the value into a uint32, covering db_sqlite.go:454.
+func TestLoadTorrents_ScanError_ReturnsError(t *testing.T) {
+	sm := newTestDB(t)
+	db := sm.currentDB
+
+	// torrents uses WITHOUT ROWID so id must be supplied explicitly.
+	// snatched='bad_snatched' is stored as TEXT inside the INTEGER column,
+	// and the Go SQL driver returns a conversion error when scanning into uint32.
+	_, err := db.Exec(`INSERT INTO torrents (id, snatched, balance, free_type) VALUES (42, 'bad_snatched', 0, 0)`)
+	if err != nil {
+		t.Fatalf("insert corrupted torrent: %v", err)
+	}
+	db.Exec(`INSERT INTO torrent_hashes (torrent_id, info_hash) VALUES (42, 'aabbccdd')`)
+
+	_, loadErr := sm.LoadTorrents()
+	if loadErr == nil {
+		t.Error("expected scan error from LoadTorrents, got nil")
+	}
+}
+
+// TestLoadUsers_ScanError_ReturnsError inserts a user_passkeys row whose
+// can_leech column holds a non-numeric string, causing rows.Scan to fail
+// when scanning into int, covering db_sqlite.go:479.
+func TestLoadUsers_ScanError_ReturnsError(t *testing.T) {
+	sm := newTestDB(t)
+	db := sm.currentDB
+
+	db.Exec(`INSERT INTO user_passkeys (user_id, passkey, can_leech, protect_ip)
+		VALUES (999, 'testkey', 'not_an_int', 0)`)
+
+	_, err := sm.LoadUsers()
+	if err == nil {
+		t.Error("expected scan error from LoadUsers, got nil")
+	}
+}
+
+// TestLoadTokens_ScanError_ReturnsError inserts a token row whose user_id
+// column holds a non-numeric string, causing rows.Scan to fail when scanning
+// into UserID, covering db_sqlite.go:531.
+func TestLoadTokens_ScanError_ReturnsError(t *testing.T) {
+	sm := newTestDB(t)
+	db := sm.currentDB
+
+	// torrents is WITHOUT ROWID — supply explicit id.
+	db.Exec(`INSERT INTO torrents (id, snatched, balance, free_type) VALUES (42, 0, 0, 0)`)
+	db.Exec(`INSERT INTO torrent_hashes (torrent_id, info_hash) VALUES (42, 'deadbeef')`)
+	// tokens schema: user_id, torrent_id, downloaded (no expires column).
+	// Storing a text value in the INTEGER user_id column triggers a scan
+	// conversion error when LoadTokens tries to scan into UserID.
+	db.Exec(`INSERT INTO tokens (torrent_id, user_id, downloaded) VALUES (42, 'not_a_uid', 0)`)
+
+	_, err := sm.LoadTokens()
+	if err == nil {
+		t.Error("expected scan error from LoadTokens, got nil")
+	}
 }
 
