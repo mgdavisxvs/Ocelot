@@ -998,3 +998,62 @@ func TestLoadTokens_SkipsUnknownTorrent(t *testing.T) {
 	}
 	// If the torrent is not in the list the continue branch fires and nothing panics.
 }
+
+// ── NewSQLiteShardManager — openCurrentDB error (directory at DB path) ────────
+
+func TestNewSQLiteShardManager_DirAtDBPath_ReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	// Create a directory where the current-month DB file would be created.
+	// openDB will call db.Exec("PRAGMA...") which fails on a directory path,
+	// covering openDB pragma error → openCurrentDB openDB error → NewSQLiteShardManager error.
+	month := time.Now().Format("2006-01")
+	dbPath := filepath.Join(dir, "ocelot-"+month+".db")
+	if err := os.MkdirAll(dbPath, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	_, err := NewSQLiteShardManager(dir)
+	if err == nil {
+		t.Error("expected error when DB path is a directory, got nil")
+	}
+}
+
+// ── loadHistoricalDBs — non-IsNotExist ReadDir error ─────────────────────────
+
+func TestLoadHistoricalDBs_FilePath_NotDirError(t *testing.T) {
+	// Pass a regular file as dbDir — ReadDir returns "not a directory" which is
+	// not os.IsNotExist, covering the bare "return err" branch.
+	f, err := os.CreateTemp(t.TempDir(), "notadir-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	sm := &SQLiteShardManager{dbDir: f.Name(), historicalDBs: make(map[string]*sql.DB)}
+	if err := sm.loadHistoricalDBs(); err == nil {
+		t.Error("expected error when dbDir is a regular file, got nil")
+	}
+}
+
+// ── Reload — new user creation (else branch) ──────────────────────────────────
+
+func TestReload_NewUser_CreatesEntry(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	sm.RecordUserPasskey(42, "pk_brandnew_0000000000000000001", true, false)
+
+	// Start with an empty user list — passkey is not pre-populated,
+	// so Reload must create it via the else branch.
+	users := NewUserList()
+	loader := NewLoader(sm, NewTorrentList(), users, NewWhitelist())
+	if err := loader.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	u, ok := users.Get("pk_brandnew_0000000000000000001")
+	if !ok {
+		t.Fatal("expected new user to be created by Reload, not found")
+	}
+	if !u.CanLeech.Load() {
+		t.Error("expected CanLeech=true for newly created user")
+	}
+}

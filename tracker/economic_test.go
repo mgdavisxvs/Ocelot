@@ -159,3 +159,43 @@ func TestSelectPeersWithEconomics_NumwantZero(t *testing.T) {
 		t.Errorf("numwant=0 should return empty bytes, got %d", len(result))
 	}
 }
+
+func TestSelectPeersWithEconomics_LeecherFill_ReservoirSampling(t *testing.T) {
+	mc := newMockCommons()
+	w := newEconomicWorker(mc)
+
+	// 1 seeder + 2 leechers. numwant=5 → seeder loop fills 1, remaining=4 > 0
+	// → leecher reservoir sampling fires, covering the for/if/append block.
+	tor := buildTorrentWithPeers(8, 1, 2, 99)
+	result := w.selectPeersWithEconomics(tor, nil, 99, 5, true)
+
+	// Expect seeder (6 bytes) + up to 2 leechers (12 bytes) = up to 18 bytes
+	if len(result) == 0 {
+		t.Error("expected non-empty result with seeder + leechers")
+	}
+	if len(result)%6 != 0 {
+		t.Errorf("result length %d is not a multiple of 6", len(result))
+	}
+}
+
+func TestSelectPeersWithEconomics_RankedSeederNotInMap_Continue(t *testing.T) {
+	mc := newMockCommons()
+	// Return a RankedSeeders list containing a UserID not present in peerByUserID,
+	// followed by the real seeder. The unknown UserID hits the !ok → continue branch.
+	mc.EvalDecision = &commons.AllocationDecision{
+		Accepted: true,
+		RankedSeeders: []*commons.SeederCandidate{
+			{UserID: 9999}, // not in peerByUserID → continue
+			{UserID: 100},  // valid seeder (first seeder UID from buildTorrentWithPeers)
+		},
+	}
+	w := newEconomicWorker(mc)
+
+	tor := buildTorrentWithPeers(9, 1, 0, 99)
+	result := w.selectPeersWithEconomics(tor, nil, 99, 5, true)
+
+	// The real seeder (UserID 100) contributes 6 bytes; the unknown UID is skipped.
+	if len(result) != 6 {
+		t.Errorf("expected 6 bytes (1 valid seeder), got %d", len(result))
+	}
+}

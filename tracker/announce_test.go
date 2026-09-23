@@ -1127,3 +1127,20 @@ func TestSelectPeers_SeederPath_EarlyExit(t *testing.T) {
 		t.Errorf("expected 6 bytes (numwant=1 early exit), got %d", len(got))
 	}
 }
+
+// ── Announce — IPv6 clientIP → CompactIPPort nil → invalidIP ─────────────────
+
+func TestAnnounce_IPv6ClientIP_CompactNil_InvalidIP(t *testing.T) {
+	w, _, _, u := setupAnnounce(t)
+	req := newAnnounceReq("started", 1000)
+	// IPv6 address: ValidateIPNotPrivate returns true for IPv6 (accepted),
+	// but CompactIPPort returns nil for non-IPv4 → covers peer.IPPort == nil branch.
+	ipv6 := net.ParseIP("2001:db8::1")
+	resp, err := w.Announce(req, u, ipv6, "")
+	if err != nil {
+		t.Fatalf("Announce with IPv6: %v", err)
+	}
+	if resp.Warning == "" {
+		t.Error("expected warning for IPv6 address with nil compact IPPort")
+	}
+}
