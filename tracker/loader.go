@@ -4,6 +4,12 @@ import "fmt"
 
 // Loader restores in-memory state from the SQLite database on startup
 // and performs merge-reloads on SIGUSR1 without wiping live peer lists.
+//
+// Deletion persistence gap (S-07): Reload() is additive — entries present in
+// memory but absent from the DB are NOT removed. This is by design: a deleted
+// torrent or user continues serving until the next process restart. Operators
+// who need immediate eviction should call ReloadWithEviction() or send SIGTERM
+// and restart. The gap is bounded by process lifetime, not data consistency.
 type Loader struct {
 	db        *SQLiteShardManager
 	torrents  *TorrentList
@@ -142,6 +148,80 @@ func (l *Loader) Reload() error {
 	// ── Tokens (merge) ────────────────────────────────────────────────────────
 	if err := l.loadTokens(); err != nil {
 		return fmt.Errorf("reload tokens: %w", err)
+	}
+
+	return nil
+}
+
+// ReloadWithEviction is a full-replace reload that also removes in-memory
+// entries absent from the database. Use this to propagate deletions without
+// a process restart.
+//
+// Cost: O(n) scan of all in-memory torrents and users. Peer lists are
+// preserved for torrents that survive the reload. Use only when the deletion
+// persistence gap matters (e.g. passkey revocation requiring immediate effect).
+func (l *Loader) ReloadWithEviction() error {
+	// ── Torrents ──────────────────────────────────────────────────────────────
+	tRows, err := l.db.LoadTorrents()
+	if err != nil {
+		return fmt.Errorf("evict-reload torrents: %w", err)
+	}
+	liveHashes := make(map[string]struct{}, len(tRows))
+	for _, r := range tRows {
+		liveHashes[r.infoHash] = struct{}{}
+		if existing, ok := l.torrents.Get(r.infoHash); ok {
+			existing.mu.Lock()
+			existing.Completed = r.completed
+			existing.Balance = r.balance
+			existing.FreeType = r.freeType
+			existing.mu.Unlock()
+		} else {
+			t := NewTorrent(r.id)
+			t.Completed = r.completed
+			t.Balance = r.balance
+			t.FreeType = r.freeType
+			l.torrents.Set(r.infoHash, t)
+		}
+	}
+	// Evict torrents no longer in DB.
+	l.torrents.ForEach(func(hash string, _ *Torrent) bool {
+		if _, ok := liveHashes[hash]; !ok {
+			l.torrents.Delete(hash)
+		}
+		return true
+	})
+
+	// ── Users ─────────────────────────────────────────────────────────────────
+	uRows, err := l.db.LoadUsers()
+	if err != nil {
+		return fmt.Errorf("evict-reload users: %w", err)
+	}
+	livePasskeys := make(map[string]struct{}, len(uRows))
+	for _, r := range uRows {
+		livePasskeys[r.passkey] = struct{}{}
+		if existing, ok := l.users.Get(r.passkey); ok {
+			existing.CanLeech.Store(r.canLeech)
+			existing.ProtectIP.Store(r.protectIP)
+		} else {
+			l.users.Set(r.passkey, NewUser(r.id, r.canLeech, r.protectIP))
+		}
+	}
+	// Evict users no longer in DB.
+	l.users.ForEach(func(passkey string, _ *User) bool {
+		if _, ok := livePasskeys[passkey]; !ok {
+			l.users.Delete(passkey)
+		}
+		return true
+	})
+
+	// ── Whitelist (full replace) ───────────────────────────────────────────────
+	if err := l.loadWhitelist(); err != nil {
+		return fmt.Errorf("evict-reload whitelist: %w", err)
+	}
+
+	// ── Tokens (merge) ────────────────────────────────────────────────────────
+	if err := l.loadTokens(); err != nil {
+		return fmt.Errorf("evict-reload tokens: %w", err)
 	}
 
 	return nil

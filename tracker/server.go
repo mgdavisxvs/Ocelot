@@ -63,6 +63,13 @@ type Config struct {
 	RedisAddr            string
 	DelReasonLifetime    int
 	TLS                  TLSConfig
+
+	// Control API / admin fields
+	ControlAddr   string // address for the admin control plane server
+	ControlSecret string // bearer token for control API; falls back to SitePassword
+	TLSCertFile   string // PEM certificate file for TLS listeners
+	TLSKeyFile    string // PEM key file for TLS listeners
+	OpsAddr       string // address for the operations/metrics server
 }
 
 func NewServer(config *Config, worker *Worker) *Server {

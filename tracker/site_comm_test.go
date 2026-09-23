@@ -3,123 +3,107 @@ package tracker
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"sync/atomic"
 	"testing"
 )
 
-// ── NoOpSiteComm ─────────────────────────────────────────────────────────────
-
-func TestNoOpSiteComm_NotifyFreeleech(t *testing.T) {
-	var sc NoOpSiteComm
-	if err := sc.NotifyFreeleech(42, 24); err != nil {
-		t.Errorf("NotifyFreeleech: %v", err)
-	}
-}
-
-func TestNoOpSiteComm_ReportAnomaly(t *testing.T) {
-	var sc NoOpSiteComm
-	if err := sc.ReportAnomaly(7, 0.95); err != nil {
-		t.Errorf("ReportAnomaly: %v", err)
-	}
-}
-
-func TestNoOpSiteComm_UpdateStats(t *testing.T) {
-	var sc NoOpSiteComm
-	if err := sc.UpdateStats(10, 20, 5); err != nil {
-		t.Errorf("UpdateStats: %v", err)
-	}
-}
-
-func TestNoOpSiteComm_BanUser(t *testing.T) {
-	var sc NoOpSiteComm
-	if err := sc.BanUser(99); err != nil {
-		t.Errorf("BanUser: %v", err)
-	}
-}
-
-func TestNoOpSiteComm_UnbanUser(t *testing.T) {
-	var sc NoOpSiteComm
-	if err := sc.UnbanUser(99); err != nil {
-		t.Errorf("UnbanUser: %v", err)
-	}
-}
-
-// ── GazelleSiteComm ───────────────────────────────────────────────────────────
-
-func newTestGazelleServer(status int) (*httptest.Server, *GazelleSiteComm) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(status)
+func TestGazelleSiteCommExpireTokenPayload(t *testing.T) {
+	var received url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error("ParseForm:", err)
+		}
+		received = r.Form
+		w.WriteHeader(http.StatusOK)
 	}))
-	g := NewGazelleSiteComm(ts.URL, "secret")
-	return ts, g
-}
+	defer srv.Close()
 
-func TestGazelleSiteComm_ExpireToken_Success(t *testing.T) {
-	ts, g := newTestGazelleServer(http.StatusOK)
-	defer ts.Close()
-	// ExpireToken is fire-and-forget; it must not panic.
-	g.ExpireToken(TorrentID(1), UserID(2))
-}
+	g := NewGazelleSiteComm(srv.URL, "secret123")
+	g.ExpireToken(TorrentID(77), UserID(42))
 
-func TestGazelleSiteComm_ExpireToken_ServerError(t *testing.T) {
-	ts, g := newTestGazelleServer(http.StatusInternalServerError)
-	defer ts.Close()
-	// ExpireToken logs but does not return; must not panic.
-	g.ExpireToken(TorrentID(1), UserID(2))
-}
-
-func TestGazelleSiteComm_NotifyFreeleech_Success(t *testing.T) {
-	ts, g := newTestGazelleServer(http.StatusOK)
-	defer ts.Close()
-	if err := g.NotifyFreeleech(42, 24); err != nil {
-		t.Errorf("NotifyFreeleech: %v", err)
+	if received.Get("action") != "expire_token" {
+		t.Errorf("action = %q, want expire_token", received.Get("action"))
+	}
+	if received.Get("torrentid") != "77" {
+		t.Errorf("torrentid = %q, want 77", received.Get("torrentid"))
+	}
+	if received.Get("userid") != "42" {
+		t.Errorf("userid = %q, want 42", received.Get("userid"))
+	}
+	if received.Get("password") != "secret123" {
+		t.Errorf("password not forwarded correctly, got %q", received.Get("password"))
 	}
 }
 
-func TestGazelleSiteComm_NotifyFreeleech_ServerError(t *testing.T) {
-	ts, g := newTestGazelleServer(http.StatusBadRequest)
-	defer ts.Close()
-	if err := g.NotifyFreeleech(42, 24); err == nil {
-		t.Error("expected error on HTTP 400")
+func TestGazelleSiteCommRetryOn5xx(t *testing.T) {
+	origDelay := siteCommBaseDelay
+	siteCommBaseDelay = 0
+	defer func() { siteCommBaseDelay = origDelay }()
+
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&attempts, 1)
+		if n < int32(siteCommMaxRetries) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	g := NewGazelleSiteComm(srv.URL, "pw")
+	g.ExpireToken(TorrentID(1), UserID(1))
+
+	got := atomic.LoadInt32(&attempts)
+	if got != int32(siteCommMaxRetries) {
+		t.Errorf("want %d attempts (2 failures + 1 success), got %d",
+			siteCommMaxRetries, got)
 	}
 }
 
-func TestGazelleSiteComm_ReportAnomaly(t *testing.T) {
-	ts, g := newTestGazelleServer(http.StatusOK)
-	defer ts.Close()
-	if err := g.ReportAnomaly(7, 0.95); err != nil {
-		t.Errorf("ReportAnomaly: %v", err)
+func TestGazelleSiteCommNoRetryOn4xx(t *testing.T) {
+	origDelay := siteCommBaseDelay
+	siteCommBaseDelay = 0
+	defer func() { siteCommBaseDelay = origDelay }()
+
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	g := NewGazelleSiteComm(srv.URL, "pw")
+	g.ExpireToken(TorrentID(1), UserID(1))
+
+	if atomic.LoadInt32(&attempts) != 1 {
+		t.Error("4xx client error should not be retried")
 	}
 }
 
-func TestGazelleSiteComm_UpdateStats(t *testing.T) {
-	ts, g := newTestGazelleServer(http.StatusOK)
-	defer ts.Close()
-	if err := g.UpdateStats(10, 20, 5); err != nil {
-		t.Errorf("UpdateStats: %v", err)
+func TestGazelleSiteCommExhaustRetries(t *testing.T) {
+	origDelay := siteCommBaseDelay
+	siteCommBaseDelay = 0
+	defer func() { siteCommBaseDelay = origDelay }()
+
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	g := NewGazelleSiteComm(srv.URL, "pw")
+	g.ExpireToken(TorrentID(1), UserID(1)) // must not panic or hang
+
+	if atomic.LoadInt32(&attempts) != int32(siteCommMaxRetries) {
+		t.Errorf("want %d total attempts when all fail, got %d",
+			siteCommMaxRetries, atomic.LoadInt32(&attempts))
 	}
 }
 
-func TestGazelleSiteComm_BanUser(t *testing.T) {
-	ts, g := newTestGazelleServer(http.StatusOK)
-	defer ts.Close()
-	if err := g.BanUser(99); err != nil {
-		t.Errorf("BanUser: %v", err)
-	}
-}
-
-func TestGazelleSiteComm_UnbanUser(t *testing.T) {
-	ts, g := newTestGazelleServer(http.StatusOK)
-	defer ts.Close()
-	if err := g.UnbanUser(99); err != nil {
-		t.Errorf("UnbanUser: %v", err)
-	}
-}
-
-func TestGazelleSiteComm_Post_NetworkError(t *testing.T) {
-	// Point to a non-existent server.
-	g := NewGazelleSiteComm("http://127.0.0.1:19999", "secret")
-	// NotifyFreeleech calls post and returns the error.
-	if err := g.NotifyFreeleech(1, 1); err == nil {
-		t.Error("expected network error from unreachable server")
-	}
+func TestNoOpSiteCommDoesNotPanic(t *testing.T) {
+	var n NoOpSiteComm
+	n.ExpireToken(TorrentID(1), UserID(1))
 }

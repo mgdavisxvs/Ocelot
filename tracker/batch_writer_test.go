@@ -131,7 +131,7 @@ type blockingMockDB struct {
 
 func (b *blockingMockDB) RecordPeer(userID UserID, torrentID TorrentID, active int,
 	uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64,
-	announceTime, announces uint32, ip, peerID, userAgent string) error {
+	announceTime, announces uint32, ip, peerID, userAgent string, invalidIP bool) error {
 	for b.blocked.Load() {
 		time.Sleep(time.Millisecond)
 	}

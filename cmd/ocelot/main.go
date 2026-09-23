@@ -47,7 +47,7 @@ func main() {
 	// BatchWriterDB routes hot-path announce writes through the async queue
 	// (QueuePeerAnnounce / QueueTorrentUpdate) and delegates everything else to
 	// the underlying SQLiteShardManager.
-	batchWriter := tracker.NewBatchWriter(db.CurrentDB(), 100, 5*time.Second)
+	batchWriter := tracker.NewBatchWriter(db, 100, 5*time.Second)
 	defer batchWriter.Stop()
 	batchWriterDB := tracker.NewBatchWriterDB(db, batchWriter)
 
