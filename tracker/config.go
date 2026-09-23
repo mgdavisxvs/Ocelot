@@ -32,6 +32,13 @@ type FileConfig struct {
 	DBDir             string
 	GazelleURL        string // optional Gazelle callback endpoint
 	MetricsPort       string // Prometheus metrics listen address, e.g. ":9090"
+
+	// VirtualServer subsystem fields
+	VSEnabled        bool
+	VSPort           string // VS HTTP API listen address, e.g. ":9091"
+	VSAdminKey       string // bearer token for VS API auth
+	VSDBPath         string // path to vs.db (default data/db/vs.db)
+	VSReconcileEvery int    // reconciler tick interval in seconds (default 15)
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -56,6 +63,11 @@ func DefaultFileConfig() *FileConfig {
 		Readonly:          false,
 		DBDir:             "./data/db",
 		MetricsPort:       ":9090",
+		VSEnabled:         false,
+		VSPort:            ":9091",
+		VSAdminKey:        "",
+		VSDBPath:          "data/db/vs.db",
+		VSReconcileEvery:  15,
 	}
 }
 
@@ -135,6 +147,16 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.GazelleURL = val
 		case "metrics_port":
 			cfg.MetricsPort = val
+		case "vs_enabled":
+			cfg.VSEnabled = val == "true"
+		case "vs_port":
+			cfg.VSPort = val
+		case "vs_admin_key":
+			cfg.VSAdminKey = val
+		case "vs_db_path":
+			cfg.VSDBPath = val
+		case "vs_reconcile_every":
+			cfg.VSReconcileEvery = parseIntVal(val, cfg.VSReconcileEvery)
 		}
 	}
 	if err := scanner.Err(); err != nil {
