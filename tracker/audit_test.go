@@ -277,3 +277,35 @@ func TestAuditLogger_Query_FilterByEndTime(t *testing.T) {
 		t.Errorf("expected 0 entries before past end time, got %d", len(entries))
 	}
 }
+
+// TestAuditLogger_Query_ScanError_SkipsRow covers the continue path at
+// audit.go:166 by inserting a row whose timestamp column holds a
+// non-numeric string, causing rows.Scan to fail and the row to be skipped.
+// One valid row is also inserted so entries is non-empty if scan succeeds.
+func TestAuditLogger_Query_ScanError_SkipsRow(t *testing.T) {
+	db := newAuditDB(t)
+	al := NewAuditLogger(db)
+	ctx := context.Background()
+
+	// Insert a valid row first.
+	al.Log(ctx, "good_action", "res", "id", true, nil)
+
+	// Insert a corrupted row with a text timestamp that cannot be scanned
+	// into int64 — rows.Scan will return an error and the row is skipped.
+	_, err := db.Exec(`INSERT INTO audit_log
+		(timestamp, user_id, action, resource_type, resource_id,
+		 ip_address, success, error_message, metadata)
+		VALUES ('not_a_timestamp', NULL, 'bad', 'res', 'id', '127.0.0.1', 1, '', '{}')`)
+	if err != nil {
+		t.Fatalf("insert corrupted row: %v", err)
+	}
+
+	entries, queryErr := al.Query(AuditFilters{Limit: 50})
+	if queryErr != nil {
+		t.Fatalf("Query: %v", queryErr)
+	}
+	// Only the valid row should be in the result; the bad row is skipped.
+	if len(entries) != 1 {
+		t.Errorf("expected 1 entry (bad row skipped), got %d", len(entries))
+	}
+}
