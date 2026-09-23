@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ── handleConnection ──────────────────────────────────────────────────────────
@@ -208,5 +209,128 @@ func TestRedirectHTTPToHTTPS_WithQuery(t *testing.T) {
 	loc := w.Header().Get("Location")
 	if !strings.Contains(loc, "?foo=bar") {
 		t.Errorf("Location = %q, expected query string ?foo=bar", loc)
+	}
+}
+
+// ── ListenAndServe ────────────────────────────────────────────────────────────
+
+// TestListenAndServe_InvalidAddr_ReturnsError verifies the net.Listen error
+// path (server.go:63-65) by giving ListenAndServe an unusable address.
+func TestListenAndServe_InvalidAddr_ReturnsError(t *testing.T) {
+	f := newTestFixture()
+	f.server.config.ListenAddr = "not-a-valid-address:::"
+	err := f.server.ListenAndServe()
+	if err == nil {
+		t.Error("expected error for invalid listen address, got nil")
+	}
+}
+
+// TestListenAndServe_AcceptAndShutdown covers the accept loop + graceful
+// shutdown path (server.go:67-99). The test grabs a free port, points the
+// server at it, starts ListenAndServe in a goroutine, connects a client
+// that sends one HTTP/1.0 request, then calls Shutdown and waits for the
+// goroutine to exit cleanly.
+func TestListenAndServe_AcceptAndShutdown(t *testing.T) {
+	// Grab a free port without holding it — TOCTOU is acceptable in tests.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	f := newTestFixture()
+	f.server.config.ListenAddr = addr
+
+	done := make(chan error, 1)
+	go func() { done <- f.server.ListenAndServe() }()
+
+	// Retry-connect until the server is ready (at most 200 ms).
+	var clientConn net.Conn
+	for i := 0; i < 100; i++ {
+		time.Sleep(2 * time.Millisecond)
+		c, dialErr := net.DialTimeout("tcp", addr, time.Second)
+		if dialErr == nil {
+			clientConn = c
+			break
+		}
+	}
+	if clientConn == nil {
+		t.Fatal("could not connect to ListenAndServe within 200 ms")
+	}
+
+	// Send a valid HTTP/1.0 request so handleConnection processes it.
+	rawReq := "GET /" + sitePass + "/stats HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+	clientConn.Write([]byte(rawReq))
+
+	buf := make([]byte, 4096)
+	var total int
+	for total < len(buf) {
+		n, readErr := clientConn.Read(buf[total:])
+		total += n
+		if readErr != nil {
+			break
+		}
+	}
+	clientConn.Close()
+
+	if !strings.Contains(string(buf[:total]), "200 OK") {
+		t.Errorf("expected 200 OK, got: %q", string(buf[:total]))
+	}
+
+	if err := f.server.Shutdown(); err != nil {
+		t.Errorf("Shutdown: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Errorf("ListenAndServe returned: %v", err)
+	}
+}
+
+// TestListenAndServe_MaxMiddlemen_DropsConnection covers the MaxMiddlemen
+// branch (server.go:86-89) by setting MaxMiddlemen to 0 so every incoming
+// connection is immediately closed.
+func TestListenAndServe_MaxMiddlemen_DropsConnection(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	f := newTestFixture()
+	f.server.config.ListenAddr = addr
+	f.server.config.MaxMiddlemen = 0
+
+	done := make(chan error, 1)
+	go func() { done <- f.server.ListenAndServe() }()
+
+	// Wait for the server to start then connect.
+	var clientConn net.Conn
+	for i := 0; i < 100; i++ {
+		time.Sleep(2 * time.Millisecond)
+		c, dialErr := net.DialTimeout("tcp", addr, time.Second)
+		if dialErr == nil {
+			clientConn = c
+			break
+		}
+	}
+	if clientConn == nil {
+		t.Fatal("could not connect within 200 ms")
+	}
+	defer clientConn.Close()
+
+	// The server drops the connection immediately (conn.Close); reads return EOF.
+	clientConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	buf := make([]byte, 64)
+	n, _ := clientConn.Read(buf)
+	if n != 0 {
+		t.Errorf("expected 0 bytes from dropped connection, got %d", n)
+	}
+
+	if err := f.server.Shutdown(); err != nil {
+		t.Errorf("Shutdown: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Errorf("ListenAndServe returned: %v", err)
 	}
 }
