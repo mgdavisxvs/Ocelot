@@ -16,6 +16,7 @@ type TLSConfig struct {
 	KeyFile  string
 	AutoTLS  bool
 	Domain   string
+	CacheDir string // directory for Let's Encrypt certificate cache
 }
 
 // StartTLS starts the tracker with TLS support

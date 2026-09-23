@@ -1,104 +1,53 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 
 	"github.com/mgdavisxvs/ocelot/markov/internal/config"
 
 	_ "modernc.org/sqlite"
 )
 
-// DB holds two SQLite connections: one read-only handle on the latest tracker
-// shard, and one read-write handle on the dedicated Markov state file.
+// DB wraps a *sql.DB with helpers for the Markov service.
 type DB struct {
-	trackerDB *sql.DB // read-only: ocelot-YYYY-MM.db shard
-	markovDB  *sql.DB // read-write: markov.db
-	cfg       *config.Config
+	pool *sql.DB
+	cfg  *config.Config
 }
 
 func Open(cfg *config.Config) (*DB, error) {
-	shardPath, err := latestShard(cfg.TrackerDBDir)
+	// Open the existing ocelot SQLite shard; WAL mode is already set by the tracker.
+	pool, err := sql.Open("sqlite", cfg.DBPath)
 	if err != nil {
-		return nil, fmt.Errorf("locate tracker shard: %w", err)
+		return nil, fmt.Errorf("sql.Open: %w", err)
 	}
-
-	trackerDB, err := sql.Open("sqlite", fmt.Sprintf("file:%s?cache=shared&mode=ro", shardPath))
-	if err != nil {
-		return nil, fmt.Errorf("open tracker db: %w", err)
+	// SQLite performs best with a single writer connection.
+	pool.SetMaxOpenConns(1)
+	pool.SetMaxIdleConns(1)
+	if err := pool.Ping(); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("ping: %w", err)
 	}
-	trackerDB.SetMaxOpenConns(4)
-	trackerDB.SetMaxIdleConns(2)
-	if err := trackerDB.Ping(); err != nil {
-		trackerDB.Close()
-		return nil, fmt.Errorf("ping tracker db: %w", err)
-	}
-
-	markovDB, err := sql.Open("sqlite", fmt.Sprintf("file:%s?cache=shared&mode=rwc", cfg.MarkovDBPath))
-	if err != nil {
-		trackerDB.Close()
-		return nil, fmt.Errorf("open markov db: %w", err)
-	}
-	markovDB.SetMaxOpenConns(4)
-	markovDB.SetMaxIdleConns(2)
-	if err := markovDB.Ping(); err != nil {
-		trackerDB.Close()
-		markovDB.Close()
-		return nil, fmt.Errorf("ping markov db: %w", err)
-	}
-
-	d := &DB{trackerDB: trackerDB, markovDB: markovDB, cfg: cfg}
-	if err := d.applyPragmas(); err != nil {
-		d.Close()
-		return nil, fmt.Errorf("pragmas: %w", err)
-	}
+	d := &DB{pool: pool, cfg: cfg}
 	if err := d.createSchema(); err != nil {
-		d.Close()
+		pool.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
-	slog.Info("databases opened",
-		"tracker_shard", shardPath,
-		"markov_db", cfg.MarkovDBPath)
+	slog.Info("database connected", "path", cfg.DBPath)
 	return d, nil
 }
 
-func (d *DB) Close() error {
-	var errs []string
-	if d.trackerDB != nil {
-		if err := d.trackerDB.Close(); err != nil {
-			errs = append(errs, "tracker: "+err.Error())
-		}
-	}
-	if d.markovDB != nil {
-		if err := d.markovDB.Close(); err != nil {
-			errs = append(errs, "markov: "+err.Error())
-		}
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("close: %s", strings.Join(errs, "; "))
-	}
-	return nil
-}
+func (d *DB) Close() error { return d.pool.Close() }
 
-func (d *DB) applyPragmas() error {
-	pragmas := []string{
-		`PRAGMA journal_mode=WAL`,
-		`PRAGMA synchronous=NORMAL`,
-		`PRAGMA cache_size=-65536`,
-		`PRAGMA mmap_size=268435456`,
-		`PRAGMA foreign_keys=ON`,
-	}
-	for _, p := range pragmas {
-		if _, err := d.markovDB.Exec(p); err != nil {
-			return fmt.Errorf("%s: %w", p, err)
-		}
-	}
-	return nil
+// ExpireDeadPeerStates removes peer state rows in PeerDead state (4) older than olderThanUnix.
+// Note: state=4 here is PeerDead (peer lifecycle), not TorrentUnavailable (torrent health).
+// Called once per persist cycle to bound table growth (FR-008).
+func (d *DB) ExpireDeadPeerStates(ctx context.Context, olderThanUnix int64) error {
+	_, err := d.pool.ExecContext(ctx,
+		`DELETE FROM markov_peer_states WHERE state=4 AND observed_at<?`, olderThanUnix)
+	return err
 }
 
 func (d *DB) createSchema() error {
@@ -161,31 +110,81 @@ func (d *DB) createSchema() error {
 			recommended    INTEGER NOT NULL DEFAULT 0,
 			updated_at     INTEGER NOT NULL
 		)`,
+
+		`CREATE TABLE IF NOT EXISTS peer_quality (
+			uid        INTEGER NOT NULL,
+			torrent_id INTEGER NOT NULL,
+			alpha      REAL    NOT NULL DEFAULT 1.0,
+			beta       REAL    NOT NULL DEFAULT 1.0,
+			obs_count  INTEGER NOT NULL DEFAULT 0,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (uid, torrent_id)
+		)`,
+
+		// Model governance tables (Req 7)
+		`CREATE TABLE IF NOT EXISTS markov_model_metadata (
+			chain_name          TEXT    NOT NULL PRIMARY KEY,
+			schema_version      INTEGER NOT NULL DEFAULT 1,
+			decay_lambda        REAL    NOT NULL,
+			smoothing_alpha     REAL    NOT NULL,
+			obs_interval_sec    INTEGER NOT NULL,
+			matrix_version      INTEGER NOT NULL DEFAULT 1,
+			eff_samples_json    TEXT,
+			created_at          INTEGER NOT NULL,
+			updated_at          INTEGER NOT NULL
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS markov_recommendation_log (
+			id                 INTEGER NOT NULL PRIMARY KEY,
+			chain_name         TEXT    NOT NULL,
+			entity_id          INTEGER NOT NULL,
+			prediction_json    TEXT    NOT NULL,
+			entropy            REAL    NOT NULL,
+			evidence_strength  REAL    NOT NULL,
+			model_version      INTEGER NOT NULL,
+			recommended_action TEXT    NOT NULL,
+			policy_action      TEXT    NOT NULL DEFAULT '',
+			outcome            TEXT    NOT NULL DEFAULT '',
+			shadow_mode        INTEGER NOT NULL DEFAULT 1,
+			created_at         INTEGER NOT NULL,
+			resolved_at        INTEGER NOT NULL DEFAULT 0
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS markov_forecast_evaluation (
+			id             INTEGER NOT NULL PRIMARY KEY,
+			chain_name     TEXT    NOT NULL,
+			entity_id      INTEGER NOT NULL,
+			horizon_steps  INTEGER NOT NULL,
+			forecast_json  TEXT    NOT NULL,
+			outcome_state  INTEGER NOT NULL DEFAULT -1,
+			brier_score    REAL    NOT NULL DEFAULT 0,
+			log_loss       REAL    NOT NULL DEFAULT 0,
+			created_at     INTEGER NOT NULL,
+			evaluated_at   INTEGER NOT NULL DEFAULT 0
+		)`,
+
+		// Seeder recruitment: precision freeleech targeting
+		`CREATE TABLE IF NOT EXISTS markov_seeder_assignments (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id       INTEGER NOT NULL,
+			torrent_id    INTEGER NOT NULL,
+			urgency_score REAL    NOT NULL,
+			assigned_at   INTEGER NOT NULL,
+			fulfilled_at  INTEGER NOT NULL DEFAULT 0,
+			expires_at    INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_seeder_asgn_user
+			ON markov_seeder_assignments(user_id, fulfilled_at, expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_seeder_asgn_torrent
+			ON markov_seeder_assignments(torrent_id, fulfilled_at)`,
 	}
 	for _, s := range stmts {
-		if _, err := d.markovDB.Exec(s); err != nil {
-			return fmt.Errorf("exec schema: %w", err)
+		if _, err := d.pool.Exec(s); err != nil {
+			return fmt.Errorf("exec %q: %w", s[:40], err)
 		}
 	}
+	// Schema migration: add deployment_stage column to existing installations (UMM-06).
+	// SQLite returns "duplicate column name" error if the column already exists; ignore it.
+	_, _ = d.pool.Exec(`ALTER TABLE markov_model_metadata ADD COLUMN deployment_stage TEXT NOT NULL DEFAULT 'SHADOW'`)
 	return nil
-}
-
-// latestShard returns the path to the most recent ocelot-YYYY-MM.db file in dir.
-func latestShard(dir string) (string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", fmt.Errorf("readdir %s: %w", dir, err)
-	}
-	var shards []string
-	for _, e := range entries {
-		name := e.Name()
-		if !e.IsDir() && strings.HasPrefix(name, "ocelot-") && strings.HasSuffix(name, ".db") {
-			shards = append(shards, name)
-		}
-	}
-	if len(shards) == 0 {
-		return "", fmt.Errorf("no ocelot-*.db shards found in %s", dir)
-	}
-	sort.Strings(shards)
-	return filepath.Join(dir, shards[len(shards)-1]), nil
 }

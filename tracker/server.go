@@ -29,6 +29,7 @@ type Server struct {
 	shutdownCancel context.CancelFunc
 	wg             sync.WaitGroup
 	stats          *Stats
+	adapters       []*ConfiguredAdapter
 }
 
 // Config holds server and tracker configuration.
@@ -50,6 +51,18 @@ type Config struct {
 	GazelleURL        string
 	MetricsPort       string
 	Readonly          bool
+
+	// Extended / merged-in fields
+	OTelEndpoint         string
+	BatchBufferCap       int
+	RateLimitRPS         int
+	RateLimitBurst       int
+	MarkovAPIURL         string
+	FreeleechPollSec     int
+	FreeleechNotifyHours int
+	RedisAddr            string
+	DelReasonLifetime    int
+	TLS                  TLSConfig
 }
 
 func NewServer(config *Config, worker *Worker) *Server {
@@ -457,6 +470,43 @@ func netpollerType() string {
 	}
 }
 
+// RegisterAdapter adds a domain adapter to the server's routing table.
+func (s *Server) RegisterAdapter(adapter *ConfiguredAdapter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adapters = append(s.adapters, adapter)
+}
+
+// ListenAndServeAutoTLS starts the tracker with automatic Let's Encrypt TLS.
+func (s *Server) ListenAndServeAutoTLS(domain, cacheDir string) error {
+	return s.startAutoTLS(domain)
+}
+
+// ListenAndServeTLS starts the tracker with manual TLS certificate files.
+func (s *Server) ListenAndServeTLS(certFile, keyFile string) error {
+	return s.startManualTLS(certFile, keyFile)
+}
+
+// SwarmHealthSummary returns the mean health score across all tracked swarms.
+// Returns -1 when no predictor is configured or no torrents exist.
+func (w *Worker) SwarmHealthSummary() int {
+	if w.SwarmPredictor == nil {
+		return -1
+	}
+	total, count := 0, 0
+	w.Torrents.ForEach(func(_ string, t *Torrent) bool {
+		t.mu.RLock()
+		total += w.SwarmPredictor.HealthScore(t.Seeders.Size(), t.Leechers.Size())
+		t.mu.RUnlock()
+		count++
+		return true
+	})
+	if count == 0 {
+		return -1
+	}
+	return total / count
+}
+
 func (s *Server) Shutdown() error {
 	s.shutdownCancel()
 	if s.listener != nil {
@@ -490,9 +540,37 @@ type Worker struct {
 	CircuitBreak *CircuitBreaker
 	AuditLog     *AuditLogger
 	Metrics      *MetricsRecorder
-	PeerScorer   *ml.PeerScorer   // nil = random selection via SelectPeersOptimized
-	BatchWriter  *BatchWriter     // nil = synchronous DB writes; non-nil = batched writes
-	Commons      CommonsInterface // optional: nil disables economic settlement
+	PeerScorer     *ml.PeerScorer   // nil = random selection via SelectPeersOptimized
+	BatchWriter    *BatchWriter     // nil = synchronous DB writes; non-nil = batched writes
+	Commons        CommonsInterface // optional: nil disables economic settlement
+
+	// ML / analytics subsystems (all optional; nil disables the feature)
+	Detector       BehaviorDetector
+	ClientDetector ClientDetector
+	SwarmPredictor SwarmHealthInterface
+	TorrentCache   *TorrentCache
+	UserCache      *UserCache
+	Redis          *RedisBackend
+
+	reaper *Reaper // started/stopped by Start/Stop
+}
+
+// Start launches background subsystems (reaper). It is idempotent.
+func (w *Worker) Start() {
+	if w.reaper == nil && w.Config != nil {
+		w.reaper = NewReaper(w.Torrents, w.Stats, w.Config.ReapPeersInterval, w.Config.PeersTimeout)
+		w.reaper.Start()
+	}
+}
+
+// Stop halts background subsystems and flushes buffered DB writes.
+func (w *Worker) Stop() {
+	if w.reaper != nil {
+		w.reaper.Stop()
+	}
+	if w.BatchWriter != nil {
+		w.BatchWriter.Stop()
+	}
 }
 
 // CommonsInterface is the subset of commons.ComputeCommons used by the tracker.
@@ -507,7 +585,7 @@ type CommonsInterface interface {
 // DatabaseInterface abstracts all database operations used by the tracker.
 type DatabaseInterface interface {
 	// Announce-path writes
-	RecordPeer(userID UserID, torrentID TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string) error
+	RecordPeer(userID UserID, torrentID TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string, invalidIP bool) error
 	RecordPeerLight(userID UserID, torrentID TorrentID, announceTime, announces uint32, peerID string) error
 	RecordUserStats(userID UserID, uploaded, downloaded int64) error
 	RecordTorrent(torrentID TorrentID, seeders, leechers uint32, snatched int, balance int64) error
@@ -528,6 +606,9 @@ type DatabaseInterface interface {
 	LoadUsers() ([]userLoadRow, error)
 	LoadWhitelist() ([]string, error)
 	LoadTokens() (map[string][]UserID, error)
+
+	// Markov integration
+	LoadRecommendedInterval(torrentID TorrentID) (int, bool)
 
 	// Maintenance
 	CheckpointWAL() error

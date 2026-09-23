@@ -15,6 +15,7 @@ type recordedPeer struct {
 	Uploaded, Downloaded, UpSpeed, DownSpeed, Left, Corrupt int64
 	AnnounceTime, Announces                              uint32
 	IP, PeerID, UserAgent                                string
+	InvalidIP                                            bool
 }
 
 type recordedPeerLight struct {
@@ -97,7 +98,7 @@ func (m *MockDB) reset() {
 
 func (m *MockDB) RecordPeer(userID UserID, torrentID TorrentID, active int,
 	uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64,
-	announceTime, announces uint32, ip, peerID, userAgent string) error {
+	announceTime, announces uint32, ip, peerID, userAgent string, invalidIP bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.ReturnErr != nil {
@@ -108,7 +109,7 @@ func (m *MockDB) RecordPeer(userID UserID, torrentID TorrentID, active int,
 		Uploaded: uploaded, Downloaded: downloaded, UpSpeed: upSpeed,
 		DownSpeed: downSpeed, Left: left, Corrupt: corrupt,
 		AnnounceTime: announceTime, Announces: announces,
-		IP: ip, PeerID: peerID, UserAgent: userAgent,
+		IP: ip, PeerID: peerID, UserAgent: userAgent, InvalidIP: invalidIP,
 	})
 	return nil
 }
@@ -280,6 +281,8 @@ func (m *MockDB) Close() error {
 	m.CloseCount++
 	return m.ReturnErr
 }
+
+func (m *MockDB) LoadRecommendedInterval(_ TorrentID) (int, bool) { return 0, false }
 
 // ── MockSiteComm ──────────────────────────────────────────────────────────────
 

@@ -22,10 +22,11 @@ type mockDB struct {
 	wlRemoves       int
 }
 
-func (m *mockDB) RecordPeer(_ UserID, _ TorrentID, _ int, _, _, _, _, _, _ int64, _, _ uint32, _, _, _ string) error {
+func (m *mockDB) RecordPeer(_ UserID, _ TorrentID, _ int, _, _, _, _, _, _ int64, _, _ uint32, _, _, _ string, _ bool) error {
 	m.peerRecords++
 	return nil
 }
+func (m *mockDB) LoadRecommendedInterval(_ TorrentID) (int, bool) { return 0, false }
 func (m *mockDB) RecordPeerLight(_ UserID, _ TorrentID, _, _ uint32, _ string) error {
 	m.peerLightRecs++
 	return nil

@@ -226,7 +226,7 @@ func NewBatchWriterDB(inner DatabaseInterface, bw *BatchWriter) *BatchWriterDB {
 
 func (b *BatchWriterDB) RecordPeer(userID UserID, torrentID TorrentID, active int,
 	uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64,
-	announceTime, announces uint32, ip, peerID, userAgent string) error {
+	announceTime, announces uint32, ip, peerID, userAgent string, invalidIP bool) error {
 	b.bw.QueuePeerAnnounce(&PeerAnnounceData{
 		PeerID:     peerID,
 		IP:         ip,
@@ -278,6 +278,18 @@ func (b *BatchWriterDB) RemoveWhitelistEntry(prefix string) error {
 
 func (b *BatchWriterDB) DeleteToken(userID UserID, torrentID TorrentID) error {
 	return b.inner.DeleteToken(userID, torrentID)
+}
+
+func (b *BatchWriterDB) DeleteTorrentHash(infoHash string) error {
+	return b.inner.DeleteTorrentHash(infoHash)
+}
+
+func (b *BatchWriterDB) DeleteUserPasskey(passkey string) error {
+	return b.inner.DeleteUserPasskey(passkey)
+}
+
+func (b *BatchWriterDB) LoadRecommendedInterval(torrentID TorrentID) (int, bool) {
+	return b.inner.LoadRecommendedInterval(torrentID)
 }
 
 func (b *BatchWriterDB) LoadTorrents() ([]torrentLoadRow, error) {

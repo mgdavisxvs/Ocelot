@@ -39,6 +39,23 @@ type FileConfig struct {
 	VSAdminKey       string // bearer token for VS API auth
 	VSDBPath         string // path to vs.db (default data/db/vs.db)
 	VSReconcileEvery int    // reconciler tick interval in seconds (default 15)
+
+	// Optional / advanced fields
+	OTelEndpoint         string // OpenTelemetry collector endpoint
+	BatchBufferCap       int    // capacity of the async DB write queue
+	RateLimitRPS         int    // per-IP rate limit (requests/sec); 0 = disabled
+	RateLimitBurst       int    // burst allowance for the rate limiter
+	MarkovAPIURL         string // Markov engine HTTP API base URL
+	FreeleechPollSec     int    // freeleech candidate poll interval (seconds)
+	FreeleechNotifyHours int    // hours ahead to notify freeleech window
+	RedisAddr            string // Redis address for optional dual-write backend
+
+	// TLS
+	TLSCertFile string
+	TLSKeyFile  string
+	TLSAutoTLS  bool
+	TLSDomain   string
+	TLSCacheDir string
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -68,6 +85,9 @@ func DefaultFileConfig() *FileConfig {
 		VSAdminKey:        "",
 		VSDBPath:          "data/db/vs.db",
 		VSReconcileEvery:  15,
+		BatchBufferCap:    1000,
+		RateLimitRPS:      100,
+		RateLimitBurst:    200,
 	}
 }
 
@@ -185,7 +205,25 @@ func (fc *FileConfig) ToTrackerConfig() *Config {
 		GazelleURL:        fc.GazelleURL,
 		ScheduleInterval:  fc.ScheduleInterval,
 		ReapPeersInterval: fc.ReapPeersInterval,
+		DelReasonLifetime: fc.DelReasonLifetime,
 		Readonly:          fc.Readonly,
+
+		// Extended fields
+		OTelEndpoint:         fc.OTelEndpoint,
+		BatchBufferCap:       fc.BatchBufferCap,
+		RateLimitRPS:         fc.RateLimitRPS,
+		RateLimitBurst:       fc.RateLimitBurst,
+		MarkovAPIURL:         fc.MarkovAPIURL,
+		FreeleechPollSec:     fc.FreeleechPollSec,
+		FreeleechNotifyHours: fc.FreeleechNotifyHours,
+		RedisAddr:            fc.RedisAddr,
+		TLS: TLSConfig{
+			CertFile: fc.TLSCertFile,
+			KeyFile:  fc.TLSKeyFile,
+			AutoTLS:  fc.TLSAutoTLS,
+			Domain:   fc.TLSDomain,
+			CacheDir: fc.TLSCacheDir,
+		},
 	}
 }
 

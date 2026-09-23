@@ -5,6 +5,19 @@ import (
 	"time"
 )
 
+// Scheduler wraps DBMaintainer and exposes the same Start/Stop interface.
+// It exists to satisfy callers that use the NewScheduler constructor.
+type Scheduler struct {
+	*DBMaintainer
+}
+
+// NewScheduler creates a Scheduler that runs WAL checkpoint and shard rotation
+// every intervalSec seconds. delReasonLifetimeSec is stored for future use.
+func NewScheduler(db *SQLiteShardManager, intervalSec, delReasonLifetimeSec int) *Scheduler {
+	_ = delReasonLifetimeSec // reserved
+	return &Scheduler{DBMaintainer: NewDBMaintainer(db, intervalSec)}
+}
+
 // DBMaintainer runs periodic SQLite maintenance tasks: WAL checkpointing and
 // shard rotation. It replaces the C++ schedule.cpp logic.
 //

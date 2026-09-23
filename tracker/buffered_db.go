@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -156,11 +157,11 @@ func (b *BufferedDB) Flush() {
 
 func (b *BufferedDB) RecordPeer(userID UserID, torrentID TorrentID, active int,
 	uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64,
-	announceTime, announces uint32, ip, peerID, userAgent string) error {
+	announceTime, announces uint32, ip, peerID, userAgent string, invalidIP bool) error {
 	b.enqueue(func() error {
 		return b.inner.RecordPeer(userID, torrentID, active,
 			uploaded, downloaded, upSpeed, downSpeed, left, corrupt,
-			announceTime, announces, ip, peerID, userAgent)
+			announceTime, announces, ip, peerID, userAgent, invalidIP)
 	})
 	return nil
 }
@@ -222,6 +223,18 @@ func (b *BufferedDB) DeleteToken(userID UserID, torrentID TorrentID) error {
 	return b.syncWrite(func() error { return b.inner.DeleteToken(userID, torrentID) })
 }
 
+func (b *BufferedDB) DeleteTorrentHash(infoHash string) error {
+	return b.syncWrite(func() error { return b.inner.DeleteTorrentHash(infoHash) })
+}
+
+func (b *BufferedDB) DeleteUserPasskey(passkey string) error {
+	return b.syncWrite(func() error { return b.inner.DeleteUserPasskey(passkey) })
+}
+
+func (b *BufferedDB) LoadRecommendedInterval(torrentID TorrentID) (int, bool) {
+	return b.inner.LoadRecommendedInterval(torrentID)
+}
+
 // ── DatabaseInterface: reads (always pass-through) ───────────────────────────
 
 func (b *BufferedDB) LoadTorrents() ([]torrentLoadRow, error) { return b.inner.LoadTorrents() }
@@ -233,6 +246,16 @@ func (b *BufferedDB) LoadTokens() (map[string][]UserID, error) { return b.inner.
 
 func (b *BufferedDB) CheckpointWAL() error { return b.inner.CheckpointWAL() }
 func (b *BufferedDB) CheckRotation() error { return b.inner.CheckRotation() }
+
+// CurrentDB returns the active *sql.DB from the underlying shard manager,
+// satisfying virtualserver.DBProvider (and catalog.DBProvider).
+func (b *BufferedDB) CurrentDB() *sql.DB {
+	type currentDBer interface{ CurrentDB() *sql.DB }
+	if c, ok := b.inner.(currentDBer); ok {
+		return c.CurrentDB()
+	}
+	return nil
+}
 
 // Close flushes pending writes, then closes the underlying database.
 func (b *BufferedDB) Close() error {

@@ -162,6 +162,9 @@ func (sm *SQLiteShardManager) closeCurrentDB() error {
 }
 
 func (sm *SQLiteShardManager) initSchema(db *sql.DB) error {
+	// Migration: add invalid_ip column for existing databases (idempotent — error ignored).
+	db.Exec(`ALTER TABLE peers ADD COLUMN invalid_ip INTEGER DEFAULT 0`) //nolint:errcheck
+
 	_, err := db.Exec(`
 	CREATE TABLE IF NOT EXISTS peers (
 		user_id INTEGER NOT NULL,
@@ -179,6 +182,7 @@ func (sm *SQLiteShardManager) initSchema(db *sql.DB) error {
 		peer_id BLOB DEFAULT '',
 		useragent TEXT DEFAULT '',
 		last_announce INTEGER DEFAULT 0,
+		invalid_ip INTEGER DEFAULT 0,
 		PRIMARY KEY (user_id, torrent_id)
 	) WITHOUT ROWID;
 
@@ -266,14 +270,14 @@ func (sm *SQLiteShardManager) prepareStatements() error {
 	var err error
 
 	sm.stmtPeer, err = sm.currentDB.Prepare(`
-	INSERT INTO peers (user_id,torrent_id,active,uploaded,downloaded,upspeed,downspeed,remaining,corrupt,timespent,announces,ip,peer_id,useragent,last_announce)
-	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	INSERT INTO peers (user_id,torrent_id,active,uploaded,downloaded,upspeed,downspeed,remaining,corrupt,timespent,announces,ip,peer_id,useragent,last_announce,invalid_ip)
+	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 	ON CONFLICT(user_id,torrent_id) DO UPDATE SET
 		active=excluded.active, uploaded=excluded.uploaded, downloaded=excluded.downloaded,
 		upspeed=excluded.upspeed, downspeed=excluded.downspeed, remaining=excluded.remaining,
 		corrupt=excluded.corrupt, timespent=excluded.timespent, announces=excluded.announces,
 		ip=excluded.ip, peer_id=excluded.peer_id, useragent=excluded.useragent,
-		last_announce=excluded.last_announce`)
+		last_announce=excluded.last_announce, invalid_ip=excluded.invalid_ip`)
 	if err != nil {
 		return fmt.Errorf("prepare peer stmt: %w", err)
 	}
@@ -352,12 +356,32 @@ func (sm *SQLiteShardManager) getDBSize(path string) (int64, error) {
 
 // ── Write operations ──────────────────────────────────────────────────────────
 
-func (sm *SQLiteShardManager) RecordPeer(userID UserID, torrentID TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string) error {
+func (sm *SQLiteShardManager) RecordPeer(userID UserID, torrentID TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string, invalidIP bool) error {
 	sm.mu.RLock()
 	stmt := sm.stmtPeer
 	sm.mu.RUnlock()
-	_, err := stmt.Exec(userID, torrentID, active, uploaded, downloaded, upSpeed, downSpeed, left, corrupt, announceTime, announces, ip, peerID, userAgent, time.Now().Unix())
+	invalidIPInt := 0
+	if invalidIP {
+		invalidIPInt = 1
+	}
+	_, err := stmt.Exec(userID, torrentID, active, uploaded, downloaded, upSpeed, downSpeed, left, corrupt, announceTime, announces, ip, peerID, userAgent, time.Now().Unix(), invalidIPInt)
 	return err
+}
+
+// LoadRecommendedInterval returns the Markov-predicted announce interval for a torrent.
+// Returns (0, false) when no prediction row exists yet.
+func (sm *SQLiteShardManager) LoadRecommendedInterval(torrentID TorrentID) (int, bool) {
+	sm.mu.RLock()
+	db := sm.currentDB
+	sm.mu.RUnlock()
+	var interval int
+	err := db.QueryRow(
+		`SELECT recommended_interval FROM markov_predictions WHERE torrent_id=?`,
+		int64(torrentID)).Scan(&interval)
+	if err != nil {
+		return 0, false
+	}
+	return interval, true
 }
 
 func (sm *SQLiteShardManager) RecordPeerLight(userID UserID, torrentID TorrentID, announceTime, announces uint32, peerID string) error {

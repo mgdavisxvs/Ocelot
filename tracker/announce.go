@@ -258,7 +258,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		if err := w.dbExec(func() error {
 			return w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
 				upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
-				ipStr, peerIDStr, userAgent)
+				ipStr, peerIDStr, userAgent, peer.InvalidIP)
 		}); err != nil {
 			GetDefaultLogger().Error("RecordPeer failed", err)
 		}

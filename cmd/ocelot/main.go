@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -118,7 +117,7 @@ func main() {
 	// ── Worker ────────────────────────────────────────────────────────────────
 	worker := &tracker.Worker{
 		Config:       config,
-		DB:           db,
+		DB:           batchWriterDB,
 		SiteComm:     siteComm,
 		Torrents:     torrents,
 		Users:        users,
@@ -134,7 +133,7 @@ func main() {
 	}
 
 	// ── Background subsystems ─────────────────────────────────────────────────
-	reaper := tracker.NewReaper(torrents, fc.ReapPeersInterval, config.PeersTimeout)
+	reaper := tracker.NewReaper(torrents, stats, fc.ReapPeersInterval, config.PeersTimeout)
 	reaper.Start()
 	defer reaper.Stop()
 
@@ -227,7 +226,6 @@ func main() {
 
 	<-shutdownCh
 	log.Println("Shutdown signal received — draining connections...")
-	markovCancel()
 	if err := server.Shutdown(); err != nil {
 		log.Printf("Shutdown error: %v", err)
 	}

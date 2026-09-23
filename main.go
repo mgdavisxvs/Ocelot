@@ -233,6 +233,9 @@ func main() {
 		}
 	}()
 
+	// ── HTTP Server ───────────────────────────────────────────────────────────
+	server := tracker.NewServer(config, worker)
+
 	// Start VirtualServer subsystem if enabled
 	vsCfg := vsconfig.VSConfig{
 		Enabled:        false, // set via ocelot.conf vs_enabled=true
@@ -254,8 +257,8 @@ func main() {
 		log.Printf("VirtualServer started on %s", vsCfg.Port)
 	}
 
-	// Print statistics periodically
-	go printStats(stats)
+	// Print statistics periodically (moved below server creation; see line 309)
+
 
 	btBuiltins := map[string]bool{
 		"announce": true, "scrape": true, "update": true,
