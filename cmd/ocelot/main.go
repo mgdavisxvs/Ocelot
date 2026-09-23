@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -38,11 +39,18 @@ func main() {
 	if err := tracker.CreateAuditLogTable(db.CurrentDB()); err != nil {
 		log.Printf("Warning: could not create audit log table: %v", err)
 	}
+	if err := tracker.CreateAPIKeysTable(db.CurrentDB()); err != nil {
+		log.Printf("Warning: could not create api_keys table: %v", err)
+	}
 	auditLog := tracker.NewAuditLogger(db.CurrentDB())
 
 	// ── Batch writer ──────────────────────────────────────────────────────────
+	// BatchWriterDB routes hot-path announce writes through the async queue
+	// (QueuePeerAnnounce / QueueTorrentUpdate) and delegates everything else to
+	// the underlying SQLiteShardManager.
 	batchWriter := tracker.NewBatchWriter(db.CurrentDB(), 100, 5*time.Second)
 	defer batchWriter.Stop()
+	batchWriterDB := tracker.NewBatchWriterDB(db, batchWriter)
 
 	// ── Rate limiter ──────────────────────────────────────────────────────────
 	rateLimiter := tracker.NewRateLimiter(10, 30, 100_000)
@@ -167,23 +175,66 @@ func main() {
 		}
 	}()
 
-	// ── Server ────────────────────────────────────────────────────────────────
+	// ── Domain adapters ───────────────────────────────────────────────────────
+	// Load any vocab configs from the domains/ directory (relative to the
+	// config file's location) and register a ConfiguredAdapter for each.
+	// The built-in BT announce/scrape fast paths remain unchanged; adapters
+	// with conflicting action names are silently skipped to protect them.
 	server := tracker.NewServer(config, worker)
+
+	domainsDir := "domains"
+	vocabConfigs, err := tracker.LoadAllVocabConfigs(domainsDir)
+	if err != nil {
+		log.Printf("Warning: failed to load domain configs from %q: %v", domainsDir, err)
+	} else {
+		btActions := map[string]bool{"announce": true, "scrape": true,
+			"update": true, "stats": true, "torrents": true, "peers": true, "whitelist": true}
+		for _, vc := range vocabConfigs {
+			if btActions[vc.Actions.Event] || btActions[vc.Actions.Query] {
+				continue // never override built-in BT routes
+			}
+			adapter := tracker.NewConfiguredAdapter(vc, whitelist, server)
+			server.RegisterAdapter(adapter)
+			log.Printf("Domain adapter registered: %s (event=%s, query=%s, format=%s)",
+				vc.Domain, vc.Actions.Event, vc.Actions.Query, vc.WireFormat.Format)
+		}
+	}
 
 	shutdownCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// ── Peer snapshot — restore swarm state ──────────────────────────────────
+	snapshotPath := fc.DBDir + "/swarm.snap"
+	if err := tracker.LoadSnapshot(snapshotPath, torrents); err != nil {
+		log.Printf("Warning: peer snapshot load failed: %v", err)
+	}
+
 	go func() {
 		log.Printf("Listening on %s", config.ListenAddr)
-		if err := server.ListenAndServe(); err != nil {
-			log.Printf("Server error: %v", err)
+		var serveErr error
+		switch {
+		case config.TLS.AutoTLS:
+			serveErr = server.ListenAndServeAutoTLS(config.TLS.Domain, config.TLS.CacheDir)
+		case config.TLS.CertFile != "":
+			serveErr = server.ListenAndServeTLS(config.TLS.CertFile, config.TLS.KeyFile)
+		default:
+			serveErr = server.ListenAndServe()
+		}
+		if serveErr != nil {
+			log.Printf("Server error: %v", serveErr)
 		}
 	}()
 
 	<-shutdownCh
 	log.Println("Shutdown signal received — draining connections...")
+	markovCancel()
 	if err := server.Shutdown(); err != nil {
 		log.Printf("Shutdown error: %v", err)
 	}
+
+	if err := tracker.SaveSnapshot(snapshotPath, torrents); err != nil {
+		log.Printf("Warning: peer snapshot save failed: %v", err)
+	}
+
 	log.Println("Shutdown complete")
 }

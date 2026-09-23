@@ -137,6 +137,11 @@ func (tc *TorrentCache) Delete(infoHash string) {
 	tc.cache.Delete("torrent:" + infoHash)
 }
 
+// Clear evicts all cached torrents.
+func (tc *TorrentCache) Clear() {
+	tc.cache.Clear()
+}
+
 // UserCache provides caching for user objects
 type UserCache struct {
 	cache *Cache
@@ -168,4 +173,9 @@ func (uc *UserCache) Set(passkey string, user *User) {
 // Delete removes a user from cache
 func (uc *UserCache) Delete(passkey string) {
 	uc.cache.Delete("user:" + passkey)
+}
+
+// Clear evicts all cached users.
+func (uc *UserCache) Clear() {
+	uc.cache.Clear()
 }

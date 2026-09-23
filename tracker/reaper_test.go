@@ -74,7 +74,7 @@ func TestReaper_Reap_RemovesStalePeers(t *testing.T) {
 	tor.Leechers.Set("new-leech", &Peer{LastAnnounced: fresh, IP: ip})
 	torrents.Set("h1", tor)
 
-	r := NewReaper(torrents, 9999, 3600) // 1-hour timeout
+	r := NewReaper(torrents, nil, 9999, 3600) // 1-hour timeout
 	r.reap()
 
 	if _, ok := tor.Seeders.Get("old-seed"); ok {
@@ -102,7 +102,7 @@ func TestReaper_Reap_MultipleTorrents(t *testing.T) {
 		torrents.Set(itoa(i), tor)
 	}
 
-	r := NewReaper(torrents, 9999, 3600)
+	r := NewReaper(torrents, nil, 9999, 3600)
 	r.reap()
 
 	torrents.ForEach(func(_ string, tor *Torrent) bool {
@@ -115,7 +115,7 @@ func TestReaper_Reap_MultipleTorrents(t *testing.T) {
 
 func TestReaper_Reap_EmptyTorrents(t *testing.T) {
 	torrents := NewTorrentList()
-	r := NewReaper(torrents, 9999, 3600)
+	r := NewReaper(torrents, nil, 9999, 3600)
 	r.reap() // must not panic on empty list
 }
 
@@ -124,7 +124,7 @@ func TestReaper_Reap_EmptyTorrents(t *testing.T) {
 func TestReaper_StartStop(t *testing.T) {
 	torrents := NewTorrentList()
 	// Use a very long interval so it never fires during the test
-	r := NewReaper(torrents, 9999, 3600)
+	r := NewReaper(torrents, nil, 9999, 3600)
 	r.Start()
 	// Small delay to ensure goroutine is running
 	time.Sleep(10 * time.Millisecond)

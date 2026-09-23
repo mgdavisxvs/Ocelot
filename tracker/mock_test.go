@@ -207,6 +207,12 @@ func (m *MockDB) DeleteUserPasskey(passkey string) error {
 	return m.ReturnErr
 }
 
+func (m *MockDB) DeleteToken(_ UserID, _ TorrentID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ReturnErr
+}
+
 func (m *MockDB) AddWhitelistEntry(prefix string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

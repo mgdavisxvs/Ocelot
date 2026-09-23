@@ -97,7 +97,7 @@ func (w *Worker) addTorrent(q url.Values) ([]byte, error) {
 	w.Torrents.Set(infoHash, torrent)
 
 	if w.AuditLog != nil {
-		w.AuditLog.LogSuccess(context.Background(), "add_torrent", "torrent", idStr)
+		w.AuditLog.Log(context.Background(), "add_torrent", "torrent", idStr, true, nil)
 	}
 	return w.updateSuccess(fmt.Sprintf("Added torrent %d", id))
 }
@@ -154,7 +154,7 @@ func (w *Worker) deleteTorrent(q url.Values) ([]byte, error) {
 			return w.updateError(fmt.Sprintf("DB error deleting torrent hash: %v", err))
 		}
 		if w.AuditLog != nil {
-			w.AuditLog.LogSuccess(context.Background(), "delete_torrent", "torrent", idStr)
+			w.AuditLog.Log(context.Background(), "delete_torrent", "torrent", idStr, true, nil)
 		}
 		return w.updateSuccess(fmt.Sprintf("Deleted torrent %d", id))
 	}
@@ -166,7 +166,7 @@ func (w *Worker) deleteTorrent(q url.Values) ([]byte, error) {
 	delete(w.Torrents.torrents, infoHash)
 	w.Torrents.mu.Unlock()
 	if w.AuditLog != nil {
-		w.AuditLog.LogSuccess(context.Background(), "delete_torrent", "torrent", infoHash)
+		w.AuditLog.Log(context.Background(), "delete_torrent", "torrent", infoHash, true, nil)
 	}
 	return w.updateSuccess(fmt.Sprintf("Deleted torrent %s", infoHash))
 }
@@ -224,7 +224,7 @@ func (w *Worker) addUser(q url.Values) ([]byte, error) {
 	w.Users.Set(passkey, user)
 
 	if w.AuditLog != nil {
-		w.AuditLog.LogSuccess(context.Background(), "add_user", "user", idStr)
+		w.AuditLog.Log(context.Background(), "add_user", "user", idStr, true, nil)
 	}
 	return w.updateSuccess(fmt.Sprintf("Added user %d", id))
 }
@@ -252,7 +252,7 @@ func (w *Worker) updateUser(q url.Values) ([]byte, error) {
 	user.CanLeech.Store(newCanLeech)
 	user.ProtectIP.Store(newProtectIP)
 	if w.AuditLog != nil {
-		w.AuditLog.LogSuccess(context.Background(), "update_user", "user", passkey)
+		w.AuditLog.Log(context.Background(), "update_user", "user", passkey, true, nil)
 	}
 	return w.updateSuccess(fmt.Sprintf("Updated user %d", user.ID))
 }
@@ -274,7 +274,7 @@ func (w *Worker) removeUser(q url.Values) ([]byte, error) {
 	delete(w.Users.users, passkey)
 	w.Users.mu.Unlock()
 	if w.AuditLog != nil {
-		w.AuditLog.LogSuccess(context.Background(), "remove_user", "user", passkey)
+		w.AuditLog.Log(context.Background(), "remove_user", "user", passkey, true, nil)
 	}
 	return w.updateSuccess(fmt.Sprintf("Removed user %d", user.ID))
 }
@@ -307,7 +307,7 @@ func (w *Worker) changePasskey(q url.Values) ([]byte, error) {
 	w.Users.mu.Unlock()
 
 	if w.AuditLog != nil {
-		w.AuditLog.LogSuccess(context.Background(), "change_passkey", "user", fmt.Sprintf("%d", user.ID))
+		w.AuditLog.Log(context.Background(), "change_passkey", "user", fmt.Sprintf("%d", user.ID), true, nil)
 	}
 	return w.updateSuccess(fmt.Sprintf("Changed passkey for user %d", user.ID))
 }
@@ -374,7 +374,7 @@ func (w *Worker) addWhitelist(q url.Values) ([]byte, error) {
 	}
 	w.Whitelist.Add(prefix)
 	if w.AuditLog != nil {
-		w.AuditLog.LogSuccess(context.Background(), "add_whitelist", "whitelist", prefix)
+		w.AuditLog.Log(context.Background(), "add_whitelist", "whitelist", prefix, true, nil)
 	}
 	return w.updateSuccess(fmt.Sprintf("Added whitelist prefix: %s", prefix))
 }
@@ -389,7 +389,7 @@ func (w *Worker) removeWhitelist(q url.Values) ([]byte, error) {
 	}
 	w.Whitelist.Remove(prefix)
 	if w.AuditLog != nil {
-		w.AuditLog.LogSuccess(context.Background(), "remove_whitelist", "whitelist", prefix)
+		w.AuditLog.Log(context.Background(), "remove_whitelist", "whitelist", prefix, true, nil)
 	}
 	return w.updateSuccess(fmt.Sprintf("Removed whitelist prefix: %s", prefix))
 }

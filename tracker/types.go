@@ -23,19 +23,20 @@ const (
 
 // Peer represents a single peer in a swarm
 type Peer struct {
-	UserID         UserID
-	Uploaded       int64
-	Downloaded     int64
-	Corrupt        int64
-	Left           int64
-	LastAnnounced  time.Time
-	FirstAnnounced time.Time
-	Announces      uint32
-	Port           uint16
-	IP             net.IP // Go's native IP type (safer than manual parsing)
-	IPPort         []byte // Compact 6-byte format: 4-byte IPv4 + 2-byte port
-	Visible        bool
-	InvalidIP      bool
+	UserID          UserID
+	Uploaded        int64
+	Downloaded      int64
+	Corrupt         int64
+	Left            int64
+	LastAnnounced   time.Time
+	FirstAnnounced  time.Time
+	Announces       uint32
+	Port            uint16
+	IP              net.IP // Go's native IP type (safer than manual parsing)
+	IPPort          []byte // Compact 6-byte format: 4-byte IPv4 + 2-byte port
+	Visible         bool
+	InvalidIP       bool
+	ConnectionTimes []time.Time // Recent connection timestamps for anomaly detection
 }
 
 // CompactIPPort creates the 6-byte compact peer format (BEP 23).
@@ -258,6 +259,8 @@ type Stats struct {
 	Scrapes           atomic.Uint64
 	BytesRead         atomic.Uint64
 	BytesWritten      atomic.Uint64
+	EvictedPeers      atomic.Uint64
+	AnomalyDetections atomic.Uint64
 	StartTime         time.Time
 }
 

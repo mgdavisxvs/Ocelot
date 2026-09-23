@@ -428,6 +428,15 @@ func (sm *SQLiteShardManager) RecordUserPasskey(id UserID, passkey string, canLe
 	return err
 }
 
+// DeleteToken removes a freeleech token for a user+torrent pair.
+func (sm *SQLiteShardManager) DeleteToken(userID UserID, torrentID TorrentID) error {
+	sm.mu.RLock()
+	db := sm.currentDB
+	sm.mu.RUnlock()
+	_, err := db.Exec(`DELETE FROM tokens WHERE user_id = ? AND torrent_id = ?`, userID, torrentID)
+	return err
+}
+
 // DeleteTorrentHash removes a torrent's info_hash mapping from persistence.
 func (sm *SQLiteShardManager) DeleteTorrentHash(infoHash string) error {
 	sm.mu.RLock()

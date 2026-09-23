@@ -2,14 +2,46 @@ package tracker
 
 import (
 	"context"
+	"log"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
 
 // Tracer provides distributed tracing functionality
 var tracer = otel.Tracer("ocelot-tracker")
+
+// InitTracerProvider registers an OTLP HTTP exporter when endpoint is non-empty
+// and returns a shutdown function the caller must invoke on exit.
+// When endpoint is empty the global tracer remains a no-op and the returned
+// function is a no-op.
+func InitTracerProvider(endpoint string) func() {
+	if endpoint == "" {
+		return func() {}
+	}
+	exp, err := otlptracehttp.New(context.Background(),
+		otlptracehttp.WithEndpoint(endpoint),
+		otlptracehttp.WithInsecure(),
+	)
+	if err != nil {
+		log.Printf("tracing: failed to create OTLP exporter: %v", err)
+		return func() {}
+	}
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exp),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
+	otel.SetTracerProvider(tp)
+	tracer = tp.Tracer("ocelot-tracker")
+	return func() {
+		if err := tp.Shutdown(context.Background()); err != nil {
+			log.Printf("tracing: shutdown error: %v", err)
+		}
+	}
+}
 
 // StartSpan starts a new trace span
 func StartSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {

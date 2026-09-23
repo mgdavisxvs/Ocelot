@@ -519,6 +519,7 @@ type DatabaseInterface interface {
 	RecordUserPasskey(id UserID, passkey string, canLeech, protectIP bool) error
 	DeleteTorrentHash(infoHash string) error
 	DeleteUserPasskey(passkey string) error
+	DeleteToken(userID UserID, torrentID TorrentID) error
 	AddWhitelistEntry(prefix string) error
 	RemoveWhitelistEntry(prefix string) error
 

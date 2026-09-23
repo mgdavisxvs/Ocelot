@@ -51,6 +51,9 @@ func NewRedisBackend(config RedisConfig) (*RedisBackend, error) {
 
 // AddPeer stores a peer in Redis with TTL
 func (r *RedisBackend) AddPeer(infoHash string, peerID string, peer *Peer, ttl time.Duration) error {
+	_, span := TraceRedisOp(r.ctx, "hset_peer")
+	defer span.End()
+
 	key := fmt.Sprintf("torrent:%s:peers", infoHash)
 	peerData, err := json.Marshal(peer)
 	if err != nil {
@@ -77,6 +80,9 @@ func (r *RedisBackend) AddPeer(infoHash string, peerID string, peer *Peer, ttl t
 
 // GetPeers retrieves all peers for a torrent from Redis
 func (r *RedisBackend) GetPeers(infoHash string) ([]*Peer, error) {
+	_, span := TraceRedisOp(r.ctx, "hgetall_peers")
+	defer span.End()
+
 	key := fmt.Sprintf("torrent:%s:peers", infoHash)
 
 	// Get all peers from hash
@@ -106,6 +112,9 @@ func (r *RedisBackend) RemovePeer(infoHash string, peerID []byte) error {
 
 // GetTorrent retrieves torrent metadata from Redis cache
 func (r *RedisBackend) GetTorrent(infoHash string) (*Torrent, error) {
+	_, span := TraceRedisOp(r.ctx, "get_torrent")
+	defer span.End()
+
 	key := "torrent:" + infoHash
 	data, err := r.client.Get(r.ctx, key).Result()
 	if err == redis.Nil {
@@ -125,6 +134,9 @@ func (r *RedisBackend) GetTorrent(infoHash string) (*Torrent, error) {
 
 // CacheTorrent stores torrent metadata in Redis with TTL
 func (r *RedisBackend) CacheTorrent(infoHash string, torrent *Torrent, ttl time.Duration) error {
+	_, span := TraceRedisOp(r.ctx, "set_torrent")
+	defer span.End()
+
 	key := "torrent:" + infoHash
 	data, err := json.Marshal(torrent)
 	if err != nil {
@@ -204,21 +216,31 @@ func (r *RedisBackend) Ping() error {
 	return r.client.Ping(r.ctx).Err()
 }
 
-// FlushExpiredPeers removes peers that haven't announced recently
+// FlushExpiredPeers removes peers whose LastAnnounced is older than timeout.
 func (r *RedisBackend) FlushExpiredPeers(infoHash string, timeout time.Duration) error {
-	peers, err := r.GetPeers(infoHash)
+	_, span := TraceRedisOp(r.ctx, "flush_expired_peers")
+	defer span.End()
+
+	key := fmt.Sprintf("torrent:%s:peers", infoHash)
+	peerMap, err := r.client.HGetAll(r.ctx, key).Result()
 	if err != nil {
 		return err
 	}
 
 	now := time.Now()
-	for _, peer := range peers {
+	var expired []string
+	for peerID, data := range peerMap {
+		var peer Peer
+		if err := json.Unmarshal([]byte(data), &peer); err != nil {
+			expired = append(expired, peerID) // remove corrupt entries
+			continue
+		}
 		if now.Sub(peer.LastAnnounced) > timeout {
-			// Note: peerID would need to be tracked separately to delete
-			// This is a stub implementation
-			_ = peer
+			expired = append(expired, peerID)
 		}
 	}
-
-	return nil
+	if len(expired) == 0 {
+		return nil
+	}
+	return r.client.HDel(r.ctx, key, expired...).Err()
 }

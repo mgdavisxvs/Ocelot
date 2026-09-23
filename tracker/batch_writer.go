@@ -205,6 +205,116 @@ func (bw *BatchWriter) flush(batch []DBOperation) {
 	bw.metrics.RecordDBQuery("batch_flush", duration, nil)
 }
 
+// BatchWriterDB adapts BatchWriter + a DatabaseInterface to satisfy
+// DatabaseInterface.  Announce-path writes (RecordPeer, RecordTorrent) are
+// routed through the BatchWriter's async queue; all other operations delegate
+// to the inner DatabaseInterface so reads and admin writes are unaffected.
+//
+// This is the preferred Worker.DB implementation for cmd/ocelot, which wires
+// the BatchWriter's queue methods (QueuePeerAnnounce, QueueTorrentUpdate) that
+// were previously unreachable.
+type BatchWriterDB struct {
+	inner DatabaseInterface
+	bw    *BatchWriter
+}
+
+// NewBatchWriterDB creates a BatchWriterDB that routes hot-path writes through
+// bw and delegates all other calls to inner.
+func NewBatchWriterDB(inner DatabaseInterface, bw *BatchWriter) *BatchWriterDB {
+	return &BatchWriterDB{inner: inner, bw: bw}
+}
+
+func (b *BatchWriterDB) RecordPeer(userID UserID, torrentID TorrentID, active int,
+	uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64,
+	announceTime, announces uint32, ip, peerID, userAgent string) error {
+	b.bw.QueuePeerAnnounce(&PeerAnnounceData{
+		PeerID:     peerID,
+		IP:         ip,
+		Uploaded:   uploaded,
+		Downloaded: downloaded,
+		Remaining:  left,
+		Timestamp:  int64(announceTime),
+	})
+	return nil
+}
+
+func (b *BatchWriterDB) RecordPeerLight(userID UserID, torrentID TorrentID,
+	announceTime, announces uint32, peerID string) error {
+	return b.inner.RecordPeerLight(userID, torrentID, announceTime, announces, peerID)
+}
+
+func (b *BatchWriterDB) RecordUserStats(userID UserID, uploaded, downloaded int64) error {
+	return b.inner.RecordUserStats(userID, uploaded, downloaded)
+}
+
+func (b *BatchWriterDB) RecordTorrent(torrentID TorrentID, seeders, leechers uint32,
+	snatched int, balance int64) error {
+	return b.inner.RecordTorrent(torrentID, seeders, leechers, snatched, balance)
+}
+
+func (b *BatchWriterDB) RecordSnatch(userID UserID, torrentID TorrentID, t time.Time, ip string) error {
+	return b.inner.RecordSnatch(userID, torrentID, t, ip)
+}
+
+func (b *BatchWriterDB) RecordToken(userID UserID, torrentID TorrentID, downloaded int64) error {
+	return b.inner.RecordToken(userID, torrentID, downloaded)
+}
+
+func (b *BatchWriterDB) RecordTorrentHash(id TorrentID, infoHash string) error {
+	return b.inner.RecordTorrentHash(id, infoHash)
+}
+
+func (b *BatchWriterDB) RecordUserPasskey(id UserID, passkey string, canLeech, protectIP bool) error {
+	return b.inner.RecordUserPasskey(id, passkey, canLeech, protectIP)
+}
+
+func (b *BatchWriterDB) AddWhitelistEntry(prefix string) error {
+	return b.inner.AddWhitelistEntry(prefix)
+}
+
+func (b *BatchWriterDB) RemoveWhitelistEntry(prefix string) error {
+	return b.inner.RemoveWhitelistEntry(prefix)
+}
+
+func (b *BatchWriterDB) DeleteToken(userID UserID, torrentID TorrentID) error {
+	return b.inner.DeleteToken(userID, torrentID)
+}
+
+func (b *BatchWriterDB) LoadTorrents() ([]torrentLoadRow, error) {
+	return b.inner.LoadTorrents()
+}
+
+func (b *BatchWriterDB) LoadUsers() ([]userLoadRow, error) {
+	return b.inner.LoadUsers()
+}
+
+func (b *BatchWriterDB) LoadWhitelist() ([]string, error) {
+	return b.inner.LoadWhitelist()
+}
+
+func (b *BatchWriterDB) LoadTokens() (map[string][]UserID, error) {
+	return b.inner.LoadTokens()
+}
+
+func (b *BatchWriterDB) CheckpointWAL() error {
+	return b.inner.CheckpointWAL()
+}
+
+func (b *BatchWriterDB) CheckRotation() error {
+	return b.inner.CheckRotation()
+}
+
+func (b *BatchWriterDB) Close() error {
+	b.bw.Stop()
+	return b.inner.Close()
+}
+
+// QueueDepth returns the current pending-write queue depth, matching the
+// same method name on BufferedDB so callers can use a type switch.
+func (b *BatchWriterDB) QueueDepth() int {
+	return b.bw.Size()
+}
+
 // Stop gracefully stops the batch writer
 func (bw *BatchWriter) Stop() {
 	close(bw.stopChan)

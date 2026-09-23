@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sync"
@@ -39,7 +40,7 @@ func TestConcurrentAnnounce(t *testing.T) {
 					req.Uploaded = int64(i) * 1024
 					req.Downloaded = int64(i) * 512
 				}
-				f.worker.Announce(req, user, ip, "test-client")
+				f.worker.Announce(context.Background(), req, user, ip, "test-client")
 			}
 		}()
 	}
