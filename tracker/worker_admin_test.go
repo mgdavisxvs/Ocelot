@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -921,5 +922,234 @@ func TestHandleUpdate_RemoveToken_TorrentNotFound(t *testing.T) {
 	_, err := w.HandleUpdate(req)
 	if err == nil {
 		t.Error("expected error for non-existent torrent")
+	}
+}
+
+// ── addTorrent error paths ────────────────────────────────────────────────────
+
+func TestHandleUpdate_AddTorrent_InvalidID(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":    {"add_torrent"},
+		"id":        {"notanumber"},
+		"info_hash": {"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for non-numeric id")
+	}
+}
+
+func TestHandleUpdate_AddTorrent_Duplicate(t *testing.T) {
+	w := newAdminWorker()
+	ih := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	w.Torrents.Set(ih, NewTorrent(1))
+	req := newAdminRequest(url.Values{
+		"action":    {"add_torrent"},
+		"id":        {"2"},
+		"info_hash": {ih},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for duplicate torrent")
+	}
+}
+
+// ── updateTorrent error paths ─────────────────────────────────────────────────
+
+func TestHandleUpdate_UpdateTorrent_InvalidFreeType(t *testing.T) {
+	w := newAdminWorker()
+	ih := "cccccccccccccccccccccccccccccccccccccccc"
+	w.Torrents.Set(ih, NewTorrent(3))
+	req := newAdminRequest(url.Values{
+		"action":    {"update_torrent"},
+		"info_hash": {ih},
+		"free_type": {"99"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for out-of-range free_type")
+	}
+}
+
+// ── addUser error paths ───────────────────────────────────────────────────────
+
+func TestHandleUpdate_AddUser_InvalidID(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":  {"add_user"},
+		"id":      {"-1"},
+		"passkey": {"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for id <= 0")
+	}
+}
+
+func TestHandleUpdate_AddUser_ShortPasskey(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":  {"add_user"},
+		"id":      {"10"},
+		"passkey": {"tooshort"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for passkey shorter than 32 chars")
+	}
+}
+
+func TestHandleUpdate_AddUser_DuplicatePasskey(t *testing.T) {
+	w := newAdminWorker()
+	pk := "dddddddddddddddddddddddddddddddd"
+	w.Users.Set(pk, NewUser(1, true, false))
+	req := newAdminRequest(url.Values{
+		"action":  {"add_user"},
+		"id":      {"2"},
+		"passkey": {pk},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for duplicate passkey")
+	}
+}
+
+// ── changePasskey error paths ─────────────────────────────────────────────────
+
+func TestHandleUpdate_ChangePasskey_NewKeyExists(t *testing.T) {
+	w := newAdminWorker()
+	oldKey := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	newKey := "ffffffffffffffffffffffffffffffff"
+	w.Users.Set(oldKey, NewUser(1, true, false))
+	w.Users.Set(newKey, NewUser(2, true, false))
+	req := newAdminRequest(url.Values{
+		"action":      {"change_passkey"},
+		"old_passkey": {oldKey},
+		"new_passkey": {newKey},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when new passkey already exists")
+	}
+}
+
+// ── addWhitelist / removeWhitelist error paths ────────────────────────────────
+
+func TestHandleUpdate_AddWhitelist_MissingPrefix(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{"action": {"add_whitelist"}})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for missing prefix")
+	}
+}
+
+func TestHandleUpdate_RemoveWhitelist_MissingPrefix(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{"action": {"remove_whitelist"}})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for missing prefix")
+	}
+}
+
+// ── setPriorityClass error paths ──────────────────────────────────────────────
+
+func TestHandleUpdate_SetPriorityClass_InvalidID(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	req := newAdminRequest(url.Values{
+		"action":         {"set_priority_class"},
+		"id":             {"0"},
+		"priority_class": {"1"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for id=0")
+	}
+}
+
+func TestHandleUpdate_SetPriorityClass_NonNumericClass(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	req := newAdminRequest(url.Values{
+		"action":         {"set_priority_class"},
+		"id":             {"1"},
+		"priority_class": {"abc"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for non-numeric priority_class")
+	}
+}
+
+// ── setBudget error paths ─────────────────────────────────────────────────────
+
+func TestHandleUpdate_SetBudget_InvalidID(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	req := newAdminRequest(url.Values{
+		"action":      {"set_budget"},
+		"id":          {"0"},
+		"max_credits": {"100"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for id=0")
+	}
+}
+
+func TestHandleUpdate_SetBudget_InvalidMaxCredits(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	req := newAdminRequest(url.Values{
+		"action":      {"set_budget"},
+		"id":          {"1"},
+		"max_credits": {"-5"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for negative max_credits")
+	}
+}
+
+func TestHandleUpdate_SetBudget_InvalidTorrentID(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	req := newAdminRequest(url.Values{
+		"action":      {"set_budget"},
+		"id":          {"1"},
+		"max_credits": {"100"},
+		"torrent_id":  {"notanumber"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for non-numeric torrent_id")
+	}
+}
+
+// ── GetPeers limit path ───────────────────────────────────────────────────────
+
+func TestGetPeers_LimitTruncates(t *testing.T) {
+	w := newAdminWorker()
+	ih := "gggggggggggggggggggggggggggggggggggggggg"
+	tor := NewTorrent(99)
+	// Add 5 seeders
+	for i := 0; i < 5; i++ {
+		p := &Peer{
+			UserID: UserID(i + 1),
+			IP:     net.ParseIP("10.0.0.1"),
+			Port:   uint16(6000 + i),
+		}
+		tor.Seeders.Set(fmt.Sprintf("key%d", i), p)
+	}
+	w.Torrents.Set(ih, tor)
+
+	data, err := w.GetPeers(ih, 2)
+	if err != nil {
+		t.Fatalf("GetPeers: %v", err)
+	}
+	var peers []PeerInfo
+	if err := json.Unmarshal(data, &peers); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(peers) != 2 {
+		t.Errorf("expected 2 peers (limit), got %d", len(peers))
 	}
 }
