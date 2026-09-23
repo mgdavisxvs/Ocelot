@@ -178,3 +178,53 @@ func TestLoadAccountNotFound(t *testing.T) {
 		t.Fatal("expected nil for non-existent account")
 	}
 }
+
+func TestErrInsufficientBalance_Message(t *testing.T) {
+	err := &ErrInsufficientBalance{
+		UserID:    42,
+		Required:  FromCC(100),
+		Available: FromCC(10),
+	}
+	msg := err.Error()
+	if msg == "" {
+		t.Error("expected non-empty error message")
+	}
+	if err.Error() == err.Error()[:0] {
+		t.Error("Error() returned empty string")
+	}
+}
+
+func TestDefaultWorkloadEconomics(t *testing.T) {
+	we := DefaultWorkloadEconomics(77)
+	if we.AccountUserID != 77 {
+		t.Errorf("AccountUserID = %d, want 77", we.AccountUserID)
+	}
+	if we.PriorityClass != P2Standard {
+		t.Errorf("PriorityClass = %s, want P2Standard", we.PriorityClass)
+	}
+	if !we.Preemptible {
+		t.Error("default should be preemptible")
+	}
+}
+
+func TestWouldAcceptPrice_WithinCap(t *testing.T) {
+	we := DefaultWorkloadEconomics(1)
+	// Default cap is 200 CC/GB for downloads.
+	if !we.WouldAcceptPrice(ResourceDownload, FromCC(100)) {
+		t.Error("100 CC should be within 200 CC cap")
+	}
+	if we.WouldAcceptPrice(ResourceDownload, FromCC(201)) {
+		t.Error("201 CC should exceed 200 CC cap")
+	}
+}
+
+func TestWouldAcceptPrice_NoCap(t *testing.T) {
+	we := &WorkloadEconomics{
+		AccountUserID: 2,
+		PriorityClass: P2Standard,
+	}
+	// No cap set → always accept.
+	if !we.WouldAcceptPrice(ResourceDownload, FromCC(99999)) {
+		t.Error("no-cap workload should accept any price")
+	}
+}

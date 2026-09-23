@@ -123,6 +123,17 @@ func TestMulFracPanicOnZeroDenom(t *testing.T) {
 	FromCC(10).MulFrac(1, 0)
 }
 
+func TestAddSub(t *testing.T) {
+	a := FromCC(100)
+	b := FromCC(40)
+	if got := a.Add(b); got != FromCC(140) {
+		t.Errorf("Add = %s, want 140 CC", got)
+	}
+	if got := a.Sub(b); got != FromCC(60) {
+		t.Errorf("Sub = %s, want 60 CC", got)
+	}
+}
+
 func TestIsZero(t *testing.T) {
 	if !ComputeCredit(0).IsZero() {
 		t.Fatal("zero should be zero")
