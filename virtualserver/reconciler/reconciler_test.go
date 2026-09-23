@@ -304,8 +304,8 @@ func TestReconciler_FailedInstance_MaxRetries(t *testing.T) {
 	ms.mu.Lock()
 	finalState := ms.instances["inst-3"].State
 	ms.mu.Unlock()
-	if finalState != domain.InstanceFailed {
-		t.Errorf("expected still failed (max retries), got %q", finalState)
+	if finalState != domain.InstanceTerminated {
+		t.Errorf("expected terminated after max retries exhausted, got %q", finalState)
 	}
 }
 

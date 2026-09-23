@@ -118,6 +118,37 @@ type SnapshotResponse struct {
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
 }
 
+// RestoreVolumeRequest is the request body for POST /v1/volumes/{id}/restore.
+// It creates a new volume whose initial contents are copied from the given snapshot.
+type RestoreVolumeRequest struct {
+	SnapshotID string `json:"snapshotId"`
+	Namespace  string `json:"namespace"`
+	Name       string `json:"name"`
+}
+
+// OperationEventResponse is the API representation of a single operation event.
+type OperationEventResponse struct {
+	ID          int64                  `json:"id"`
+	OperationID string                 `json:"operationId"`
+	EventType   string                 `json:"eventType"`
+	Message     string                 `json:"message"`
+	Payload     map[string]interface{} `json:"payload,omitempty"`
+	CreatedAt   time.Time              `json:"createdAt"`
+}
+
+// OperationResponse is the API representation of an async operation.
+type OperationResponse struct {
+	ID          string                   `json:"id"`
+	InstanceID  string                   `json:"instanceId"`
+	Type        string                   `json:"type"`
+	State       string                   `json:"state"`
+	Adapter     string                   `json:"adapter"`
+	CreatedAt   time.Time                `json:"createdAt"`
+	UpdatedAt   time.Time                `json:"updatedAt"`
+	CompletedAt *time.Time               `json:"completedAt,omitempty"`
+	Events      []OperationEventResponse `json:"events,omitempty"`
+}
+
 // ErrorResponse is the standard error body.
 type ErrorResponse struct {
 	Error string `json:"error"`
@@ -181,6 +212,30 @@ func volumeToResponse(v domain.Volume) VolumeResponse {
 		CreatedAt:     v.CreatedAt,
 		UpdatedAt:     v.UpdatedAt,
 	}
+}
+
+func operationToResponse(op domain.Operation) OperationResponse {
+	r := OperationResponse{
+		ID:          op.ID,
+		InstanceID:  op.InstanceID,
+		Type:        string(op.Type),
+		State:       string(op.State),
+		Adapter:     op.Adapter,
+		CreatedAt:   op.CreatedAt,
+		UpdatedAt:   op.UpdatedAt,
+		CompletedAt: op.CompletedAt,
+	}
+	for _, ev := range op.Events {
+		r.Events = append(r.Events, OperationEventResponse{
+			ID:          ev.ID,
+			OperationID: ev.OperationID,
+			EventType:   ev.EventType,
+			Message:     ev.Message,
+			Payload:     ev.Payload,
+			CreatedAt:   ev.CreatedAt,
+		})
+	}
+	return r
 }
 
 func snapshotToResponse(s domain.VolumeSnapshot) SnapshotResponse {

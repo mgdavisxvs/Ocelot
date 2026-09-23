@@ -118,6 +118,29 @@ func (d *Driver) Snapshot(_ context.Context, handle storage.VolumeHandle, label 
 	return snapPath, nil
 }
 
+// RestoreFrom creates a new volume directory populated from the snapshot at snapshotRef.
+// snapshotRef is the absolute path returned by Snapshot. The target path must not exist.
+func (d *Driver) RestoreFrom(_ context.Context, snapshotRef, namespace, name string, _ domain.VolumeSpec) (storage.VolumeHandle, error) {
+	if snapshotRef == "" {
+		return nil, fmt.Errorf("local.RestoreFrom: empty snapshot ref")
+	}
+	if _, err := os.Stat(snapshotRef); err != nil {
+		return nil, fmt.Errorf("local.RestoreFrom: snapshot not found at %s: %w", snapshotRef, err)
+	}
+	targetPath := filepath.Join(d.baseDir, namespace, name)
+	if _, err := os.Stat(targetPath); err == nil {
+		return nil, fmt.Errorf("local.RestoreFrom: target path %s already exists", targetPath)
+	}
+	if err := copyDirTree(snapshotRef, targetPath); err != nil {
+		os.RemoveAll(targetPath) //nolint:errcheck
+		return nil, fmt.Errorf("local.RestoreFrom copy: %w", err)
+	}
+	return storage.VolumeHandle{
+		"path":   targetPath,
+		"nodeID": d.nodeID,
+	}, nil
+}
+
 func copyDirTree(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {

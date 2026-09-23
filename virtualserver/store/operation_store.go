@@ -89,6 +89,36 @@ func (s *VSStore) GetOperation(ctx context.Context, id string) (*domain.Operatio
 	return op, nil
 }
 
+// ListInstanceOperations returns all operations for an instance, oldest first.
+func (s *VSStore) ListInstanceOperations(ctx context.Context, instanceID string) ([]domain.Operation, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id,instance_id,op_type,state,adapter,created_at,updated_at,completed_at
+		FROM virtualserver_operations WHERE instance_id=? ORDER BY created_at ASC`, instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("list instance operations: %w", err)
+	}
+	defer rows.Close()
+	var ops []domain.Operation
+	for rows.Next() {
+		op, err := scanOperation(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan operation: %w", err)
+		}
+		ops = append(ops, *op)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range ops {
+		events, err := s.listOperationEvents(ctx, ops[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		ops[i].Events = events
+	}
+	return ops, nil
+}
+
 func (s *VSStore) listOperationEvents(ctx context.Context, operationID string) ([]domain.OperationEvent, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id,operation_id,event_type,message,payload,created_at

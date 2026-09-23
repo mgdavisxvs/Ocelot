@@ -49,6 +49,10 @@ type HandlerStore interface {
 	GetSnapshot(ctx context.Context, id string) (*domain.VolumeSnapshot, error)
 	ListSnapshots(ctx context.Context, volumeID string) ([]domain.VolumeSnapshot, error)
 	UpdateSnapshotState(ctx context.Context, id string, state domain.SnapshotState, driverRef string, sizeMiB int64) error
+
+	// Operations
+	GetOperation(ctx context.Context, id string) (*domain.Operation, error)
+	ListInstanceOperations(ctx context.Context, instanceID string) ([]domain.Operation, error)
 }
 
 // VolumeHandlerDrivers gives the volume handlers access to storage drivers
@@ -584,6 +588,126 @@ func (h *Handlers) ListSnapshots(w http.ResponseWriter, r *http.Request) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // decodeJSON decodes the request body into v. Returns false and writes an error if it fails.
+// GET /v1/operations/{id}
+func (h *Handlers) GetOperation(w http.ResponseWriter, r *http.Request) {
+	id := pathSegment(r.URL.Path, "operations")
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "missing operation id", "BAD_REQUEST")
+		return
+	}
+	op, err := h.store.GetOperation(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "operation not found", "NOT_FOUND")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, err.Error(), "INTERNAL")
+		return
+	}
+	writeJSON(w, http.StatusOK, operationToResponse(*op))
+}
+
+// GET /v1/instances/{id}/operations
+func (h *Handlers) ListInstanceOperations(w http.ResponseWriter, r *http.Request) {
+	id := pathSegmentBefore(r.URL.Path, "operations")
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "missing instance id", "BAD_REQUEST")
+		return
+	}
+	ops, err := h.store.ListInstanceOperations(r.Context(), id)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, err.Error(), "INTERNAL")
+		return
+	}
+	out := make([]OperationResponse, len(ops))
+	for i, op := range ops {
+		out[i] = operationToResponse(op)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"operations": out})
+}
+
+// POST /v1/volumes/{id}/restore
+// Creates a new volume whose initial contents are restored from a snapshot.
+func (h *Handlers) RestoreVolume(w http.ResponseWriter, r *http.Request) {
+	if h.drivers == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "no storage drivers configured", "NO_DRIVER")
+		return
+	}
+	sourceID := pathSegmentBefore(r.URL.Path, "restore")
+	if sourceID == "" {
+		writeError(w, r, http.StatusBadRequest, "missing volume id", "BAD_REQUEST")
+		return
+	}
+
+	var req RestoreVolumeRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.SnapshotID == "" || req.Namespace == "" || req.Name == "" {
+		writeError(w, r, http.StatusBadRequest, "snapshotId, namespace and name are required", "BAD_REQUEST")
+		return
+	}
+
+	snap, err := h.store.GetSnapshot(r.Context(), req.SnapshotID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "snapshot not found", "NOT_FOUND")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, err.Error(), "INTERNAL")
+		return
+	}
+	if snap.State != domain.SnapshotReady {
+		writeError(w, r, http.StatusConflict, "snapshot is not in ready state", "CONFLICT")
+		return
+	}
+
+	src, err := h.store.GetVolume(r.Context(), sourceID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "volume not found", "NOT_FOUND")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, err.Error(), "INTERNAL")
+		return
+	}
+
+	drv, ok := h.drivers.DriverForClass(src.Manifest.Spec.Class)
+	if !ok {
+		writeError(w, r, http.StatusUnprocessableEntity, "no driver for class "+src.Manifest.Spec.Class, "NO_DRIVER")
+		return
+	}
+
+	handle, err := drv.RestoreFrom(r.Context(), snap.DriverRef, req.Namespace, req.Name, src.Manifest.Spec)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "restore failed: "+err.Error(), "RESTORE_FAILED")
+		return
+	}
+
+	newManifest := src.Manifest
+	newManifest.Metadata.Namespace = req.Namespace
+	newManifest.Metadata.Name = req.Name
+
+	newVol := domain.Volume{
+		Manifest:     newManifest,
+		State:        domain.VolumeReady,
+		BoundNodeID:  handle["nodeID"],
+		DriverHandle: handle,
+	}
+	newID, err := h.store.CreateVolume(r.Context(), newVol)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, err.Error(), "INTERNAL")
+		return
+	}
+
+	created, err := h.store.GetVolume(r.Context(), newID)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, err.Error(), "INTERNAL")
+		return
+	}
+	writeJSON(w, http.StatusCreated, volumeToResponse(*created))
+}
+
 func decodeJSON(w http.ResponseWriter, r *http.Request, v interface{}) bool {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()

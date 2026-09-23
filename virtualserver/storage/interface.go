@@ -65,4 +65,10 @@ type StorageDriver interface {
 	// NOTE: crash-consistent only. Application-consistent snapshots require
 	// BackendAdapter.Quiesce/Resume (FUTURE tier).
 	Snapshot(ctx context.Context, handle VolumeHandle, label string) (string, error)
+
+	// RestoreFrom provisions a new volume whose initial contents are a copy of the
+	// snapshot identified by snapshotRef (the string returned by Snapshot).
+	// The new volume lives at namespace/name inside the driver's storage domain.
+	// Returns a VolumeHandle identical in shape to what Create returns.
+	RestoreFrom(ctx context.Context, snapshotRef, namespace, name string, spec domain.VolumeSpec) (VolumeHandle, error)
 }

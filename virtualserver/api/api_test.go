@@ -205,6 +205,14 @@ func (s *testStore) UpdateSnapshotState(_ context.Context, id string, state doma
 	return store.ErrNotFound
 }
 
+func (s *testStore) GetOperation(_ context.Context, id string) (*domain.Operation, error) {
+	return nil, store.ErrNotFound
+}
+
+func (s *testStore) ListInstanceOperations(_ context.Context, _ string) ([]domain.Operation, error) {
+	return nil, nil
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 const testAdminKey = "test-secret-key"

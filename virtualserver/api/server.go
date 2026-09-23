@@ -157,11 +157,28 @@ func buildMux(h *Handlers) *http.ServeMux {
 	})
 
 	mux.HandleFunc("/v1/instances/", func(w http.ResponseWriter, r *http.Request) {
+		if hasSuffix(r.URL.Path, "/operations") {
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			h.ListInstanceOperations(w, r)
+			return
+		}
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		h.GetInstance(w, r)
+	})
+
+	// Operations — singleton (direct lookup by ID)
+	mux.HandleFunc("/v1/operations/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h.GetOperation(w, r)
 	})
 
 	// Volumes — collection
@@ -195,6 +212,14 @@ func buildMux(h *Handlers) *http.ServeMux {
 				return
 			}
 			h.ListVolumeMounts(w, r)
+			return
+		}
+		if hasSuffix(r.URL.Path, "/restore") {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			h.RestoreVolume(w, r)
 			return
 		}
 		switch r.Method {

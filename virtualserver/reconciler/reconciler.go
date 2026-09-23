@@ -628,15 +628,19 @@ func (r *VSReconciler) handleFailedInstance(ctx context.Context, inst *domain.Se
 	}
 
 	policy := svc.Manifest.Spec.Restart
-	maxAttempts := policy.MaximumAttempts
-	if maxAttempts <= 0 {
-		maxAttempts = 3 // conservative default when unset
+
+	if policy.Policy == "never" || (policy.Policy != "on-failure" && policy.Policy != "always") {
+		// Permanently terminal: mark terminated so the instance doesn't stay stuck in failed.
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceTerminated) //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "terminated_no_restart", "instance", inst.ID, "", true, //nolint:errcheck
+			fmt.Sprintf("policy=%s", policy.Policy))
+		return
 	}
 
-	if policy.Policy != "on-failure" && policy.Policy != "always" {
-		return // no restart desired
-	}
-	if inst.RetryCount >= maxAttempts {
+	// maxAttempts=0 means unlimited; any positive value caps retries.
+	maxAttempts := policy.MaximumAttempts
+	if maxAttempts > 0 && inst.RetryCount >= maxAttempts {
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceTerminated) //nolint:errcheck
 		r.store.WriteAuditLog(ctx, "abandoned", "instance", inst.ID, "", false, //nolint:errcheck
 			fmt.Sprintf("retries=%d max=%d policy=%s", inst.RetryCount, maxAttempts, policy.Policy))
 		return
