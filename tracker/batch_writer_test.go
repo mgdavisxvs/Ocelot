@@ -372,3 +372,94 @@ func TestBatchWriter_Flush_MissingTorrentsTable_DoesNotPanic(t *testing.T) {
 		Data: map[string]interface{}{"info_hash": "h1", "seeders": 1, "leechers": 0},
 	}})
 }
+
+// ── flush success path ────────────────────────────────────────────────────────
+
+func newFlushBW(t *testing.T, db *sql.DB) *BatchWriter {
+	t.Helper()
+	bw := &BatchWriter{
+		db:        db,
+		buffer:    make(chan DBOperation, 10),
+		ticker:    time.NewTicker(time.Hour),
+		batchSize: 100,
+		stopChan:  make(chan struct{}),
+		logger:    GetDefaultLogger(),
+		metrics:   GetMetricsRecorder(),
+	}
+	t.Cleanup(func() { bw.ticker.Stop() })
+	return bw
+}
+
+func TestFlush_PeerAnnounce_CommitsRow(t *testing.T) {
+	db := newBatchDB(t)
+	bw := newFlushBW(t, db)
+
+	bw.flush([]DBOperation{{
+		Type: "peer_announce",
+		Data: &PeerAnnounceData{
+			InfoHash:   "infohash1",
+			PeerID:     "peerid001",
+			IP:         "10.0.0.1",
+			Port:       6881,
+			Uploaded:   1000,
+			Downloaded: 500,
+			Remaining:  0,
+			Timestamp:  1000000,
+		},
+	}})
+
+	var cnt int
+	db.QueryRow(`SELECT count(*) FROM peers WHERE info_hash='infohash1'`).Scan(&cnt)
+	if cnt != 1 {
+		t.Errorf("expected 1 peer row after flush, got %d", cnt)
+	}
+}
+
+func TestFlush_TorrentUpdate_CommitsRow(t *testing.T) {
+	db := newBatchDB(t)
+	// Pre-insert the torrent row so UPDATE can find it.
+	db.Exec(`INSERT INTO torrents(info_hash,seeders,leechers,last_action) VALUES('h2',0,0,0)`)
+	bw := newFlushBW(t, db)
+
+	bw.flush([]DBOperation{{
+		Type: "torrent_update",
+		Data: map[string]interface{}{
+			"info_hash": "h2",
+			"seeders":   int32(5),
+			"leechers":  int32(2),
+		},
+	}})
+
+	var seeders int
+	db.QueryRow(`SELECT seeders FROM torrents WHERE info_hash='h2'`).Scan(&seeders)
+	if seeders != 5 {
+		t.Errorf("expected seeders=5 after torrent_update flush, got %d", seeders)
+	}
+}
+
+func TestFlush_MixedBatch_CommitsBoth(t *testing.T) {
+	db := newBatchDB(t)
+	db.Exec(`INSERT INTO torrents(info_hash,seeders,leechers,last_action) VALUES('th',0,0,0)`)
+	bw := newFlushBW(t, db)
+
+	bw.flush([]DBOperation{
+		{
+			Type: "peer_announce",
+			Data: &PeerAnnounceData{InfoHash: "th", PeerID: "p1", IP: "1.1.1.1", Port: 6881, Timestamp: 1},
+		},
+		{
+			Type: "torrent_update",
+			Data: map[string]interface{}{"info_hash": "th", "seeders": int32(1), "leechers": int32(0)},
+		},
+	})
+
+	var pCnt, seeders int
+	db.QueryRow(`SELECT count(*) FROM peers WHERE info_hash='th'`).Scan(&pCnt)
+	db.QueryRow(`SELECT seeders FROM torrents WHERE info_hash='th'`).Scan(&seeders)
+	if pCnt != 1 {
+		t.Errorf("peer count = %d, want 1", pCnt)
+	}
+	if seeders != 1 {
+		t.Errorf("seeders = %d, want 1", seeders)
+	}
+}

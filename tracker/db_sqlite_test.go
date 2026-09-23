@@ -1103,3 +1103,4 @@ func TestOpenCurrentDB_RotationBranch(t *testing.T) {
 	}
 	_ = prevPath // consumed above
 }
+

@@ -490,3 +490,76 @@ func TestHandleRequest_UpdateRoute_KeepAlive(t *testing.T) {
 		t.Errorf("expected keep-alive header in response: %s", string(raw))
 	}
 }
+
+// ── getClientIP ───────────────────────────────────────────────────────────────
+
+// fakeConn implements net.Conn with a fixed remote address for testing.
+type fakeConn struct{ addr net.Addr }
+
+func (c *fakeConn) Read([]byte) (int, error)         { return 0, nil }
+func (c *fakeConn) Write([]byte) (int, error)        { return 0, nil }
+func (c *fakeConn) Close() error                     { return nil }
+func (c *fakeConn) LocalAddr() net.Addr              { return c.addr }
+func (c *fakeConn) RemoteAddr() net.Addr             { return c.addr }
+func (c *fakeConn) SetDeadline(time.Time) error      { return nil }
+func (c *fakeConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *fakeConn) SetWriteDeadline(time.Time) error { return nil }
+
+func TestGetClientIP_XFF_Single(t *testing.T) {
+	f := newTestFixture()
+	req, _ := http.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	conn := &fakeConn{&net.TCPAddr{IP: net.ParseIP("10.0.0.1"), Port: 1234}}
+	ip := f.server.getClientIP(conn, req)
+	if !ip.Equal(net.ParseIP("1.2.3.4")) {
+		t.Errorf("XFF single: got %v, want 1.2.3.4", ip)
+	}
+}
+
+func TestGetClientIP_XFF_Comma(t *testing.T) {
+	f := newTestFixture()
+	req, _ := http.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Forwarded-For", "5.6.7.8, 10.0.0.1")
+	conn := &fakeConn{&net.TCPAddr{IP: net.ParseIP("10.0.0.1"), Port: 1234}}
+	ip := f.server.getClientIP(conn, req)
+	if !ip.Equal(net.ParseIP("5.6.7.8")) {
+		t.Errorf("XFF comma: got %v, want 5.6.7.8", ip)
+	}
+}
+
+func TestGetClientIP_TCPAddr(t *testing.T) {
+	f := newTestFixture()
+	req, _ := http.NewRequest("GET", "/", nil)
+	conn := &fakeConn{&net.TCPAddr{IP: net.ParseIP("192.168.1.99"), Port: 4321}}
+	ip := f.server.getClientIP(conn, req)
+	if !ip.Equal(net.ParseIP("192.168.1.99")) {
+		t.Errorf("TCPAddr: got %v, want 192.168.1.99", ip)
+	}
+}
+
+func TestGetClientIP_NonTCPAddr_ReturnsNil(t *testing.T) {
+	f := newTestFixture()
+	req, _ := http.NewRequest("GET", "/", nil)
+	conn := &fakeConn{&net.UnixAddr{Name: "test.sock", Net: "unix"}}
+	ip := f.server.getClientIP(conn, req)
+	if ip != nil {
+		t.Errorf("non-TCP addr: got %v, want nil", ip)
+	}
+}
+
+// ── netpollerType ─────────────────────────────────────────────────────────────
+
+func TestNetpollerType_NonEmpty(t *testing.T) {
+	if s := netpollerType(); s == "" {
+		t.Error("netpollerType() returned empty string")
+	}
+}
+
+// ── Shutdown ──────────────────────────────────────────────────────────────────
+
+func TestShutdown_NoListener_ReturnsNil(t *testing.T) {
+	f := newTestFixture()
+	if err := f.server.Shutdown(); err != nil {
+		t.Errorf("Shutdown on idle server: %v", err)
+	}
+}
