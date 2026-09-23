@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"net"
 	"testing"
 
@@ -19,7 +20,7 @@ func TestAnnounce_ClientDetector_SuspiciousPeerID(t *testing.T) {
 	user, _ := f.worker.Users.Get(testPasskey)
 	req := newAnnounceReqFull(testInfoHash, repeatingPeerID, "started", 0, 0, 1024)
 
-	_, err := f.worker.Announce(req, user, net.ParseIP(testIP), "qBittorrent/4.4")
+	_, err := f.worker.Announce(context.Background(), req, user, net.ParseIP(testIP), "qBittorrent/4.4", "")
 	if err == nil {
 		t.Fatal("expected rejection for suspicious peer ID, got nil error")
 	}
@@ -36,7 +37,7 @@ func TestAnnounce_ClientDetector_MaliciousUserAgent(t *testing.T) {
 	user, _ := f.worker.Users.Get(testPasskey)
 	req := newAnnounceReqFull(testInfoHash, testPeerID, "started", 0, 0, 1024)
 
-	_, err := f.worker.Announce(req, user, net.ParseIP(testIP), "BitSpirit/3.7")
+	_, err := f.worker.Announce(context.Background(), req, user, net.ParseIP(testIP), "BitSpirit/3.7", "")
 	if err == nil {
 		t.Fatal("expected rejection for known malicious client, got nil error")
 	}
@@ -53,7 +54,7 @@ func TestAnnounce_ClientDetector_NilSkipsCheck(t *testing.T) {
 	user, _ := f.worker.Users.Get(testPasskey)
 	req := newAnnounceReqFull(testInfoHash, repeatingPeerID, "started", 0, 0, 1024)
 
-	_, err := f.worker.Announce(req, user, net.ParseIP(testIP), "BitSpirit/3.7")
+	_, err := f.worker.Announce(context.Background(), req, user, net.ParseIP(testIP), "BitSpirit/3.7", "")
 	if err != nil {
 		t.Errorf("expected no error with nil ClientDetector, got: %v", err)
 	}
@@ -73,7 +74,7 @@ func TestAnnounce_AnomalyDetector_RatioCheating(t *testing.T) {
 		0,               // left: seeder
 	)
 
-	_, err := f.worker.Announce(req, user, net.ParseIP(testIP), "qBittorrent/4.4")
+	_, err := f.worker.Announce(context.Background(), req, user, net.ParseIP(testIP), "qBittorrent/4.4", "")
 	if err == nil {
 		t.Fatal("expected rejection for ratio cheating, got nil error")
 	}
@@ -91,7 +92,7 @@ func TestAnnounce_AnomalyDetector_NilSkipsCheck(t *testing.T) {
 	req := newAnnounceReqFull(testInfoHash, testPeerID, "started",
 		200_000_000_000, 500_000, 0)
 
-	_, err := f.worker.Announce(req, user, net.ParseIP(testIP), "qBittorrent/4.4")
+	_, err := f.worker.Announce(context.Background(), req, user, net.ParseIP(testIP), "qBittorrent/4.4", "")
 	if err != nil {
 		t.Errorf("expected no error with nil AnomalyDetector, got: %v", err)
 	}
@@ -107,7 +108,7 @@ func TestAnnounce_PeerScorer_SeederDeliveredToLeecher(t *testing.T) {
 	seederUser, _ := f.worker.Users.Get(testPasskey2)
 	seederReq := newAnnounceReqFull(testInfoHash, testPeerID2, "started", 1024, 0, 0)
 	seederReq.IP = net.ParseIP("2.3.4.5")
-	_, err := f.worker.Announce(seederReq, seederUser, seederReq.IP, "qBittorrent/4.4")
+	_, err := f.worker.Announce(context.Background(), seederReq, seederUser, seederReq.IP, "qBittorrent/4.4", "")
 	if err != nil {
 		t.Fatalf("seeder announce failed: %v", err)
 	}
@@ -116,7 +117,7 @@ func TestAnnounce_PeerScorer_SeederDeliveredToLeecher(t *testing.T) {
 	leecherUser, _ := f.worker.Users.Get(testPasskey)
 	leecherReq := newAnnounceReqFull(testInfoHash, testPeerID, "started", 0, 0, 512*1024*1024)
 	leecherReq.IP = net.ParseIP(testIP)
-	resp, err := f.worker.Announce(leecherReq, leecherUser, leecherReq.IP, "qBittorrent/4.4")
+	resp, err := f.worker.Announce(context.Background(), leecherReq, leecherUser, leecherReq.IP, "qBittorrent/4.4", "")
 	if err != nil {
 		t.Fatalf("leecher announce failed: %v", err)
 	}

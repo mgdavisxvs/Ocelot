@@ -137,5 +137,5 @@ func (b *blockingMockDB) RecordPeer(userID UserID, torrentID TorrentID, active i
 	}
 	return b.MockDB.RecordPeer(userID, torrentID, active,
 		uploaded, downloaded, upSpeed, downSpeed, left, corrupt,
-		announceTime, announces, ip, peerID, userAgent)
+		announceTime, announces, ip, peerID, userAgent, invalidIP)
 }

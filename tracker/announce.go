@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mgdavisxvs/Ocelot/commons"
+	"github.com/mgdavisxvs/Ocelot/ml"
 )
 
 // AnnounceRequest represents a parsed BitTorrent announce request.
@@ -57,6 +58,25 @@ func (w *Worker) Announce(_ context.Context, req *AnnounceRequest, user *User, c
 	}
 	if !w.Whitelist.IsAllowed(req.PeerID) {
 		return nil, fmt.Errorf("your client is not on the whitelist")
+	}
+
+	// Client anomaly detection: peer_id and user-agent pattern checks.
+	if w.ClientDetector != nil {
+		if flagged, reason := w.ClientDetector.DetectClientAnomaly(string(req.PeerID), userAgent); flagged {
+			return nil, fmt.Errorf("client rejected: %s", reason)
+		}
+	}
+
+	// Behavior anomaly detection: ratio and speed checks on cumulative announce values.
+	if w.AnomalyDetector != nil {
+		b := &ml.PeerBehavior{
+			Uploaded:   req.Uploaded,
+			Downloaded: req.Downloaded,
+			FirstSeen:  now,
+		}
+		if flagged, reason := w.AnomalyDetector.DetectAnomaly(b); flagged {
+			return nil, fmt.Errorf("announce rejected: %s", reason)
+		}
 	}
 
 	torrent, ok := w.Torrents.Get(req.InfoHash)

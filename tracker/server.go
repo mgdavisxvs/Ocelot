@@ -552,9 +552,10 @@ type Worker struct {
 	Commons        CommonsInterface // optional: nil disables economic settlement
 
 	// ML / analytics subsystems (all optional; nil disables the feature)
-	Detector       BehaviorDetector
-	ClientDetector ClientDetector
-	SwarmPredictor SwarmHealthInterface
+	Detector        BehaviorDetector
+	AnomalyDetector *ml.AnomalyDetector
+	ClientDetector  ClientDetector
+	SwarmPredictor  SwarmHealthInterface
 	TorrentCache   *TorrentCache
 	UserCache      *UserCache
 	Redis          *RedisBackend

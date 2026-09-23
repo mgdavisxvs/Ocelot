@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"net"
 	"testing"
 )
@@ -24,7 +25,7 @@ func TestAdmissionAllowsWhenPolicyNil(t *testing.T) {
 
 	req := newCompactAnnounceReqFor(testInfoHash)
 	u, _ := f.worker.Users.Get(testPasskey)
-	_, err := f.worker.Announce(req, u, net.ParseIP(testIP), "", testPasskey)
+	_, err := f.worker.Announce(context.Background(), req, u, net.ParseIP(testIP), "", testPasskey)
 	if err != nil {
 		t.Errorf("nil Admission should admit all: got err %v", err)
 	}
@@ -38,7 +39,7 @@ func TestAdmissionBlocksUnlistedPasskey(t *testing.T) {
 
 	req := newCompactAnnounceReqFor(testInfoHash)
 	u, _ := f.worker.Users.Get(testPasskey)
-	_, err := f.worker.Announce(req, u, net.ParseIP(testIP), "", testPasskey)
+	_, err := f.worker.Announce(context.Background(), req, u, net.ParseIP(testIP), "", testPasskey)
 	if err == nil {
 		t.Error("non-admitted passkey should be rejected")
 	}
@@ -52,7 +53,7 @@ func TestAdmissionAllowsListedPasskey(t *testing.T) {
 
 	req := newCompactAnnounceReqFor(testInfoHash)
 	u, _ := f.worker.Users.Get(testPasskey)
-	_, err := f.worker.Announce(req, u, net.ParseIP(testIP), "", testPasskey)
+	_, err := f.worker.Announce(context.Background(), req, u, net.ParseIP(testIP), "", testPasskey)
 	if err != nil {
 		t.Errorf("admitted passkey should succeed: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestAdmissionOpenSwarmAdmitsAll(t *testing.T) {
 
 	req := newCompactAnnounceReqFor(testInfoHash)
 	u, _ := f.worker.Users.Get(testPasskey)
-	_, err := f.worker.Announce(req, u, net.ParseIP(testIP), "", testPasskey)
+	_, err := f.worker.Announce(context.Background(), req, u, net.ParseIP(testIP), "", testPasskey)
 	if err != nil {
 		t.Errorf("open swarm (no ACL) should admit any passkey: %v", err)
 	}
