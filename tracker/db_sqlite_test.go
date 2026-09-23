@@ -1,8 +1,11 @@
 package tracker
 
 import (
+	"database/sql"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 // newTestDB opens a temporary SQLite shard in t.TempDir().
@@ -444,5 +447,80 @@ func TestLoader_CreateSchemaIfNeeded_NoOp(t *testing.T) {
 	// Should succeed — schema already exists, this is a documented no-op
 	if err := loader.CreateSchemaIfNeeded(); err != nil {
 		t.Fatalf("CreateSchemaIfNeeded: %v", err)
+	}
+}
+
+// ── CheckRotation with empty currentPath ──────────────────────────────────────
+
+func TestCheckRotation_EmptyPath_NoOp(t *testing.T) {
+	sm := &SQLiteShardManager{
+		historicalDBs: make(map[string]*sql.DB),
+		// currentPath intentionally empty
+	}
+	if err := sm.CheckRotation(); err != nil {
+		t.Fatalf("CheckRotation with empty path: %v", err)
+	}
+}
+
+// ── GetUserStats with no rows ─────────────────────────────────────────────────
+
+func TestGetUserStats_ZeroWhenAbsent(t *testing.T) {
+	sm := newTestDB(t)
+	ul, dl, err := sm.GetUserStats(9999)
+	if err != nil {
+		t.Fatalf("GetUserStats: %v", err)
+	}
+	if ul != 0 || dl != 0 {
+		t.Errorf("expected (0,0) for absent user, got (%d,%d)", ul, dl)
+	}
+}
+
+// ── loadTokens integration via LoadAll ───────────────────────────────────────
+
+func TestLoader_LoadAll_LoadsTokens(t *testing.T) {
+	sm := newTestDB(t)
+
+	// Set up torrent and token data
+	sm.RecordTorrent(1, 0, 0, 0, 0)
+	sm.RecordTorrentHash(1, "tok_hash")
+	sm.RecordToken(UserID(42), TorrentID(1), 1024)
+
+	torrents := NewTorrentList()
+	users := NewUserList()
+	wl := NewWhitelist()
+
+	loader := NewLoader(sm, torrents, users, wl)
+	if err := loader.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+
+	tor, ok := torrents.Get("tok_hash")
+	if !ok {
+		t.Fatal("torrent not loaded")
+	}
+	if _, has := tor.TokenedUsers[42]; !has {
+		t.Error("expected user 42 to have a token on the torrent")
+	}
+}
+
+// ── loader.loadTokens skips orphan torrent ────────────────────────────────────
+
+func TestLoader_LoadAll_TokenOrphanSkipped(t *testing.T) {
+	sm := newTestDB(t)
+
+	// A torrent in tokens table but not in the torrent_hashes table
+	// (orphan). RecordToken uses torrent ID directly; set up tokens without
+	// a corresponding torrent_hashes entry.
+	sm.RecordTorrent(99, 0, 0, 0, 0) // no RecordTorrentHash → not loaded as torrent
+	sm.RecordToken(UserID(1), TorrentID(99), 512)
+
+	torrents := NewTorrentList()
+	loader := NewLoader(sm, torrents, NewUserList(), NewWhitelist())
+	if err := loader.LoadAll(); err != nil {
+		t.Fatalf("LoadAll with orphan token: %v", err)
+	}
+	// No torrent in list → LoadAll should not panic or error
+	if torrents.Size() != 0 {
+		t.Errorf("expected 0 torrents, got %d", torrents.Size())
 	}
 }
