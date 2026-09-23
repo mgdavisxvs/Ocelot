@@ -55,8 +55,9 @@ func (m *mockDB) RecordUserPasskey(_ UserID, _ string, _, _ bool) error {
 	m.userPasskeyRecs++
 	return nil
 }
-func (m *mockDB) DeleteTorrentHash(_ string) error    { return nil }
-func (m *mockDB) DeleteUserPasskey(_ string) error    { return nil }
+func (m *mockDB) DeleteTorrentHash(_ string) error            { return nil }
+func (m *mockDB) DeleteUserPasskey(_ string) error            { return nil }
+func (m *mockDB) DeleteToken(_ UserID, _ TorrentID) error     { return nil }
 func (m *mockDB) AddWhitelistEntry(_ string) error    { m.wlAdds++; return nil }
 func (m *mockDB) RemoveWhitelistEntry(_ string) error { m.wlRemoves++; return nil }
 func (m *mockDB) LoadTorrents() ([]torrentLoadRow, error) {

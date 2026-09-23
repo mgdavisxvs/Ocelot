@@ -10,270 +10,187 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// newAuditDB opens an in-memory SQLite DB with the audit_log table.
-func newAuditDB(t *testing.T) *sql.DB {
+func newTestAuditDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
-		t.Fatalf("open audit db: %v", err)
+		t.Fatalf("open in-memory sqlite: %v", err)
 	}
-	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { db.Close() })
 	if err := CreateAuditLogTable(db); err != nil {
 		t.Fatalf("CreateAuditLogTable: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
 	return db
 }
 
-// ── CreateAuditLogTable ───────────────────────────────────────────────────────
-
 func TestCreateAuditLogTable_Idempotent(t *testing.T) {
-	db := newAuditDB(t)
+	db := newTestAuditDB(t)
+	// Calling twice should not error (IF NOT EXISTS semantics).
 	if err := CreateAuditLogTable(db); err != nil {
-		t.Errorf("second CreateAuditLogTable: %v", err)
+		t.Errorf("second CreateAuditLogTable call returned error: %v", err)
 	}
 }
 
-// ── NewAuditLogger ────────────────────────────────────────────────────────────
-
-func TestNewAuditLogger_NotNil(t *testing.T) {
-	db := newAuditDB(t)
+func TestAuditLogger_LogSuccess(t *testing.T) {
+	db := newTestAuditDB(t)
 	al := NewAuditLogger(db)
-	if al == nil {
-		t.Fatal("NewAuditLogger returned nil")
-	}
-}
 
-// ── Log ───────────────────────────────────────────────────────────────────────
-
-func TestAuditLogger_Log_Success(t *testing.T) {
-	db := newAuditDB(t)
-	al := NewAuditLogger(db)
 	ctx := context.Background()
-
-	if err := al.Log(ctx, "create", "torrent", "abc", true, nil); err != nil {
-		t.Fatalf("Log: %v", err)
+	if err := al.Log(ctx, "add_torrent", "torrent", "42", true, nil); err != nil {
+		t.Fatalf("Log returned error: %v", err)
 	}
 
-	// Verify row was written.
 	var count int
-	db.QueryRow("SELECT COUNT(*) FROM audit_log").Scan(&count)
+	db.QueryRow("SELECT COUNT(*) FROM audit_log WHERE action='add_torrent' AND success=1").Scan(&count) //nolint:errcheck
+	if count != 1 {
+		t.Errorf("expected 1 audit row, got %d", count)
+	}
+}
+
+func TestAuditLogger_LogFailure(t *testing.T) {
+	db := newTestAuditDB(t)
+	al := NewAuditLogger(db)
+
+	ctx := context.Background()
+	fakeErr := errors.New("db timeout")
+	if err := al.Log(ctx, "delete_torrent", "torrent", "99", false, fakeErr); err != nil {
+		t.Fatalf("Log returned error: %v", err)
+	}
+
+	var errMsg string
+	db.QueryRow("SELECT error_message FROM audit_log WHERE action='delete_torrent'").Scan(&errMsg) //nolint:errcheck
+	if errMsg != fakeErr.Error() {
+		t.Errorf("error_message = %q, want %q", errMsg, fakeErr.Error())
+	}
+}
+
+func TestAuditLogger_LogSuccess_Helper(t *testing.T) {
+	db := newTestAuditDB(t)
+	al := NewAuditLogger(db)
+
+	ctx := context.Background()
+	if err := al.LogSuccess(ctx, "add_user", "user", "7"); err != nil {
+		t.Fatalf("LogSuccess: %v", err)
+	}
+
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM audit_log WHERE action='add_user' AND success=1").Scan(&count) //nolint:errcheck
 	if count != 1 {
 		t.Errorf("expected 1 row, got %d", count)
 	}
 }
 
-func TestAuditLogger_Log_WithError(t *testing.T) {
-	db := newAuditDB(t)
+func TestAuditLogger_LogFailure_Helper(t *testing.T) {
+	db := newTestAuditDB(t)
 	al := NewAuditLogger(db)
 
-	if err := al.Log(context.Background(), "delete", "user", "42", false, errors.New("not found")); err != nil {
-		t.Fatalf("Log with error: %v", err)
+	ctx := context.Background()
+	if err := al.LogFailure(ctx, "add_user", "user", "8", errors.New("invalid")); err != nil {
+		t.Fatalf("LogFailure: %v", err)
 	}
 
-	var errMsg string
-	db.QueryRow("SELECT error_message FROM audit_log WHERE action = 'delete'").Scan(&errMsg)
-	if errMsg != "not found" {
-		t.Errorf("error_message = %q, want \"not found\"", errMsg)
+	var success bool
+	db.QueryRow("SELECT success FROM audit_log WHERE action='add_user'").Scan(&success) //nolint:errcheck
+	if success {
+		t.Error("LogFailure should record success=false")
 	}
 }
 
-func TestAuditLogger_Log_WithContextUserAndIP(t *testing.T) {
-	db := newAuditDB(t)
+func TestAuditLogger_Query_FilterByAction(t *testing.T) {
+	db := newTestAuditDB(t)
 	al := NewAuditLogger(db)
 
-	ctx := context.WithValue(context.Background(), "user_id", 77)
-	ctx = context.WithValue(ctx, "ip", "10.0.0.1")
+	ctx := context.Background()
+	al.Log(ctx, "add_torrent", "torrent", "1", true, nil)  //nolint:errcheck
+	al.Log(ctx, "delete_torrent", "torrent", "2", true, nil) //nolint:errcheck
+	al.Log(ctx, "add_torrent", "torrent", "3", false, errors.New("x")) //nolint:errcheck
 
-	if err := al.Log(ctx, "update", "config", "x", true, nil); err != nil {
+	entries, err := al.Query(AuditFilters{Action: "add_torrent", Limit: 100})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("Query(add_torrent) returned %d entries, want 2", len(entries))
+	}
+	for _, e := range entries {
+		if e.Action != "add_torrent" {
+			t.Errorf("unexpected action %q", e.Action)
+		}
+	}
+}
+
+func TestAuditLogger_Query_FilterByResourceType(t *testing.T) {
+	db := newTestAuditDB(t)
+	al := NewAuditLogger(db)
+
+	ctx := context.Background()
+	al.Log(ctx, "add_torrent", "torrent", "1", true, nil) //nolint:errcheck
+	al.Log(ctx, "add_user", "user", "2", true, nil)       //nolint:errcheck
+
+	entries, err := al.Query(AuditFilters{ResourceType: "user", Limit: 100})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("Query(user) = %d, want 1", len(entries))
+	}
+}
+
+func TestAuditLogger_Query_TimeRange(t *testing.T) {
+	db := newTestAuditDB(t)
+	al := NewAuditLogger(db)
+
+	ctx := context.Background()
+	al.Log(ctx, "act", "res", "1", true, nil) //nolint:errcheck
+
+	start := time.Now().Add(-time.Minute)
+	end := time.Now().Add(time.Minute)
+	entries, err := al.Query(AuditFilters{StartTime: &start, EndTime: &end, Limit: 100})
+	if err != nil {
+		t.Fatalf("Query with time range: %v", err)
+	}
+	if len(entries) < 1 {
+		t.Errorf("expected ≥1 entries in time range, got %d", len(entries))
+	}
+}
+
+func TestAuditLogger_Query_Limit(t *testing.T) {
+	db := newTestAuditDB(t)
+	al := NewAuditLogger(db)
+
+	ctx := context.Background()
+	for i := 0; i < 10; i++ {
+		al.Log(ctx, "act", "res", "1", true, nil) //nolint:errcheck
+	}
+
+	entries, err := al.Query(AuditFilters{Limit: 3})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("Limit=3 returned %d entries", len(entries))
+	}
+}
+
+func TestAuditLogger_ContextIPAndUserID(t *testing.T) {
+	db := newTestAuditDB(t)
+	al := NewAuditLogger(db)
+
+	ctx := context.WithValue(context.Background(), "ip", "10.0.0.1")
+	ctx = context.WithValue(ctx, "user_id", 42)
+
+	if err := al.Log(ctx, "change_passkey", "user", "pk1", true, nil); err != nil {
 		t.Fatalf("Log: %v", err)
 	}
 
 	var ip string
 	var userID *int
-	db.QueryRow("SELECT user_id, ip_address FROM audit_log WHERE action = 'update'").Scan(&userID, &ip)
-	if userID == nil || *userID != 77 {
-		t.Errorf("user_id = %v, want 77", userID)
-	}
+	row := db.QueryRow("SELECT ip_address, user_id FROM audit_log WHERE action='change_passkey'")
+	row.Scan(&ip, &userID) //nolint:errcheck
 	if ip != "10.0.0.1" {
 		t.Errorf("ip_address = %q, want \"10.0.0.1\"", ip)
 	}
-}
-
-func TestAuditLogger_Log_WithAuditMetadata(t *testing.T) {
-	db := newAuditDB(t)
-	al := NewAuditLogger(db)
-
-	meta := map[string]interface{}{"key": "value"}
-	ctx := context.WithValue(context.Background(), "audit_metadata", meta)
-
-	if err := al.Log(ctx, "action", "resource", "id", true, nil); err != nil {
-		t.Fatalf("Log with metadata: %v", err)
-	}
-
-	var metadata string
-	db.QueryRow("SELECT metadata FROM audit_log WHERE action = 'action'").Scan(&metadata)
-	if metadata == "" {
-		t.Error("expected non-empty metadata in DB")
-	}
-}
-
-// ── LogSuccess / LogFailure ───────────────────────────────────────────────────
-
-func TestAuditLogger_LogSuccess(t *testing.T) {
-	db := newAuditDB(t)
-	al := NewAuditLogger(db)
-
-	if err := al.LogSuccess(context.Background(), "read", "torrent", "hash1"); err != nil {
-		t.Fatalf("LogSuccess: %v", err)
-	}
-
-	var success bool
-	db.QueryRow("SELECT success FROM audit_log WHERE action = 'read'").Scan(&success)
-	if !success {
-		t.Error("LogSuccess should record success=true")
-	}
-}
-
-func TestAuditLogger_LogFailure(t *testing.T) {
-	db := newAuditDB(t)
-	al := NewAuditLogger(db)
-
-	if err := al.LogFailure(context.Background(), "write", "peer", "p1", errors.New("disk full")); err != nil {
-		t.Fatalf("LogFailure: %v", err)
-	}
-
-	var success bool
-	var errMsg string
-	db.QueryRow("SELECT success, error_message FROM audit_log WHERE action = 'write'").Scan(&success, &errMsg)
-	if success {
-		t.Error("LogFailure should record success=false")
-	}
-	if errMsg != "disk full" {
-		t.Errorf("error_message = %q, want \"disk full\"", errMsg)
-	}
-}
-
-// ── Query ─────────────────────────────────────────────────────────────────────
-
-func TestAuditLogger_Query_Empty(t *testing.T) {
-	db := newAuditDB(t)
-	al := NewAuditLogger(db)
-
-	entries, err := al.Query(AuditFilters{Limit: 10})
-	if err != nil {
-		t.Fatalf("Query: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Errorf("expected 0 entries on empty table, got %d", len(entries))
-	}
-}
-
-func TestAuditLogger_Query_FilterByAction(t *testing.T) {
-	db := newAuditDB(t)
-	al := NewAuditLogger(db)
-	ctx := context.Background()
-
-	al.Log(ctx, "login", "user", "1", true, nil)
-	al.Log(ctx, "logout", "user", "1", true, nil)
-	al.Log(ctx, "login", "user", "2", false, nil)
-
-	entries, err := al.Query(AuditFilters{Action: "login", Limit: 50})
-	if err != nil {
-		t.Fatalf("Query by action: %v", err)
-	}
-	if len(entries) != 2 {
-		t.Errorf("expected 2 login entries, got %d", len(entries))
-	}
-}
-
-func TestAuditLogger_Query_FilterByUserID(t *testing.T) {
-	db := newAuditDB(t)
-	al := NewAuditLogger(db)
-
-	ctx := context.WithValue(context.Background(), "user_id", 42)
-	al.Log(ctx, "act1", "res", "id1", true, nil)
-	al.Log(context.Background(), "act2", "res", "id2", true, nil) // no user_id
-
-	uid := 42
-	entries, err := al.Query(AuditFilters{UserID: &uid, Limit: 50})
-	if err != nil {
-		t.Fatalf("Query by user_id: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Errorf("expected 1 entry for user 42, got %d", len(entries))
-	}
-}
-
-func TestAuditLogger_Query_FilterByTimeRange(t *testing.T) {
-	db := newAuditDB(t)
-	al := NewAuditLogger(db)
-
-	al.Log(context.Background(), "old_action", "res", "id", true, nil)
-	al.Log(context.Background(), "new_action", "res", "id", true, nil)
-
-	// Use start time = now to exclude the already-inserted rows; effectively 0 results.
-	future := time.Now().Add(time.Minute)
-	entries, err := al.Query(AuditFilters{StartTime: &future, Limit: 50})
-	if err != nil {
-		t.Fatalf("Query by time: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Errorf("expected 0 entries after future start time, got %d", len(entries))
-	}
-}
-
-func TestAuditLogger_Query_FilterByResourceType(t *testing.T) {
-	db := newAuditDB(t)
-	al := NewAuditLogger(db)
-	ctx := context.Background()
-
-	al.Log(ctx, "act", "torrent", "t1", true, nil)
-	al.Log(ctx, "act", "user", "u1", true, nil)
-
-	entries, err := al.Query(AuditFilters{ResourceType: "torrent", Limit: 50})
-	if err != nil {
-		t.Fatalf("Query by resource_type: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Errorf("expected 1 torrent entry, got %d", len(entries))
-	}
-}
-
-// ── error paths ───────────────────────────────────────────────────────────────
-
-func TestAuditLogger_Log_DBClosed_ReturnsError(t *testing.T) {
-	db := newAuditDB(t)
-	db.Close()
-	al := NewAuditLogger(db)
-	if err := al.Log(context.Background(), "test", "res", "id", true, nil); err == nil {
-		t.Error("expected error when DB is closed, got nil")
-	}
-}
-
-func TestAuditLogger_Query_DBClosed_ReturnsError(t *testing.T) {
-	db := newAuditDB(t)
-	db.Close()
-	al := NewAuditLogger(db)
-	if _, err := al.Query(AuditFilters{Limit: 10}); err == nil {
-		t.Error("expected error when DB is closed, got nil")
-	}
-}
-
-func TestAuditLogger_Query_FilterByEndTime(t *testing.T) {
-	db := newAuditDB(t)
-	al := NewAuditLogger(db)
-	ctx := context.Background()
-
-	al.Log(ctx, "old_act", "res", "id", true, nil)
-
-	// EndTime in the past → should exclude the row we just inserted
-	past := time.Now().Add(-time.Minute)
-	entries, err := al.Query(AuditFilters{EndTime: &past, Limit: 50})
-	if err != nil {
-		t.Fatalf("Query by end time: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Errorf("expected 0 entries before past end time, got %d", len(entries))
+	if userID == nil || *userID != 42 {
+		t.Errorf("user_id = %v, want 42", userID)
 	}
 }

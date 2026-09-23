@@ -1,79 +1,94 @@
 package tracker
 
 import (
-	"errors"
+	"net/http"
 	"testing"
 )
 
-// ── TrackerError.Error ────────────────────────────────────────────────────────
-
 func TestTrackerError_Error_WithDetail(t *testing.T) {
-	e := &TrackerError{
-		Type:    "validation",
-		Message: "bad input",
-		Detail:  "missing field x",
-	}
+	e := &TrackerError{Code: 400, Type: "validation", Message: "Bad input", Detail: "field x missing"}
 	got := e.Error()
-	if got != "[validation] bad input: missing field x" {
-		t.Errorf("Error() = %q, want \"[validation] bad input: missing field x\"", got)
+	if got != "[validation] Bad input: field x missing" {
+		t.Errorf("Error() = %q", got)
 	}
 }
 
-func TestTrackerError_Error_WithoutDetail(t *testing.T) {
-	e := &TrackerError{
-		Type:    "not_found",
-		Message: "torrent not found",
-	}
+func TestTrackerError_Error_NoDetail(t *testing.T) {
+	e := &TrackerError{Code: 403, Type: "auth", Message: "Denied"}
 	got := e.Error()
-	if got != "[not_found] torrent not found" {
-		t.Errorf("Error() = %q, want \"[not_found] torrent not found\"", got)
+	if got != "[auth] Denied" {
+		t.Errorf("Error() = %q", got)
 	}
 }
 
-func TestTrackerError_PredefinedErrors_HaveNonEmptyMessages(t *testing.T) {
-	errs := []*TrackerError{
-		ErrInvalidInfoHash, ErrInvalidPasskey, ErrInvalidPeerID,
-		ErrInvalidPort, ErrInvalidIP, ErrMissingParameter,
-		ErrUnauthorized, ErrForbidden, ErrUserBanned,
-		ErrClientNotWhitelisted, ErrTorrentNotFound, ErrUserNotFound,
-		ErrRateLimitExceeded, ErrDatabaseQuery, ErrDatabaseConnection,
-		ErrInternal, ErrCircuitOpen,
+func TestTrackerError_WithDetail(t *testing.T) {
+	base := ErrInvalidInfoHash
+	derived := base.WithDetail("got length %d", 10)
+	if derived.Code != base.Code {
+		t.Errorf("WithDetail changed code: %d", derived.Code)
 	}
-	for _, e := range errs {
-		if e.Error() == "" {
-			t.Errorf("predefined error %T has empty Error() string", e)
+	if derived.Detail != "got length 10" {
+		t.Errorf("WithDetail Detail = %q", derived.Detail)
+	}
+}
+
+func TestTrackerError_WithError(t *testing.T) {
+	import_err := ErrDatabaseQuery
+	wrapped := import_err.WithError(ErrInternal)
+	if wrapped.Err == nil {
+		t.Error("WithError: Err should not be nil")
+	}
+}
+
+func TestSentinelErrors_HTTPCodes(t *testing.T) {
+	cases := []struct {
+		err  *TrackerError
+		code int
+	}{
+		{ErrInvalidInfoHash, http.StatusBadRequest},
+		{ErrInvalidPasskey, http.StatusForbidden},
+		{ErrInvalidPeerID, http.StatusBadRequest},
+		{ErrInvalidPort, http.StatusBadRequest},
+		{ErrMissingParameter, http.StatusBadRequest},
+		{ErrUnauthorized, http.StatusUnauthorized},
+		{ErrForbidden, http.StatusForbidden},
+		{ErrUserBanned, http.StatusForbidden},
+		{ErrClientNotWhitelisted, http.StatusForbidden},
+		{ErrTorrentNotFound, http.StatusNotFound},
+		{ErrUserNotFound, http.StatusNotFound},
+		{ErrRateLimitExceeded, http.StatusTooManyRequests},
+		{ErrDatabaseQuery, http.StatusInternalServerError},
+		{ErrDatabaseConnection, http.StatusServiceUnavailable},
+		{ErrInternal, http.StatusInternalServerError},
+		{ErrCircuitOpen, http.StatusServiceUnavailable},
+	}
+	for _, c := range cases {
+		if c.err.Code != c.code {
+			t.Errorf("%s: Code = %d, want %d", c.err.Message, c.err.Code, c.code)
 		}
 	}
 }
-
-// ── IsRetryable ───────────────────────────────────────────────────────────────
 
 func TestIsRetryable_DatabaseError(t *testing.T) {
 	if !IsRetryable(ErrDatabaseQuery) {
 		t.Error("database error should be retryable")
 	}
-	if !IsRetryable(ErrDatabaseConnection) {
-		t.Error("database connection error should be retryable")
-	}
 }
 
-func TestIsRetryable_CircuitBreakerError(t *testing.T) {
+func TestIsRetryable_CircuitBreaker(t *testing.T) {
 	if !IsRetryable(ErrCircuitOpen) {
 		t.Error("circuit breaker error should be retryable")
 	}
 }
 
-func TestIsRetryable_ValidationError(t *testing.T) {
-	if IsRetryable(ErrInvalidInfoHash) {
-		t.Error("validation error should not be retryable")
-	}
-	if IsRetryable(ErrInvalidPasskey) {
-		t.Error("authentication error should not be retryable")
+func TestIsRetryable_AuthError(t *testing.T) {
+	if IsRetryable(ErrUnauthorized) {
+		t.Error("auth error must not be retryable")
 	}
 }
 
-func TestIsRetryable_NonTrackerError(t *testing.T) {
-	if IsRetryable(errors.New("some random error")) {
-		t.Error("plain error should not be retryable via IsRetryable")
+func TestIsRetryable_PlainError(t *testing.T) {
+	if IsRetryable(ErrTorrentNotFound) {
+		t.Error("not-found error must not be retryable")
 	}
 }

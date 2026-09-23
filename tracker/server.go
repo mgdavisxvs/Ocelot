@@ -551,8 +551,16 @@ type Worker struct {
 	TorrentCache   *TorrentCache
 	UserCache      *UserCache
 	Redis          *RedisBackend
+	Bus            *EventBus // internal event pub/sub; nil disables publishing
 
 	reaper *Reaper // started/stopped by Start/Stop
+}
+
+// publish emits e to the internal EventBus if one is wired.
+func (w *Worker) publish(e BusEvent) {
+	if w.Bus != nil {
+		w.Bus.Publish(e)
+	}
 }
 
 // Start launches background subsystems (reaper). It is idempotent.

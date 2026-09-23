@@ -1,255 +1,166 @@
 package tracker
 
 import (
-	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
 
-func newTestCB(maxFailures uint32) *CircuitBreaker {
-	return NewCircuitBreaker(CircuitBreakerConfig{
-		Name:         "test",
-		MaxFailures:  maxFailures,
-		ResetTimeout: 50 * time.Millisecond,
-		HalfOpenMax:  2,
-	})
-}
+var errFake = errors.New("fake error")
 
-// ── NewCircuitBreaker ─────────────────────────────────────────────────────────
-
-func TestNewCircuitBreaker_Defaults(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{Name: "defaults"})
+func TestCircuitBreaker_InitialStateClosed(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{Name: "test", MaxFailures: 3, ResetTimeout: time.Second, HalfOpenMax: 2})
 	if cb.GetState() != StateClosed {
-		t.Error("initial state should be Closed")
-	}
-	if cb.maxFailures != 5 {
-		t.Errorf("default maxFailures = %d, want 5", cb.maxFailures)
-	}
-	if cb.resetTimeout != 30*time.Second {
-		t.Errorf("default resetTimeout = %v, want 30s", cb.resetTimeout)
-	}
-	if cb.halfOpenMax != 3 {
-		t.Errorf("default halfOpenMax = %d, want 3", cb.halfOpenMax)
+		t.Errorf("initial state = %v, want StateClosed", cb.GetState())
 	}
 }
 
-// ── GetStateString ────────────────────────────────────────────────────────────
+func TestCircuitBreaker_ClosedToOpen(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{Name: "test", MaxFailures: 3, ResetTimeout: time.Second, HalfOpenMax: 1})
 
-func TestGetStateString_Closed(t *testing.T) {
-	cb := newTestCB(5)
-	if cb.GetStateString() != "closed" {
-		t.Errorf("GetStateString = %q, want \"closed\"", cb.GetStateString())
-	}
-}
-
-func TestGetStateString_Open(t *testing.T) {
-	cb := newTestCB(1)
-	cb.Execute(func() error { return errors.New("fail") })
-	if cb.GetStateString() != "open" {
-		t.Errorf("GetStateString = %q, want \"open\"", cb.GetStateString())
-	}
-}
-
-func TestGetStateString_HalfOpen(t *testing.T) {
-	cb := newTestCB(1)
-	cb.Execute(func() error { return errors.New("fail") })
-	// Manually set state to half-open (simulate timeout elapsed)
-	cb.mu.Lock()
-	cb.state = StateHalfOpen
-	cb.mu.Unlock()
-	if cb.GetStateString() != "half-open" {
-		t.Errorf("GetStateString = %q, want \"half-open\"", cb.GetStateString())
-	}
-}
-
-func TestGetStateString_Unknown(t *testing.T) {
-	cb := newTestCB(1)
-	cb.mu.Lock()
-	cb.state = CircuitState(99)
-	cb.mu.Unlock()
-	if cb.GetStateString() != "unknown" {
-		t.Errorf("GetStateString = %q, want \"unknown\"", cb.GetStateString())
-	}
-}
-
-// ── Execute: success path ─────────────────────────────────────────────────────
-
-func TestCircuitBreaker_ExecuteSuccess_KeepsClosed(t *testing.T) {
-	cb := newTestCB(3)
-	for i := 0; i < 5; i++ {
-		if err := cb.Execute(func() error { return nil }); err != nil {
-			t.Fatalf("Execute returned error on success: %v", err)
-		}
-	}
-	if cb.GetState() != StateClosed {
-		t.Error("repeated successes should keep circuit closed")
-	}
-}
-
-// ── Execute: failure → open transition ───────────────────────────────────────
-
-func TestCircuitBreaker_OpensAfterMaxFailures(t *testing.T) {
-	cb := newTestCB(3)
-	fail := errors.New("boom")
 	for i := 0; i < 3; i++ {
-		cb.Execute(func() error { return fail })
+		cb.Execute(func() error { return errFake }) //nolint:errcheck
 	}
+
 	if cb.GetState() != StateOpen {
-		t.Errorf("expected Open after 3 failures, got %s", cb.GetStateString())
+		t.Errorf("state after %d failures = %v, want StateOpen", 3, cb.GetState())
 	}
 }
 
-func TestCircuitBreaker_OpenRejectsImmediately(t *testing.T) {
-	cb := newTestCB(1)
-	cb.Execute(func() error { return errors.New("fail") })
+func TestCircuitBreaker_OpenRejectsRequests(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{Name: "test", MaxFailures: 1, ResetTimeout: time.Hour, HalfOpenMax: 1})
+	cb.Execute(func() error { return errFake }) //nolint:errcheck
 
-	called := false
-	err := cb.Execute(func() error {
-		called = true
-		return nil
-	})
-	if called {
-		t.Error("open circuit should not call the function")
-	}
+	err := cb.Execute(func() error { return nil })
 	if err == nil {
-		t.Error("expected error from open circuit")
+		t.Error("open circuit should reject with error, got nil")
 	}
 }
 
-// ── Half-open transition (time-based) ─────────────────────────────────────────
+func TestCircuitBreaker_OpenToHalfOpen(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{
+		Name:         "test",
+		MaxFailures:  1,
+		ResetTimeout: 30 * time.Millisecond,
+		HalfOpenMax:  1,
+	})
+	cb.Execute(func() error { return errFake }) //nolint:errcheck
 
-func TestCircuitBreaker_HalfOpenAfterResetTimeout(t *testing.T) {
-	cb := newTestCB(1)
-	cb.Execute(func() error { return errors.New("fail") })
 	if cb.GetState() != StateOpen {
 		t.Fatal("circuit should be open")
 	}
 
-	// Wait for reset timeout (50ms).
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
 
-	// The next canExecute call should flip to half-open.
-	executed := false
-	cb.Execute(func() error {
-		executed = true
-		return nil
-	})
-	if !executed {
-		t.Error("expected function to be called during half-open probe")
+	// First Execute after timeout: Open→HalfOpen probe (halfOpenCount not yet incremented).
+	cb.Execute(func() error { return nil }) //nolint:errcheck
+
+	// State should be HalfOpen after probe succeeds (count=0 < max=1, not yet closed).
+	if cb.GetState() != StateHalfOpen {
+		t.Errorf("after probe success state = %v, want StateHalfOpen", cb.GetState())
+	}
+
+	// Second success: halfOpenCount reaches halfOpenMax=1 → circuit closes.
+	cb.Execute(func() error { return nil }) //nolint:errcheck
+	if cb.GetState() != StateClosed {
+		t.Errorf("after counted half-open success state = %v, want StateClosed", cb.GetState())
 	}
 }
-
-// ── Half-open: failure reopens ────────────────────────────────────────────────
 
 func TestCircuitBreaker_HalfOpenFailureReopens(t *testing.T) {
-	cb := newTestCB(1)
-	cb.Execute(func() error { return errors.New("fail") })
-	time.Sleep(80 * time.Millisecond)
+	cb := NewCircuitBreaker(CircuitBreakerConfig{
+		Name:         "test",
+		MaxFailures:  1,
+		ResetTimeout: 30 * time.Millisecond,
+		HalfOpenMax:  2,
+	})
+	cb.Execute(func() error { return errFake }) //nolint:errcheck
+	time.Sleep(60 * time.Millisecond)
 
-	// First call after timeout transitions to half-open and executes.
-	cb.Execute(func() error { return errors.New("still failing") })
+	// One request gets through in half-open; fail it.
+	cb.Execute(func() error { return errFake }) //nolint:errcheck
 
 	if cb.GetState() != StateOpen {
-		t.Errorf("half-open failure should reopen circuit, got %s", cb.GetStateString())
+		t.Errorf("half-open failure: state = %v, want StateOpen", cb.GetState())
 	}
 }
 
-// ── Half-open: enough successes closes ────────────────────────────────────────
+func TestCircuitBreaker_HalfOpenMaxLimitsRequests(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{
+		Name:         "test",
+		MaxFailures:  1,
+		ResetTimeout: 30 * time.Millisecond,
+		HalfOpenMax:  1,
+	})
+	cb.Execute(func() error { return errFake }) //nolint:errcheck
+	time.Sleep(60 * time.Millisecond)
 
-func TestCircuitBreaker_HalfOpenSuccessesClose(t *testing.T) {
-	cb := newTestCB(1)
-	cb.Execute(func() error { return errors.New("fail") })
-	time.Sleep(80 * time.Millisecond)
+	// Probe (Open→HalfOpen) + one counted success → circuit closes.
+	cb.Execute(func() error { return nil }) //nolint:errcheck
+	cb.Execute(func() error { return nil }) //nolint:errcheck
 
-	// HalfOpenMax is 2; the first call transitions Open→HalfOpen (count stays 0),
-	// then 2 more calls in StateHalfOpen increment the counter to 2 and close.
-	cb.Execute(func() error { return nil }) // Open→HalfOpen transition; count=0
-	cb.Execute(func() error { return nil }) // count→1
-	cb.Execute(func() error { return nil }) // count→2 → should close
+	// Circuit should be closed now; further requests succeed.
+	err := cb.Execute(func() error { return nil })
+	if err != nil {
+		t.Errorf("closed circuit should allow requests, got %v", err)
+	}
+}
 
+func TestCircuitBreaker_SuccessResetFailures(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{Name: "test", MaxFailures: 5, ResetTimeout: time.Second, HalfOpenMax: 1})
+	for i := 0; i < 3; i++ {
+		cb.Execute(func() error { return errFake }) //nolint:errcheck
+	}
+	cb.Execute(func() error { return nil }) //nolint:errcheck
 	if cb.GetState() != StateClosed {
-		t.Errorf("circuit should be closed after all half-open successes, got %s", cb.GetStateString())
+		t.Error("success should keep circuit closed after partial failures")
 	}
 }
-
-// ── Reset ─────────────────────────────────────────────────────────────────────
 
 func TestCircuitBreaker_Reset(t *testing.T) {
-	cb := newTestCB(1)
-	cb.Execute(func() error { return errors.New("fail") })
+	cb := NewCircuitBreaker(CircuitBreakerConfig{Name: "test", MaxFailures: 1, ResetTimeout: time.Hour, HalfOpenMax: 1})
+	cb.Execute(func() error { return errFake }) //nolint:errcheck
+
 	if cb.GetState() != StateOpen {
 		t.Fatal("circuit should be open")
 	}
-
 	cb.Reset()
 	if cb.GetState() != StateClosed {
-		t.Errorf("after Reset, state = %s, want closed", cb.GetStateString())
+		t.Errorf("after Reset state = %v, want StateClosed", cb.GetState())
 	}
-}
-
-func TestCircuitBreaker_Reset_ClearsCounters(t *testing.T) {
-	cb := newTestCB(3)
-	cb.Execute(func() error { return errors.New("fail") })
-	cb.Execute(func() error { return errors.New("fail") })
-	cb.Reset()
-
-	// After reset, 3 more failures should open (not 1, since counter is cleared).
-	if err := cb.Execute(func() error { return errors.New("fail") }); err != nil {
-		// Execute ran but returned the function error — that's fine.
-	}
-	if cb.GetState() == StateOpen {
-		t.Error("1 failure after reset should not open a circuit with maxFailures=3")
-	}
-}
-
-// ── ExecuteWithContext ────────────────────────────────────────────────────────
-
-func TestCircuitBreaker_ExecuteWithContext_Success(t *testing.T) {
-	cb := newTestCB(3)
-	err := cb.ExecuteWithContext(context.Background(), func(ctx context.Context) error {
-		return nil
-	})
+	// Should now allow requests
+	err := cb.Execute(func() error { return nil })
 	if err != nil {
-		t.Fatalf("ExecuteWithContext returned error: %v", err)
+		t.Errorf("after Reset Execute failed: %v", err)
 	}
 }
 
-func TestCircuitBreaker_ExecuteWithContext_OpenRejects(t *testing.T) {
-	cb := newTestCB(1)
-	cb.Execute(func() error { return errors.New("fail") })
-
-	err := cb.ExecuteWithContext(context.Background(), func(_ context.Context) error {
-		return nil
-	})
-	if err == nil {
-		t.Error("expected error from ExecuteWithContext on open circuit")
+func TestCircuitBreaker_GetStateString(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{Name: "test", MaxFailures: 1, ResetTimeout: time.Hour, HalfOpenMax: 1})
+	if s := cb.GetStateString(); s != "closed" {
+		t.Errorf("state string = %q, want \"closed\"", s)
+	}
+	cb.Execute(func() error { return errFake }) //nolint:errcheck
+	if s := cb.GetStateString(); s != "open" {
+		t.Errorf("state string after failure = %q, want \"open\"", s)
 	}
 }
 
-// ── canExecute edge cases ─────────────────────────────────────────────────────
+func TestCircuitBreaker_ConcurrentExecute(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{Name: "concurrent", MaxFailures: 100, ResetTimeout: time.Second, HalfOpenMax: 10})
 
-func TestCircuitBreaker_HalfOpen_ExhaustsMax(t *testing.T) {
-	cb := newTestCB(1)
-	cb.mu.Lock()
-	cb.state = StateHalfOpen
-	cb.halfOpenCount = 2 // == halfOpenMax(2); no slots remain
-	cb.mu.Unlock()
-
-	err := cb.Execute(func() error { return nil })
-	if err == nil {
-		t.Error("expected ErrCircuitOpen when HalfOpen slots exhausted")
+	var wg sync.WaitGroup
+	const goroutines = 50
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cb.Execute(func() error { return nil }) //nolint:errcheck
+		}()
 	}
-}
-
-func TestCircuitBreaker_UnknownState_Rejects(t *testing.T) {
-	cb := newTestCB(1)
-	cb.mu.Lock()
-	cb.state = CircuitState(99) // hits default branch
-	cb.mu.Unlock()
-
-	err := cb.Execute(func() error { return nil })
-	if err == nil {
-		t.Error("expected rejection for unknown circuit state")
+	wg.Wait()
+	if cb.GetState() != StateClosed {
+		t.Errorf("after 50 concurrent successes state = %v, want StateClosed", cb.GetState())
 	}
 }

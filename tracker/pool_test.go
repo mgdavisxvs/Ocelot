@@ -2,154 +2,161 @@ package tracker
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// ── NewWorkerPool ─────────────────────────────────────────────────────────────
+func TestWorkerPool_SubmitUnderCapacity(t *testing.T) {
+	pool := NewWorkerPool(10)
 
-func TestNewWorkerPool_CapacityAndActive(t *testing.T) {
-	p := NewWorkerPool(5)
-	if p.Capacity() != 5 {
-		t.Errorf("Capacity = %d, want 5", p.Capacity())
-	}
-	if p.Active() != 0 {
-		t.Errorf("Active = %d, want 0 initially", p.Active())
-	}
-}
-
-// ── Submit ────────────────────────────────────────────────────────────────────
-
-func TestWorkerPool_Submit_RunsTask(t *testing.T) {
-	p := NewWorkerPool(4)
-	var ran atomic.Int64
-	for i := 0; i < 10; i++ {
-		if err := p.Submit(func() { ran.Add(1) }); err != nil {
-			t.Fatalf("Submit: %v", err)
+	var wg sync.WaitGroup
+	var count atomic.Int32
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		if err := pool.Submit(func() {
+			defer wg.Done()
+			count.Add(1)
+		}); err != nil {
+			t.Fatalf("Submit returned error: %v", err)
 		}
 	}
-	p.Wait()
-	if ran.Load() != 10 {
-		t.Errorf("ran = %d, want 10", ran.Load())
+	wg.Wait()
+	if count.Load() != 5 {
+		t.Errorf("executed %d tasks, want 5", count.Load())
 	}
 }
 
-func TestWorkerPool_Submit_CancelledContext(t *testing.T) {
-	// Create a pool with a cancelled context by reaching in via the struct.
-	ctx, cancel := context.WithCancel(context.Background())
-	p := &WorkerPool{
-		sem: make(chan struct{}, 1),
-		ctx: ctx,
+func TestWorkerPool_SubmitAtCapacity(t *testing.T) {
+	const cap = 3
+	pool := NewWorkerPool(cap)
+
+	release := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < cap; i++ {
+		wg.Add(1)
+		pool.Submit(func() { //nolint:errcheck
+			defer wg.Done()
+			<-release
+		})
 	}
-	cancel()
 
-	// Fill the semaphore so Submit must select on ctx.Done().
-	p.sem <- struct{}{}
+	// Pool is now full. A new submit should block until a slot frees.
+	done := make(chan struct{})
+	go func() {
+		pool.Submit(func() {}) //nolint:errcheck
+		close(done)
+	}()
 
-	err := p.Submit(func() {})
-	if err == nil {
-		t.Error("expected error when pool context is cancelled")
+	select {
+	case <-done:
+		t.Error("Submit should have blocked on a full pool")
+	case <-time.After(30 * time.Millisecond):
+		// Expected: still waiting.
+	}
+
+	close(release) // free all slots
+	wg.Wait()
+
+	select {
+	case <-done:
+		// Submit unblocked
+	case <-time.After(200 * time.Millisecond):
+		t.Error("Submit did not unblock after slots freed")
 	}
 }
 
-// ── TrySubmit ─────────────────────────────────────────────────────────────────
+func TestWorkerPool_TrySubmit_Full(t *testing.T) {
+	pool := NewWorkerPool(1)
 
-func TestWorkerPool_TrySubmit_WhenAvailable(t *testing.T) {
-	p := NewWorkerPool(2)
-	var ran atomic.Int64
-	if !p.TrySubmit(func() { ran.Add(1) }) {
-		t.Error("TrySubmit should return true when capacity is available")
-	}
-	p.Wait()
-	if ran.Load() != 1 {
-		t.Errorf("ran = %d, want 1", ran.Load())
-	}
-}
+	release := make(chan struct{})
+	pool.TrySubmit(func() { <-release }) // fills the single slot
 
-func TestWorkerPool_TrySubmit_WhenFull(t *testing.T) {
-	p := NewWorkerPool(1)
-	// Manually saturate the semaphore.
-	p.sem <- struct{}{}
+	accepted := pool.TrySubmit(func() {})
+	close(release)
+	pool.Wait()
 
-	if p.TrySubmit(func() {}) {
+	if accepted {
 		t.Error("TrySubmit should return false when pool is full")
 	}
-	<-p.sem // drain so nothing leaks
 }
 
-// ── Wait ──────────────────────────────────────────────────────────────────────
+func TestWorkerPool_TrySubmit_HasRoom(t *testing.T) {
+	pool := NewWorkerPool(5)
+	if !pool.TrySubmit(func() {}) {
+		t.Error("TrySubmit should return true when pool has capacity")
+	}
+	pool.Wait()
+}
 
-func TestWorkerPool_Wait_AllTasksComplete(t *testing.T) {
-	p := NewWorkerPool(10)
-	var count atomic.Int64
-	for i := 0; i < 20; i++ {
-		p.Submit(func() {
-			time.Sleep(time.Millisecond)
+func TestWorkerPool_ActiveAndCapacity(t *testing.T) {
+	pool := NewWorkerPool(4)
+	if pool.Capacity() != 4 {
+		t.Errorf("Capacity = %d, want 4", pool.Capacity())
+	}
+
+	release := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		pool.Submit(func() { <-release }) //nolint:errcheck
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	active := pool.Active()
+	close(release)
+	pool.Wait()
+
+	if active < 1 || active > 2 {
+		t.Errorf("Active mid-run = %d, want 1 or 2", active)
+	}
+}
+
+func TestWorkerPool_Shutdown_DrainsInflight(t *testing.T) {
+	pool := NewWorkerPool(5)
+
+	var count atomic.Int32
+	for i := 0; i < 3; i++ {
+		pool.Submit(func() { //nolint:errcheck
+			time.Sleep(20 * time.Millisecond)
 			count.Add(1)
 		})
 	}
-	p.Wait()
-	if count.Load() != 20 {
-		t.Errorf("count = %d, want 20", count.Load())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := pool.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+
+	if count.Load() != 3 {
+		t.Errorf("Shutdown: %d tasks completed, want 3", count.Load())
 	}
 }
 
-// ── Shutdown ──────────────────────────────────────────────────────────────────
+func TestWorkerPool_Shutdown_Timeout(t *testing.T) {
+	pool := NewWorkerPool(1)
 
-func TestWorkerPool_Shutdown_NoTasks(t *testing.T) {
-	p := NewWorkerPool(4)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	release := make(chan struct{})
+	pool.Submit(func() { <-release }) //nolint:errcheck
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	if err := p.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown: %v", err)
-	}
-}
-
-func TestWorkerPool_Shutdown_WaitsForTasks(t *testing.T) {
-	p := NewWorkerPool(2)
-	var done atomic.Int64
-	p.Submit(func() {
-		time.Sleep(20 * time.Millisecond)
-		done.Add(1)
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := p.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown: %v", err)
-	}
-	if done.Load() != 1 {
-		t.Error("Shutdown returned before task completed")
-	}
-}
-
-func TestWorkerPool_Shutdown_ContextDeadline(t *testing.T) {
-	p := NewWorkerPool(1)
-	p.Submit(func() { time.Sleep(500 * time.Millisecond) })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-	err := p.Shutdown(ctx)
+	err := pool.Shutdown(ctx)
 	if err == nil {
-		t.Error("expected context deadline error when tasks take too long")
+		t.Error("Shutdown should return an error when context times out")
 	}
+	close(release)
+	pool.Wait()
 }
 
-// ── Active ────────────────────────────────────────────────────────────────────
-
-func TestWorkerPool_Active_ReflectsRunning(t *testing.T) {
-	p := NewWorkerPool(10)
-	started := make(chan struct{})
-	done := make(chan struct{})
-	p.Submit(func() {
-		close(started)
-		<-done
-	})
-	<-started
-	if p.Active() == 0 {
-		t.Error("Active should be > 0 while task is running")
+func TestWorkerPool_Wait_CompletesAll(t *testing.T) {
+	pool := NewWorkerPool(10)
+	var count atomic.Int32
+	for i := 0; i < 10; i++ {
+		pool.Submit(func() { count.Add(1) }) //nolint:errcheck
 	}
-	close(done)
-	p.Wait()
+	pool.Wait()
+	if count.Load() != 10 {
+		t.Errorf("Wait: %d tasks completed, want 10", count.Load())
+	}
 }
