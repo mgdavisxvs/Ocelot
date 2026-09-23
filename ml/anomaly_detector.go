@@ -102,7 +102,7 @@ func (cad *ClientAnomalyDetector) DetectClientAnomaly(clientID string, userAgent
 	}
 
 	for _, pattern := range maliciousPatterns {
-		if contains(userAgent, pattern) {
+		if strings.Contains(userAgent, pattern) {
 			return true, "known_malicious_client"
 		}
 	}
@@ -118,12 +118,6 @@ func (cad *ClientAnomalyDetector) DetectClientAnomaly(clientID string, userAgent
 	}
 
 	return false, ""
-}
-
-// Helper functions
-
-func contains(s, substr string) bool {
-	return strings.Contains(s, substr)
 }
 
 func isRepeatingChar(s string) bool {

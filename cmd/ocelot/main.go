@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mgdavisxvs/Ocelot/ml"
 	"github.com/mgdavisxvs/Ocelot/tracker"
 )
 
@@ -102,10 +103,12 @@ func main() {
 		CircuitBreak: circuitBreaker,
 		AuditLog:     auditLog,
 		Metrics:      metrics,
+		PeerScorer:   ml.NewPeerScorer(),
+		BatchWriter:  batchWriter,
 	}
 
 	// ── Background subsystems ─────────────────────────────────────────────────
-	reaper := tracker.NewReaper(torrents, config.ScheduleInterval, config.PeersTimeout)
+	reaper := tracker.NewReaper(torrents, fc.ReapPeersInterval, config.PeersTimeout)
 	reaper.Start()
 	defer reaper.Stop()
 

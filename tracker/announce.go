@@ -183,13 +183,21 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 			default:
 				if hasToken {
 					expireToken = true
-					w.DB.RecordToken(user.ID, torrent.ID, downloadedChange)
+					if err := w.dbExec(func() error {
+						return w.DB.RecordToken(user.ID, torrent.ID, downloadedChange)
+					}); err != nil {
+						GetDefaultLogger().Error("RecordToken failed", err)
+					}
 					downloadedChange = 0
 				}
 			}
 
 			if uploadedChange > 0 || downloadedChange > 0 {
-				w.DB.RecordUserStats(user.ID, uploadedChange, downloadedChange)
+				if err := w.dbExec(func() error {
+					return w.DB.RecordUserStats(user.ID, uploadedChange, downloadedChange)
+				}); err != nil {
+					GetDefaultLogger().Error("RecordUserStats failed", err)
+				}
 			}
 		}
 	}
@@ -227,12 +235,22 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		if !user.ProtectIP.Load() {
 			ipStr = ip.String()
 		}
-		w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
-			upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
-			ipStr, string(req.PeerID), userAgent)
+		peerIDStr := string(req.PeerID)
+		if err := w.dbExec(func() error {
+			return w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
+				upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
+				ipStr, peerIDStr, userAgent)
+		}); err != nil {
+			GetDefaultLogger().Error("RecordPeer failed", err)
+		}
 	} else {
 		announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
-		w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, string(req.PeerID))
+		peerIDStr := string(req.PeerID)
+		if err := w.dbExec(func() error {
+			return w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, peerIDStr)
+		}); err != nil {
+			GetDefaultLogger().Error("RecordPeerLight failed", err)
+		}
 	}
 
 	numwant := req.NumWant
@@ -260,7 +278,11 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		if !user.ProtectIP.Load() {
 			ipStr = ip.String()
 		}
-		w.DB.RecordSnatch(user.ID, torrent.ID, now, ipStr)
+		if err := w.dbExec(func() error {
+			return w.DB.RecordSnatch(user.ID, torrent.ID, now, ipStr)
+		}); err != nil {
+			GetDefaultLogger().Error("RecordSnatch failed", err)
+		}
 
 		if !inserted {
 			torrent.mu.Lock()
@@ -284,7 +306,12 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		numwant = 0
 	}
 
-	peers := SelectPeersOptimized(torrent, peer, user.ID, numwant, req.Left > 0)
+	var peers []byte
+	if w.PeerScorer != nil {
+		peers = SelectPeersScored(torrent, peer, ip, user.ID, numwant, req.Left > 0, w.PeerScorer)
+	} else {
+		peers = SelectPeersOptimized(torrent, peer, user.ID, numwant, req.Left > 0)
+	}
 
 	w.Stats.SuccAnnouncements.Add(1)
 	if incLeechers {
@@ -317,8 +344,13 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	torrent.mu.Lock()
 	if updateTorrent || now.Sub(torrent.LastFlushed) > time.Hour {
 		torrent.LastFlushed = now
-		w.DB.RecordTorrent(torrent.ID, uint32(torrent.Seeders.Size()),
-			uint32(torrent.Leechers.Size()), snatched, torrent.Balance)
+		tID, tSeeders, tLeechers, tSnatched, tBalance :=
+			torrent.ID, uint32(torrent.Seeders.Size()), uint32(torrent.Leechers.Size()), snatched, torrent.Balance
+		if err := w.dbExec(func() error {
+			return w.DB.RecordTorrent(tID, tSeeders, tLeechers, tSnatched, tBalance)
+		}); err != nil {
+			GetDefaultLogger().Error("RecordTorrent failed", err)
+		}
 	}
 	seederCount := torrent.Seeders.Size()
 	leecherCount := torrent.Leechers.Size()
@@ -328,9 +360,11 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		return nil, fmt.Errorf("access denied, leeching forbidden")
 	}
 
+	baseInterval := int32(w.Config.AnnounceInterval)
+	interval := AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval)
 	response := &AnnounceResponse{
-		Interval:    AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval),
-		MinInterval: int32(w.Config.AnnounceInterval),
+		Interval:    interval,
+		MinInterval: baseInterval,
 		Complete:    int32(seederCount),
 		Incomplete:  int32(leecherCount),
 		Peers:       peers,
@@ -339,90 +373,20 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		response.Warning = "Illegal character found in IP address"
 	}
 
+	if w.Metrics != nil {
+		w.Metrics.RecordAnnounce(req.Event, "ok", time.Since(now))
+		w.Metrics.UpdatePeerCounts(int(w.Stats.Seeders.Load()), int(w.Stats.Leechers.Load()))
+	}
+
 	return response, nil
 }
 
-// selectPeers picks up to numwant peers to return. Leechers receive seeders
-// first (round-robin), then other leechers. Seeders receive only leechers.
-func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool) []byte {
-	if numwant <= 0 {
-		return []byte{}
+// dbExec runs fn through the circuit breaker when one is configured, otherwise calls fn directly.
+func (w *Worker) dbExec(fn func() error) error {
+	if w.CircuitBreak != nil {
+		return w.CircuitBreak.Execute(fn)
 	}
-
-	peers := make([]byte, 0, numwant*6)
-	found := 0
-
-	torrent.mu.RLock()
-	defer torrent.mu.RUnlock()
-
-	if isLeecher {
-		seederCount := torrent.Seeders.Size()
-		if seederCount > 0 {
-			seederKeys := make([]string, 0, seederCount)
-			seederMap := make(map[string]*Peer, seederCount)
-			torrent.Seeders.ForEach(func(key string, peer *Peer) bool {
-				seederKeys = append(seederKeys, key)
-				seederMap[key] = peer
-				return true
-			})
-
-			startIdx := 0
-			if torrent.LastSelectedSeeder != "" {
-				for i, key := range seederKeys {
-					if key == torrent.LastSelectedSeeder {
-						startIdx = (i + 1) % len(seederKeys)
-						break
-					}
-				}
-			}
-
-			for i := 0; i < len(seederKeys) && found < int(numwant); i++ {
-				idx := (startIdx + i) % len(seederKeys)
-				key := seederKeys[idx]
-				peer := seederMap[key]
-				if peer.UserID == userID || !peer.Visible {
-					continue
-				}
-				if len(peer.IPPort) == 6 {
-					peers = append(peers, peer.IPPort...)
-					found++
-					torrent.LastSelectedSeeder = key
-				}
-			}
-		}
-
-		if found < int(numwant) && torrent.Leechers.Size() > 1 {
-			torrent.Leechers.ForEach(func(_ string, peer *Peer) bool {
-				if found >= int(numwant) {
-					return false
-				}
-				if peer.UserID == userID || !peer.Visible {
-					return true
-				}
-				if len(peer.IPPort) == 6 {
-					peers = append(peers, peer.IPPort...)
-					found++
-				}
-				return true
-			})
-		}
-	} else {
-		torrent.Leechers.ForEach(func(_ string, peer *Peer) bool {
-			if found >= int(numwant) {
-				return false
-			}
-			if peer.UserID == userID || !peer.Visible {
-				return true
-			}
-			if len(peer.IPPort) == 6 {
-				peers = append(peers, peer.IPPort...)
-				found++
-			}
-			return true
-		})
-	}
-
-	return peers
+	return fn()
 }
 
 func (w *Worker) findOrCreatePeer(peerList *PeerList, peerKey string, user *User) (*Peer, bool) {

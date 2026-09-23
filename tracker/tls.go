@@ -2,7 +2,9 @@ package tracker
 
 import (
 	"crypto/tls"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/acme/autocert"
@@ -48,12 +50,8 @@ func (s *Server) startManualTLS(certFile, keyFile string) error {
 		PreferServerCipherSuites: true,
 	}
 
-	// Create HTTP handler (stub - would need integration)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/announce", func(w http.ResponseWriter, r *http.Request) {
-		// Stub handler
-		w.WriteHeader(http.StatusOK)
-	})
+	mux.HandleFunc("/", s.tlsHandler())
 
 	server := &http.Server{
 		Addr:         ":34443",
@@ -84,12 +82,8 @@ func (s *Server) startAutoTLS(domain string) error {
 		http.ListenAndServe(":80", certManager.HTTPHandler(nil))
 	}()
 
-	// Create HTTP handler (stub - would need integration)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/announce", func(w http.ResponseWriter, r *http.Request) {
-		// Stub handler
-		w.WriteHeader(http.StatusOK)
-	})
+	mux.HandleFunc("/", s.tlsHandler())
 
 	server := &http.Server{
 		Addr:         ":443",
@@ -101,6 +95,34 @@ func (s *Server) startAutoTLS(domain string) error {
 	}
 
 	return server.ListenAndServeTLS("", "")
+}
+
+// tlsHandler returns an http.HandlerFunc that delegates to handleRequest via
+// connection hijacking, preserving the same raw-byte response path as the
+// plain-TCP server.
+func (s *Server) tlsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "hijacking not supported", http.StatusInternalServerError)
+			return
+		}
+		conn, rw, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		host := r.RemoteAddr
+		if i := strings.LastIndex(host, ":"); i >= 0 {
+			host = host[:i]
+		}
+		clientIP := net.ParseIP(host)
+
+		response, _ := s.handleRequest(r, clientIP)
+		rw.Write(response)
+		rw.Flush()
+	}
 }
 
 // RedirectHTTPToHTTPS returns middleware to redirect HTTP to HTTPS

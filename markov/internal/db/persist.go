@@ -7,16 +7,16 @@ import (
 )
 
 // UpsertChainCounts persists all counts for the named chain in a single
-// REPLACE INTO batch (max 1000 rows per call to bound query size).
+// INSERT OR REPLACE batch (max 1000 rows per call to bound query size).
 func (d *DB) UpsertChainCounts(ctx context.Context, chainName string, counts [][]float64) error {
-	tx, err := d.pool.BeginTx(ctx, nil)
+	tx, err := d.markovDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
 
 	stmt, err := tx.PrepareContext(ctx,
-		`REPLACE INTO markov_chain_counts (chain_name, from_state, to_state, count) VALUES (?,?,?,?)`)
+		`INSERT OR REPLACE INTO markov_chain_counts (chain_name, from_state, to_state, count) VALUES (?,?,?,?)`)
 	if err != nil {
 		return fmt.Errorf("prepare: %w", err)
 	}
@@ -44,14 +44,14 @@ func (d *DB) UpsertPeerStates(ctx context.Context, recs []PeerStateRecord) error
 	if len(recs) == 0 {
 		return nil
 	}
-	tx, err := d.pool.BeginTx(ctx, nil)
+	tx, err := d.markovDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
 
 	stmt, err := tx.PrepareContext(ctx,
-		`REPLACE INTO markov_peer_states (torrent_id, uid, state, observed_at) VALUES (?,?,?,?)`)
+		`INSERT OR REPLACE INTO markov_peer_states (torrent_id, uid, state, observed_at) VALUES (?,?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -66,9 +66,9 @@ func (d *DB) UpsertPeerStates(ctx context.Context, recs []PeerStateRecord) error
 }
 
 // DeletePeerStates removes stale peer state rows for (torrent, uid) pairs
-// that are no longer present in xbt_files_users.
+// that are no longer present in the tracker peers table.
 func (d *DB) DeletePeerStates(ctx context.Context, torrentID, uid int64) error {
-	_, err := d.pool.ExecContext(ctx,
+	_, err := d.markovDB.ExecContext(ctx,
 		`DELETE FROM markov_peer_states WHERE torrent_id=? AND uid=?`, torrentID, uid)
 	return err
 }
@@ -84,14 +84,14 @@ func (d *DB) UpsertTorrentStates(ctx context.Context, recs []TorrentStateRecord)
 	if len(recs) == 0 {
 		return nil
 	}
-	tx, err := d.pool.BeginTx(ctx, nil)
+	tx, err := d.markovDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
 
 	stmt, err := tx.PrepareContext(ctx,
-		`REPLACE INTO markov_torrent_states (torrent_id, state, observed_at) VALUES (?,?,?)`)
+		`INSERT OR REPLACE INTO markov_torrent_states (torrent_id, state, observed_at) VALUES (?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -117,14 +117,14 @@ func (d *DB) UpsertUserStates(ctx context.Context, recs []UserStateRecord) error
 	if len(recs) == 0 {
 		return nil
 	}
-	tx, err := d.pool.BeginTx(ctx, nil)
+	tx, err := d.markovDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
 
 	stmt, err := tx.PrepareContext(ctx,
-		`REPLACE INTO markov_user_states (uid, state, path_json, observed_at) VALUES (?,?,?,?)`)
+		`INSERT OR REPLACE INTO markov_user_states (uid, state, path_json, observed_at) VALUES (?,?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -140,31 +140,31 @@ func (d *DB) UpsertUserStates(ctx context.Context, recs []UserStateRecord) error
 
 // TorrentPredictionRecord is a full prediction row.
 type TorrentPredictionRecord struct {
-	TorrentID          int64
-	HealthState        int
-	PiJSON             string
-	Pi24hJSON          string
-	Pi72hJSON          string
-	DeadProb24h        float64
-	DeadProb72h        float64
-	ExpectedDeadHours  float64
-	Entropy            float64
+	TorrentID           int64
+	HealthState         int
+	PiJSON              string
+	Pi24hJSON           string
+	Pi72hJSON           string
+	DeadProb24h         float64
+	DeadProb72h         float64
+	ExpectedDeadHours   float64
+	Entropy             float64
 	RecommendedInterval int
-	UpdatedAt          int64
+	UpdatedAt           int64
 }
 
 func (d *DB) UpsertPredictions(ctx context.Context, recs []TorrentPredictionRecord) error {
 	if len(recs) == 0 {
 		return nil
 	}
-	tx, err := d.pool.BeginTx(ctx, nil)
+	tx, err := d.markovDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
 
 	stmt, err := tx.PrepareContext(ctx, `
-		REPLACE INTO markov_predictions
+		INSERT OR REPLACE INTO markov_predictions
 			(torrent_id, health_state, pi_json, pi_24h_json, pi_72h_json,
 			 dead_prob_24h, dead_prob_72h, expected_dead_hours,
 			 entropy, recommended_interval, updated_at)
@@ -199,14 +199,14 @@ func (d *DB) UpsertUserAnomalies(ctx context.Context, recs []UserAnomalyRecord) 
 	if len(recs) == 0 {
 		return nil
 	}
-	tx, err := d.pool.BeginTx(ctx, nil)
+	tx, err := d.markovDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
 
 	stmt, err := tx.PrepareContext(ctx, `
-		REPLACE INTO markov_user_anomaly
+		INSERT OR REPLACE INTO markov_user_anomaly
 			(uid, anomaly_score, path_log_likelihood, flagged, updated_at)
 		VALUES (?,?,?,?,?)`)
 	if err != nil {
@@ -239,7 +239,7 @@ func (d *DB) UpsertFreeleechCandidates(ctx context.Context, recs []FreeleechCand
 	if len(recs) == 0 {
 		return nil
 	}
-	tx, err := d.pool.BeginTx(ctx, nil)
+	tx, err := d.markovDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -251,7 +251,7 @@ func (d *DB) UpsertFreeleechCandidates(ctx context.Context, recs []FreeleechCand
 	}
 
 	stmt, err := tx.PrepareContext(ctx, `
-		REPLACE INTO markov_freeleech_candidates
+		INSERT OR REPLACE INTO markov_freeleech_candidates
 			(torrent_id, priority_score, dead_prob_72h, recommended, updated_at)
 		VALUES (?,?,?,?,?)`)
 	if err != nil {
@@ -274,7 +274,7 @@ func (d *DB) UpsertFreeleechCandidates(ctx context.Context, recs []FreeleechCand
 // LoadPrediction fetches a single torrent prediction row.
 func (d *DB) LoadPrediction(ctx context.Context, torrentID int64) (*TorrentPredictionRecord, error) {
 	r := &TorrentPredictionRecord{TorrentID: torrentID}
-	err := d.pool.QueryRowContext(ctx, `
+	err := d.markovDB.QueryRowContext(ctx, `
 		SELECT health_state, pi_json, pi_24h_json, pi_72h_json,
 		       dead_prob_24h, dead_prob_72h, expected_dead_hours,
 		       entropy, recommended_interval, updated_at
@@ -295,8 +295,8 @@ func (d *DB) LoadPrediction(ctx context.Context, torrentID int64) (*TorrentPredi
 // LoadUserAnomaly fetches a single user anomaly row.
 func (d *DB) LoadUserAnomaly(ctx context.Context, uid int64) (*UserAnomalyRecord, error) {
 	r := &UserAnomalyRecord{UID: uid}
-	var flagged int8
-	err := d.pool.QueryRowContext(ctx, `
+	var flagged int64
+	err := d.markovDB.QueryRowContext(ctx, `
 		SELECT anomaly_score, path_log_likelihood, flagged, updated_at
 		FROM markov_user_anomaly WHERE uid=?`, uid).Scan(
 		&r.AnomalyScore, &r.PathLogLikelihood, &flagged, &r.UpdatedAt,
@@ -313,7 +313,7 @@ func (d *DB) LoadUserAnomaly(ctx context.Context, uid int64) (*UserAnomalyRecord
 
 // LoadFreeleechCandidates returns the current top recommended torrents.
 func (d *DB) LoadFreeleechCandidates(ctx context.Context, limit int) ([]FreeleechCandidateRecord, error) {
-	rows, err := d.pool.QueryContext(ctx, `
+	rows, err := d.markovDB.QueryContext(ctx, `
 		SELECT torrent_id, priority_score, dead_prob_72h, recommended, updated_at
 		FROM markov_freeleech_candidates
 		WHERE recommended=1
@@ -326,7 +326,7 @@ func (d *DB) LoadFreeleechCandidates(ctx context.Context, limit int) ([]Freeleec
 	var out []FreeleechCandidateRecord
 	for rows.Next() {
 		var r FreeleechCandidateRecord
-		var rec int8
+		var rec int64
 		if err := rows.Scan(&r.TorrentID, &r.PriorityScore, &r.DeadProb72h, &rec, &r.UpdatedAt); err != nil {
 			return nil, err
 		}

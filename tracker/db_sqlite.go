@@ -237,6 +237,23 @@ func (sm *SQLiteShardManager) initSchema(db *sql.DB) error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		prefix TEXT NOT NULL UNIQUE
 	);
+
+	CREATE TABLE IF NOT EXISTS audit_log (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		timestamp INTEGER NOT NULL,
+		user_id INTEGER,
+		action TEXT NOT NULL,
+		resource_type TEXT NOT NULL,
+		resource_id TEXT,
+		ip_address TEXT,
+		success BOOLEAN NOT NULL,
+		error_message TEXT,
+		metadata TEXT
+	);
+	CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
+	CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id);
+	CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+	CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_log(resource_type, resource_id);
 	`)
 	return err
 }
@@ -407,6 +424,24 @@ func (sm *SQLiteShardManager) RecordUserPasskey(id UserID, passkey string, canLe
 	}
 	_, err := db.Exec(`INSERT OR REPLACE INTO user_passkeys (user_id, passkey, can_leech, protect_ip) VALUES (?, ?, ?, ?)`,
 		id, passkey, canLeechInt, protectIPInt)
+	return err
+}
+
+// DeleteTorrentHash removes a torrent's info_hash mapping from persistence.
+func (sm *SQLiteShardManager) DeleteTorrentHash(infoHash string) error {
+	sm.mu.RLock()
+	db := sm.currentDB
+	sm.mu.RUnlock()
+	_, err := db.Exec(`DELETE FROM torrent_hashes WHERE info_hash = ?`, infoHash)
+	return err
+}
+
+// DeleteUserPasskey removes a user's passkey from persistence.
+func (sm *SQLiteShardManager) DeleteUserPasskey(passkey string) error {
+	sm.mu.RLock()
+	db := sm.currentDB
+	sm.mu.RUnlock()
+	_, err := db.Exec(`DELETE FROM user_passkeys WHERE passkey = ?`, passkey)
 	return err
 }
 

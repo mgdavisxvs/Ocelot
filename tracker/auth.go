@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -136,13 +137,16 @@ func hashAPIKey(key string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// generateRandomKey generates a random API key
+// generateRandomKey generates a cryptographically random API key of the given length.
 func generateRandomKey(length int) string {
-	// Simple random key generator - in production use crypto/rand
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, length)
-	for i := range b {
-		b[i] = charset[time.Now().UnixNano()%int64(len(charset))]
+	raw := make([]byte, length)
+	if _, err := rand.Read(raw); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
+	for i, v := range raw {
+		b[i] = charset[int(v)%len(charset)]
 	}
 	return string(b)
 }

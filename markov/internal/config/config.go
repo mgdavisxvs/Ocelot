@@ -6,12 +6,9 @@ import (
 )
 
 type Config struct {
-	// MySQL — must match ocelot.conf mysql_* settings
-	DBHost string `json:"db_host"`
-	DBPort int    `json:"db_port"`
-	DBName string `json:"db_name"`
-	DBUser string `json:"db_user"`
-	DBPass string `json:"db_pass"`
+	// SQLite paths
+	TrackerDBDir string `json:"tracker_db_dir"` // directory containing ocelot-YYYY-MM.db shards
+	MarkovDBPath string `json:"markov_db_path"` // path to dedicated markov state DB file
 
 	// Markov engine tuning
 	DecayFactor        float64 `json:"decay_factor"`          // per-poll counts decay (e.g. 0.995)
@@ -53,14 +50,11 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) applyDefaults() {
-	if c.DBHost == "" {
-		c.DBHost = "127.0.0.1"
+	if c.TrackerDBDir == "" {
+		c.TrackerDBDir = "/var/lib/ocelot/db"
 	}
-	if c.DBPort == 0 {
-		c.DBPort = 3306
-	}
-	if c.DBName == "" {
-		c.DBName = "gazelle"
+	if c.MarkovDBPath == "" {
+		c.MarkovDBPath = "/var/lib/ocelot/markov.db"
 	}
 	if c.DecayFactor == 0 {
 		c.DecayFactor = 0.995
