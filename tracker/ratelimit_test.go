@@ -1,6 +1,8 @@
 package tracker
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -52,5 +54,45 @@ func TestRateLimiterMultipleIPs(t *testing.T) {
 
 	if !limiter.Allow("192.0.2.2") {
 		t.Error("IP2 first request should be allowed")
+	}
+}
+
+// ── Len ───────────────────────────────────────────────────────────────────────
+
+func TestRateLimiter_Len(t *testing.T) {
+	limiter := NewRateLimiter(10, 10, 1000)
+	if limiter.Len() != 0 {
+		t.Errorf("Len = %d, want 0 initially", limiter.Len())
+	}
+	limiter.Allow("10.0.0.1")
+	limiter.Allow("10.0.0.2")
+	if limiter.Len() != 2 {
+		t.Errorf("Len = %d, want 2 after two IPs", limiter.Len())
+	}
+}
+
+// ── GetClientIP ───────────────────────────────────────────────────────────────
+
+func TestGetClientIP_XForwardedFor(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Forwarded-For", "1.2.3.4")
+	if ip := GetClientIP(r); ip != "1.2.3.4" {
+		t.Errorf("GetClientIP = %q, want \"1.2.3.4\"", ip)
+	}
+}
+
+func TestGetClientIP_XRealIP(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Real-IP", "5.6.7.8")
+	if ip := GetClientIP(r); ip != "5.6.7.8" {
+		t.Errorf("GetClientIP = %q, want \"5.6.7.8\"", ip)
+	}
+}
+
+func TestGetClientIP_RemoteAddr(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "9.10.11.12:1234"
+	if ip := GetClientIP(r); ip != "9.10.11.12:1234" {
+		t.Errorf("GetClientIP = %q, want \"9.10.11.12:1234\"", ip)
 	}
 }

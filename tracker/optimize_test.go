@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"net"
 	"testing"
 )
 
@@ -178,6 +179,60 @@ func TestWhitelistTrie(t *testing.T) {
 			t.Errorf("IsAllowed(%s) = %v, expected %v",
 				tt.peerID, result, tt.expected)
 		}
+	}
+}
+
+// ── CompactIPv6Port ───────────────────────────────────────────────────────────
+
+func TestCompactIPv6Port_ValidIPv6(t *testing.T) {
+	ip := net.ParseIP("2001:db8::1")
+	result := CompactIPv6Port(ip, 6881)
+	if len(result) != 18 {
+		t.Fatalf("expected 18 bytes, got %d", len(result))
+	}
+	port := uint16(result[16])<<8 | uint16(result[17])
+	if port != 6881 {
+		t.Errorf("port = %d, want 6881", port)
+	}
+}
+
+func TestCompactIPv6Port_IPv4RejectsNil(t *testing.T) {
+	ip := net.ParseIP("192.168.1.1")
+	if result := CompactIPv6Port(ip, 80); result != nil {
+		t.Errorf("expected nil for IPv4 address, got %v", result)
+	}
+}
+
+func TestCompactIPv6Port_NilIP(t *testing.T) {
+	if result := CompactIPv6Port(nil, 80); result != nil {
+		t.Errorf("expected nil for nil IP, got %v", result)
+	}
+}
+
+// ── BuildTrieFromSlice ────────────────────────────────────────────────────────
+
+func TestBuildTrieFromSlice_AllowsMatchingPrefixes(t *testing.T) {
+	trie := BuildTrieFromSlice([]string{"-TR3000-", "-qB4420-"})
+	if !trie.IsAllowed([]byte("-TR3000-xxxxxxxxxxxx")) {
+		t.Error("expected -TR3000- prefix to be allowed")
+	}
+	if !trie.IsAllowed([]byte("-qB4420-xxxxxxxxxxxx")) {
+		t.Error("expected -qB4420- prefix to be allowed")
+	}
+}
+
+func TestBuildTrieFromSlice_RejectsUnknown(t *testing.T) {
+	trie := BuildTrieFromSlice([]string{"-TR3000-"})
+	if trie.IsAllowed([]byte("-XX0000-xxxxxxxxxxxx")) {
+		t.Error("expected unknown prefix to be rejected")
+	}
+}
+
+func TestBuildTrieFromSlice_Empty(t *testing.T) {
+	// Per the implementation, an empty whitelist means "allow all".
+	trie := BuildTrieFromSlice(nil)
+	if !trie.IsAllowed([]byte("-TR3000-xxxxxxxxxxxx")) {
+		t.Error("empty trie (no restrictions) should allow all peers")
 	}
 }
 
