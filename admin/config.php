@@ -9,16 +9,37 @@ if (!is_dir($dbPath)) {
     @mkdir($dbPath, 0755, true);
 }
 define('DB_PATH', $dbPath);
-define('TRACKER_URL', 'http://localhost:34000'); // Tracker API endpoint
-define('SITE_PASSWORD', 'changeme'); // Must match tracker config
+// Credentials and URLs are read from environment variables.
+// Set them before starting the web server; never hardcode secrets here.
+$trackerUrl = getenv('TRACKER_URL') ?: 'http://localhost:34000';
+$sitePassword = getenv('SITE_PASSWORD') ?: '';
+$adminUser = getenv('ADMIN_USER') ?: 'admin';
+$adminPassHash = getenv('ADMIN_PASS_HASH') ?: ''; // bcrypt hash via: php -r "echo password_hash('yourpass', PASSWORD_BCRYPT);"
+
+// Refuse insecure defaults
+if ($sitePassword === '' || $sitePassword === 'changeme') {
+    http_response_code(500);
+    die('FATAL: SITE_PASSWORD environment variable is not set or uses the default value.');
+}
+if ($adminPassHash === '') {
+    http_response_code(500);
+    die('FATAL: ADMIN_PASS_HASH environment variable is not set.');
+}
+
+define('TRACKER_URL', $trackerUrl);
+define('SITE_PASSWORD', $sitePassword);
+
+// Markov analytics sidecar URL (set MARKOV_URL env var to enable)
+$markovUrl = getenv('MARKOV_URL') ?: 'http://localhost:9090';
+define('MARKOV_URL', $markovUrl);
 
 // Application Settings
 define('ITEMS_PER_PAGE', 50);
 define('SESSION_TIMEOUT', 3600);
 
-// Admin Authentication (in production, use proper auth)
-define('ADMIN_USER', 'admin');
-define('ADMIN_PASS', password_hash('changeme', PASSWORD_BCRYPT));
+// Admin Authentication
+define('ADMIN_USER', $adminUser);
+define('ADMIN_PASS', $adminPassHash);
 
 // Timezone
 date_default_timezone_set('UTC');
@@ -94,8 +115,8 @@ class OcelotDB {
             throw new Exception("Database directory not found: $shardDir");
         }
 
-        // Find most recent shard
-        $shards = glob($shardDir . '/ocelot_*.db');
+        // Find most recent shard — Go names shards ocelot-YYYY-MM.db (hyphen)
+        $shards = glob($shardDir . '/ocelot-*.db');
         if (empty($shards)) {
             throw new Exception("No database shards found");
         }
@@ -125,7 +146,7 @@ class OcelotDB {
 
     public static function getAllShards() {
         $shardDir = DB_PATH;
-        $shards = glob($shardDir . '/ocelot_*.db');
+        $shards = glob($shardDir . '/ocelot-*.db'); // hyphen matches Go shard names
         rsort($shards);
         return $shards;
     }
@@ -148,8 +169,9 @@ class OcelotDB {
     }
 }
 
-// Load Tracker API client (new JSON-based implementation)
+// Load API clients
 require_once __DIR__ . '/api/tracker-api.php';
+require_once __DIR__ . '/api/markov-api.php';
 
 // Utility Functions
 function formatBytes($bytes, $precision = 2) {

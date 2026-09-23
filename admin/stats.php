@@ -5,6 +5,8 @@ requireAuth();
 $pageTitle = 'Statistics & Analytics';
 
 // Fetch comprehensive statistics
+$trackerStats = TrackerAPI::getStats();
+
 try {
     $db = OcelotDB::connect();
 
@@ -186,6 +188,89 @@ include 'includes/header.php';
     </div>
 </div>
 
+<!-- ML Security -->
+<div class="bg-gray-800 shadow rounded-lg border border-gray-700 p-6 mb-6">
+    <h2 class="text-xl font-semibold text-white mb-4">
+        <i data-lucide="shield" class="inline w-5 h-5"></i>
+        ML Security
+    </h2>
+    <?php if ($trackerStats === null): ?>
+    <div class="flex items-center gap-2 text-yellow-400 text-sm mb-4">
+        <i data-lucide="wifi-off" class="w-4 h-4"></i>
+        Tracker offline — live ML stats unavailable
+    </div>
+    <?php endif; ?>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div class="text-center p-4 bg-gray-900 rounded-lg">
+            <?php $armed = $trackerStats['ml_armed'] ?? false; ?>
+            <div class="flex items-center justify-center gap-2 mb-1">
+                <span class="inline-block w-2.5 h-2.5 rounded-full <?= $armed ? 'bg-green-400' : 'bg-red-500' ?>"></span>
+                <span class="text-2xl font-bold <?= $armed ? 'text-green-400' : 'text-red-400' ?>">
+                    <?= $armed ? 'Armed' : 'Disabled' ?>
+                </span>
+            </div>
+            <div class="text-sm text-gray-400">ML Anomaly Detection</div>
+        </div>
+        <div class="text-center p-4 bg-gray-900 rounded-lg">
+            <div class="text-3xl font-bold text-orange-400">
+                <?= $trackerStats !== null ? number_format((int)($trackerStats['client_rejections'] ?? 0)) : '—' ?>
+            </div>
+            <div class="text-sm text-gray-400">Client Rejections</div>
+            <div class="text-xs text-gray-500 mt-1">Blocked by client anomaly detector</div>
+        </div>
+        <div class="text-center p-4 bg-gray-900 rounded-lg">
+            <div class="text-3xl font-bold text-red-400">
+                <?= $trackerStats !== null ? number_format((int)($trackerStats['anomaly_rejections'] ?? 0)) : '—' ?>
+            </div>
+            <div class="text-sm text-gray-400">Anomaly Rejections</div>
+            <div class="text-xs text-gray-500 mt-1">Blocked by peer anomaly scorer</div>
+        </div>
+    </div>
+</div>
+
+<!-- EventBus & System Health -->
+<div class="bg-gray-800 shadow rounded-lg border border-gray-700 p-6 mb-6">
+    <h2 class="text-xl font-semibold text-white mb-4">
+        <i data-lucide="activity" class="inline w-5 h-5"></i>
+        EventBus & System Health
+    </h2>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="text-center p-4 bg-gray-900 rounded-lg">
+            <div class="text-2xl font-bold text-yellow-400">
+                <?= $trackerStats !== null ? number_format((int)($trackerStats['bus_drops'] ?? 0)) : '—' ?>
+            </div>
+            <div class="text-sm text-gray-400">Bus Drops</div>
+            <div class="text-xs text-gray-500 mt-1">Overflow-discarded events</div>
+        </div>
+        <div class="text-center p-4 bg-gray-900 rounded-lg">
+            <div class="text-2xl font-bold text-cyan-400">
+                <?= $trackerStats !== null ? number_format((int)($trackerStats['sse_clients'] ?? 0)) : '—' ?>
+            </div>
+            <div class="text-sm text-gray-400">SSE Clients</div>
+            <div class="text-xs text-gray-500 mt-1">Live admin dashboard connections</div>
+        </div>
+        <div class="text-center p-4 bg-gray-900 rounded-lg">
+            <?php
+                $cbState = $trackerStats['circuit_breaker_state'] ?? null;
+                $cbColor = match($cbState) { 'open' => 'red', 'half-open' => 'yellow', default => 'green' };
+            ?>
+            <div class="flex items-center justify-center gap-2 mb-1">
+                <span class="inline-block w-2.5 h-2.5 rounded-full bg-<?= $cbColor ?>-400"></span>
+                <span class="text-lg font-bold text-<?= $cbColor ?>-400 capitalize">
+                    <?= $cbState !== null ? htmlspecialchars($cbState) : '—' ?>
+                </span>
+            </div>
+            <div class="text-sm text-gray-400">DB Circuit Breaker</div>
+        </div>
+        <div class="text-center p-4 bg-gray-900 rounded-lg">
+            <div class="text-2xl font-bold text-purple-400">
+                <?= $trackerStats !== null ? number_format((int)($trackerStats['open_connections'] ?? 0)) : '—' ?>
+            </div>
+            <div class="text-sm text-gray-400">Open Connections</div>
+        </div>
+    </div>
+</div>
+
 <!-- System Information -->
 <div class="bg-gray-800 shadow rounded-lg border border-gray-700 p-6">
     <h2 class="text-xl font-semibold text-white mb-4">
@@ -209,100 +294,120 @@ include 'includes/header.php';
             <p class="text-sm text-gray-500">84GB auto-rotation</p>
         </div>
     </div>
+    <?php if ($trackerStats !== null && isset($trackerStats['db_total_bytes'])): ?>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-4 pt-4 border-t border-gray-700">
+        <div>
+            <h3 class="text-sm font-medium text-gray-400 mb-2">Current Shard Size</h3>
+            <p class="text-white"><?= formatBytes((int)$trackerStats['db_current_shard_bytes']) ?></p>
+            <p class="text-sm text-gray-500"><?= number_format(((int)$trackerStats['db_current_shard_bytes'] / (84 * 1024 ** 3)) * 100, 1) ?>% of 84 GB limit</p>
+        </div>
+        <div>
+            <h3 class="text-sm font-medium text-gray-400 mb-2">Historical Shards</h3>
+            <p class="text-white"><?= (int)$trackerStats['db_historical_shards'] ?></p>
+            <p class="text-sm text-gray-500">Archived shards (read-only)</p>
+        </div>
+        <div>
+            <h3 class="text-sm font-medium text-gray-400 mb-2">Total DB Size</h3>
+            <p class="text-white"><?= formatBytes((int)$trackerStats['db_total_bytes']) ?></p>
+            <p class="text-sm text-gray-500">All shards combined</p>
+        </div>
+    </div>
+    <?php endif; ?>
 </div>
 
 <script>
-// Hourly Activity Chart
+// Hourly Activity Chart — responsive with resize redraw
 const activityData = <?= json_encode($hourlyActivity) ?>;
 
 const margin = {top: 20, right: 30, bottom: 50, left: 60};
-const width = document.getElementById('activityChart').clientWidth - margin.left - margin.right;
-const height = 300 - margin.top - margin.bottom;
+const chartHeight = 300 - margin.top - margin.bottom;
 
-const svg = d3.select('#activityChart')
-    .append('svg')
-    .attr('width', width + margin.left + margin.right)
-    .attr('height', height + margin.top + margin.bottom)
-    .append('g')
-    .attr('transform', `translate(${margin.left},${margin.top})`);
+function drawActivityChart() {
+    const container = document.getElementById('activityChart');
+    d3.select(container).selectAll('svg').remove();
 
-// Scales
-const x = d3.scaleBand()
-    .domain(activityData.map(d => d.hour))
-    .range([0, width])
-    .padding(0.1);
+    const width = container.clientWidth - margin.left - margin.right;
 
-const y = d3.scaleLinear()
-    .domain([0, d3.max(activityData, d => d.announces) || 100])
-    .nice()
-    .range([height, 0]);
+    const svg = d3.select(container)
+        .append('svg')
+        .attr('width', width + margin.left + margin.right)
+        .attr('height', chartHeight + margin.top + margin.bottom)
+        .append('g')
+        .attr('transform', `translate(${margin.left},${margin.top})`);
 
-// Axes
-svg.append('g')
-    .attr('transform', `translate(0,${height})`)
-    .call(d3.axisBottom(x))
-    .selectAll('text')
-    .attr('fill', '#9ca3af')
-    .attr('transform', 'rotate(-45)')
-    .style('text-anchor', 'end');
+    const x = d3.scaleBand()
+        .domain(activityData.map(d => d.hour))
+        .range([0, width])
+        .padding(0.1);
 
-svg.append('g')
-    .call(d3.axisLeft(y))
-    .selectAll('text')
-    .attr('fill', '#9ca3af');
+    const y = d3.scaleLinear()
+        .domain([0, d3.max(activityData, d => d.announces) || 100])
+        .nice()
+        .range([chartHeight, 0]);
 
-// Grid lines
-svg.append('g')
-    .attr('class', 'grid')
-    .call(d3.axisLeft(y)
-        .tickSize(-width)
-        .tickFormat('')
-    )
-    .selectAll('line')
-    .attr('stroke', '#374151')
-    .attr('stroke-dasharray', '2,2');
+    svg.append('g')
+        .attr('transform', `translate(0,${chartHeight})`)
+        .call(d3.axisBottom(x))
+        .selectAll('text')
+        .attr('fill', '#9ca3af')
+        .attr('transform', 'rotate(-45)')
+        .style('text-anchor', 'end');
 
-// Bars
-svg.selectAll('.bar')
-    .data(activityData)
-    .enter()
-    .append('rect')
-    .attr('class', 'bar')
-    .attr('x', d => x(d.hour))
-    .attr('y', d => y(d.announces))
-    .attr('width', x.bandwidth())
-    .attr('height', d => height - y(d.announces))
-    .attr('fill', '#8b5cf6')
-    .attr('opacity', 0.8)
-    .on('mouseover', function() {
-        d3.select(this).attr('opacity', 1);
-    })
-    .on('mouseout', function() {
-        d3.select(this).attr('opacity', 0.8);
-    });
+    svg.append('g')
+        .call(d3.axisLeft(y))
+        .selectAll('text')
+        .attr('fill', '#9ca3af');
 
-// Labels on bars
-svg.selectAll('.label')
-    .data(activityData)
-    .enter()
-    .append('text')
-    .attr('class', 'label')
-    .attr('x', d => x(d.hour) + x.bandwidth() / 2)
-    .attr('y', d => y(d.announces) - 5)
-    .attr('text-anchor', 'middle')
-    .attr('fill', '#e5e7eb')
-    .attr('font-size', '10px')
-    .text(d => d.announces > 0 ? d.announces : '');
+    svg.append('g')
+        .attr('class', 'grid')
+        .call(d3.axisLeft(y).tickSize(-width).tickFormat(''))
+        .selectAll('line')
+        .attr('stroke', '#374151')
+        .attr('stroke-dasharray', '2,2');
 
-// Y-axis label
-svg.append('text')
-    .attr('transform', 'rotate(-90)')
-    .attr('y', 0 - margin.left)
-    .attr('x', 0 - (height / 2))
-    .attr('dy', '1em')
-    .style('text-anchor', 'middle')
-    .attr('fill', '#9ca3af')
-    .text('Announce Count');
+    svg.selectAll('.bar')
+        .data(activityData)
+        .enter()
+        .append('rect')
+        .attr('class', 'bar')
+        .attr('x', d => x(d.hour))
+        .attr('y', d => y(d.announces))
+        .attr('width', x.bandwidth())
+        .attr('height', d => chartHeight - y(d.announces))
+        .attr('fill', '#8b5cf6')
+        .attr('opacity', 0.8)
+        .on('mouseover', function() { d3.select(this).attr('opacity', 1); })
+        .on('mouseout',  function() { d3.select(this).attr('opacity', 0.8); });
+
+    svg.selectAll('.label')
+        .data(activityData)
+        .enter()
+        .append('text')
+        .attr('class', 'label')
+        .attr('x', d => x(d.hour) + x.bandwidth() / 2)
+        .attr('y', d => y(d.announces) - 5)
+        .attr('text-anchor', 'middle')
+        .attr('fill', '#e5e7eb')
+        .attr('font-size', '10px')
+        .text(d => d.announces > 0 ? d.announces : '');
+
+    svg.append('text')
+        .attr('transform', 'rotate(-90)')
+        .attr('y', 0 - margin.left)
+        .attr('x', 0 - (chartHeight / 2))
+        .attr('dy', '1em')
+        .style('text-anchor', 'middle')
+        .attr('fill', '#9ca3af')
+        .text('Announce Count');
+}
+
+drawActivityChart();
+
+let resizeTimer;
+window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(drawActivityChart, 150);
+});
 </script>
 
 <?php include 'includes/footer.php'; ?>

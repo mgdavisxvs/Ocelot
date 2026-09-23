@@ -26,47 +26,6 @@ func NewAnomalyDetector() *AnomalyDetector {
 	}
 }
 
-// ThresholdConfig carries externally-supplied threshold overrides.
-// A zero value for any numeric field means "keep the current value".
-type ThresholdConfig struct {
-	MaxUploadSpeed    float64 // bytes/sec; 0 = no change
-	MaxAnnounceRate   int     // announces/hour; 0 = no change
-	MaxPortChanges    int     // unique ports; 0 = no change
-	MinDownloadRatio  float64 // fraction; 0 = no change
-	RapidReconnectSec int     // seconds; 0 = no change
-}
-
-// Thresholds returns a snapshot of the current threshold configuration.
-func (ad *AnomalyDetector) Thresholds() ThresholdConfig {
-	return ThresholdConfig{
-		MaxUploadSpeed:    ad.maxUploadSpeed,
-		MaxAnnounceRate:   ad.maxAnnounceRate,
-		MaxPortChanges:    ad.maxPortChanges,
-		MinDownloadRatio:  ad.minDownloadRatio,
-		RapidReconnectSec: ad.rapidReconnectSec,
-	}
-}
-
-// SetThresholds updates detection thresholds without recreating the detector.
-// Only fields with non-zero values are applied, so partial updates are safe.
-func (ad *AnomalyDetector) SetThresholds(t ThresholdConfig) {
-	if t.MaxUploadSpeed > 0 {
-		ad.maxUploadSpeed = t.MaxUploadSpeed
-	}
-	if t.MaxAnnounceRate > 0 {
-		ad.maxAnnounceRate = t.MaxAnnounceRate
-	}
-	if t.MaxPortChanges > 0 {
-		ad.maxPortChanges = t.MaxPortChanges
-	}
-	if t.MinDownloadRatio > 0 {
-		ad.minDownloadRatio = t.MinDownloadRatio
-	}
-	if t.RapidReconnectSec > 0 {
-		ad.rapidReconnectSec = t.RapidReconnectSec
-	}
-}
-
 // DetectAnomaly analyzes peer behavior and returns anomaly type if detected
 func (ad *AnomalyDetector) DetectAnomaly(behavior *PeerBehavior) (bool, string) {
 	// Check for impossible upload speed
@@ -143,7 +102,7 @@ func (cad *ClientAnomalyDetector) DetectClientAnomaly(clientID string, userAgent
 	}
 
 	for _, pattern := range maliciousPatterns {
-		if strings.Contains(userAgent, pattern) {
+		if contains(userAgent, pattern) {
 			return true, "known_malicious_client"
 		}
 	}
@@ -159,6 +118,30 @@ func (cad *ClientAnomalyDetector) DetectClientAnomaly(clientID string, userAgent
 	}
 
 	return false, ""
+}
+
+// ThresholdConfig carries adjustable detection thresholds.
+// Zero values mean "use existing / no change".
+type ThresholdConfig struct {
+	MaxAnnounceRate int
+}
+
+// SetThresholds applies non-zero fields from cfg to the detector.
+func (ad *AnomalyDetector) SetThresholds(cfg ThresholdConfig) {
+	if cfg.MaxAnnounceRate != 0 {
+		ad.maxAnnounceRate = cfg.MaxAnnounceRate
+	}
+}
+
+// Thresholds returns the current threshold configuration.
+func (ad *AnomalyDetector) Thresholds() ThresholdConfig {
+	return ThresholdConfig{MaxAnnounceRate: ad.maxAnnounceRate}
+}
+
+// Helper functions
+
+func contains(s, substr string) bool {
+	return strings.Contains(s, substr)
 }
 
 func isRepeatingChar(s string) bool {

@@ -1,30 +1,13 @@
 <?php
 /**
- * Parse .torrent file and extract info hash
- *
- * This endpoint accepts a .torrent file upload and returns:
- * - Info hash (SHA-1)
- * - Torrent name
- * - File size
- * - Piece count
+ * Parse .torrent file and extract info hash.
+ * Auth-gated: requires an active admin session.
  */
 
-require_once __DIR__ . '/../config.php';
+require_once dirname(__DIR__) . '/config.php';
+requireAuth();
 
 header('Content-Type: application/json');
-
-// This endpoint previously had NO authentication of any kind: it never loaded
-// config.php, so anyone on the internet could POST arbitrary bytes into the
-// bencode parser below. It is an admin tool and is now gated accordingly.
-if (!isAuthenticated()) {
-    http_response_code(401);
-    echo json_encode(['error' => 'Authentication required']);
-    exit;
-}
-
-// Parsing an upload is a state-changing operation from the browser's point of
-// view, so it carries the same token as every <form> post.
-csrf_require(true);
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
@@ -38,26 +21,7 @@ if (!isset($_FILES['torrent']) || $_FILES['torrent']['error'] !== UPLOAD_ERR_OK)
     exit;
 }
 
-// Bound the input before it reaches the parser. A .torrent metafile is
-// kilobytes; anything far larger is not a torrent and should not be decoded.
-const MAX_TORRENT_BYTES = 4 * 1024 * 1024;
-
-if (($_FILES['torrent']['size'] ?? 0) > MAX_TORRENT_BYTES) {
-    http_response_code(413);
-    echo json_encode(['error' => 'Torrent file too large']);
-    exit;
-}
-
 $torrentFile = $_FILES['torrent']['tmp_name'];
-
-// Reject anything that is not an actual uploaded file, so a crafted request
-// cannot point this at a path on the server.
-if (!is_uploaded_file($torrentFile)) {
-    http_response_code(400);
-    echo json_encode(['error' => 'Invalid upload']);
-    exit;
-}
-
 $torrentData = file_get_contents($torrentFile);
 
 if ($torrentData === false) {
@@ -67,19 +31,9 @@ if ($torrentData === false) {
 }
 
 /**
- * Simple bencode decoder.
- *
- * $depth bounds recursion. Bencode nests without limit by design, so a short
- * input of the form "llllll..." would otherwise recurse until the process
- * exhausts its stack and dies. The bound turns that into a clean 400.
+ * Simple bencode decoder
  */
-const BDECODE_MAX_DEPTH = 32;
-
-function bdecode($str, &$pos = 0, $depth = 0) {
-    if ($depth > BDECODE_MAX_DEPTH) {
-        throw new Exception('Invalid bencode: nesting too deep');
-    }
-
+function bdecode($str, &$pos = 0) {
     if ($pos >= strlen($str)) {
         return null;
     }
@@ -105,9 +59,6 @@ function bdecode($str, &$pos = 0, $depth = 0) {
             throw new Exception('Invalid bencode: no colon in string');
         }
         $len = (int)substr($str, $pos, $colon - $pos);
-        if ($len < 0 || $colon + 1 + $len > strlen($str)) {
-            throw new Exception('Invalid bencode: string length out of range');
-        }
         $pos = $colon + 1;
         $string = substr($str, $pos, $len);
         $pos += $len;
@@ -119,7 +70,7 @@ function bdecode($str, &$pos = 0, $depth = 0) {
         $pos++;
         $list = [];
         while ($pos < strlen($str) && $str[$pos] !== 'e') {
-            $list[] = bdecode($str, $pos, $depth + 1);
+            $list[] = bdecode($str, $pos);
         }
         $pos++; // skip 'e'
         return $list;
@@ -130,8 +81,8 @@ function bdecode($str, &$pos = 0, $depth = 0) {
         $pos++;
         $dict = [];
         while ($pos < strlen($str) && $str[$pos] !== 'e') {
-            $key = bdecode($str, $pos, $depth + 1);
-            $value = bdecode($str, $pos, $depth + 1);
+            $key = bdecode($str, $pos);
+            $value = bdecode($str, $pos);
             $dict[$key] = $value;
         }
         $pos++; // skip 'e'
@@ -243,5 +194,3 @@ try {
     ]);
 }
 
-// formatBytes() is provided by config.php, which this file now loads.
-// Re-declaring it here would be a fatal error.

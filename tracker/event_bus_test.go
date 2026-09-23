@@ -9,7 +9,7 @@ func TestEventBus_SubscribeAndPublish(t *testing.T) {
 	bus := NewEventBus()
 	ch := bus.Subscribe("sub1", 8)
 
-	e := Event{Type: EventAnnounce, Payload: nil, Time: time.Now()}
+	e := BusEvent{Type: EventAnnounce, Payload: nil, Time: time.Now()}
 	bus.Publish(e)
 
 	select {
@@ -40,11 +40,11 @@ func TestEventBus_SlowSubscriberDrops(t *testing.T) {
 	bus.Subscribe("slow", 1) // buffer of 1
 
 	// Fill the buffer
-	bus.Publish(Event{Type: EventAnnounce})
+	bus.Publish(BusEvent{Type: EventAnnounce})
 	// This second publish must not block even though the buffer is full
 	done := make(chan struct{})
 	go func() {
-		bus.Publish(Event{Type: EventSnatch})
+		bus.Publish(BusEvent{Type: EventSnatch})
 		close(done)
 	}()
 	select {
@@ -61,9 +61,9 @@ func TestEventBus_MultipleSubscribers(t *testing.T) {
 	defer bus.Unsubscribe("s1")
 	defer bus.Unsubscribe("s2")
 
-	bus.Publish(Event{Type: EventTorrentAdded})
+	bus.Publish(BusEvent{Type: EventTorrentAdded})
 
-	for _, ch := range []chan Event{ch1, ch2} {
+	for _, ch := range []chan BusEvent{ch1, ch2} {
 		select {
 		case evt := <-ch:
 			if evt.Type != EventTorrentAdded {
@@ -78,11 +78,11 @@ func TestEventBus_MultipleSubscribers(t *testing.T) {
 func TestEventBus_NilBusPublish(t *testing.T) {
 	// Worker.publish must not panic when Bus is nil
 	w := &Worker{}
-	w.publish(Event{Type: EventAnnounce}) // should be a no-op
+	w.publish(BusEvent{Type: EventAnnounce}) // should be a no-op
 }
 
 func TestEvent_JSON(t *testing.T) {
-	e := Event{Type: EventSnatch, Payload: SnatchEventPayload{InfoHash: "abc", UserID: 42}, Time: time.Now()}
+	e := BusEvent{Type: EventSnatch, Payload: SnatchEventPayload{InfoHash: "abc", UserID: 42}, Time: time.Now()}
 	data := e.JSON()
 	if data == nil {
 		t.Fatal("expected non-nil JSON")

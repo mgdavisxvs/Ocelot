@@ -3,6 +3,7 @@ package ml
 import (
 	"math"
 	"net"
+	"sort"
 	"time"
 )
 
@@ -54,7 +55,39 @@ func (ps *PeerScorer) Score(peer *PeerInfo, requesterIP net.IP) float64 {
 	return score
 }
 
-// PeerInfo holds extended peer information for ML scoring
+// SelectBest selects the best peers based on ML scoring
+func (ps *PeerScorer) SelectBest(peers []*PeerInfo, requesterIP net.IP, numWant int) []*PeerInfo {
+	type scoredPeer struct {
+		peer  *PeerInfo
+		score float64
+	}
+
+	scored := make([]scoredPeer, len(peers))
+	for i, p := range peers {
+		scored[i] = scoredPeer{
+			peer:  p,
+			score: ps.Score(p, requesterIP),
+		}
+	}
+
+	// Sort by score descending
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+
+	// Return top numWant peers
+	result := make([]*PeerInfo, min(numWant, len(scored)))
+	for i := range result {
+		result[i] = scored[i].peer
+	}
+
+	return result
+}
+
+// PeerInfo holds extended peer information for ML scoring.
+// IPPort is a pre-computed compact BEP 23 / BEP 7 byte slice (6 or 18 bytes)
+// copied from the Peer under the torrent lock so that scoring can proceed
+// without holding the lock.
 type PeerInfo struct {
 	IP                net.IP
 	Port              uint16
@@ -64,6 +97,7 @@ type PeerInfo struct {
 	LastAnnounce      time.Time
 	CompletedSessions int
 	TotalSessions     int
+	IPPort            []byte
 }
 
 // Helper functions
@@ -72,64 +106,26 @@ func normalize(value, minVal, maxVal float64) float64 {
 	if maxVal-minVal == 0 {
 		return 0
 	}
-	v := (value - minVal) / (maxVal - minVal)
-	if v < 0 {
-		return 0
-	}
-	if v > 1 {
-		return 1
-	}
-	return v
+	return (value - minVal) / (maxVal - minVal)
 }
 
-// ipDistance returns a network-topology distance in [0, 255] between two IPs.
-//
-// IPv4: four levels based on /8, /16, /24 prefix matches.
-//   - same /24 (first 3 octets match) → 0
-//   - same /16, different /24         → 85
-//   - same /8,  different /16         → 170
-//   - different /8                    → 255
-//
-// IPv6: four levels based on /16, /32, /48 prefix matches.
-//   - same /48 (first 6 bytes match)  → 0
-//   - same /32, different /48         → 85
-//   - same /16, different /32         → 170
-//   - different /16                   → 255
-//
-// Mixed address families → 255 (maximum distance).
+// ipDistance calculates network distance between two IPs
+// Simple implementation: XOR of first octet
 func ipDistance(ip1, ip2 net.IP) int {
 	ip1v4 := ip1.To4()
 	ip2v4 := ip2.To4()
 
 	if ip1v4 != nil && ip2v4 != nil {
-		switch {
-		case ip1v4[0] != ip2v4[0]:
-			return 255
-		case ip1v4[1] != ip2v4[1]:
-			return 170
-		case ip1v4[2] != ip2v4[2]:
-			return 85
-		default:
-			return 0
-		}
+		// IPv4: XOR distance
+		return int(ip1v4[0] ^ ip2v4[0])
 	}
 
-	ip1v6 := ip1.To16()
-	ip2v6 := ip2.To16()
-	if ip1v6 != nil && ip2v6 != nil && ip1v4 == nil && ip2v4 == nil {
-		switch {
-		case ip1v6[0] != ip2v6[0] || ip1v6[1] != ip2v6[1]:
-			return 255
-		case ip1v6[2] != ip2v6[2] || ip1v6[3] != ip2v6[3]:
-			return 170
-		case ip1v6[4] != ip2v6[4] || ip1v6[5] != ip2v6[5]:
-			return 85
-		default:
-			return 0
-		}
+	// IPv6 or mixed: Simple distance
+	if len(ip1) == 16 && len(ip2) == 16 {
+		return int(ip1[0] ^ ip2[0])
 	}
 
-	return 255 // mixed or unknown address families
+	return 128 // Max distance for mixed/unknown
 }
 
 // SwarmHealthPredictor predicts swarm health metrics

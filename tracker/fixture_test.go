@@ -173,3 +173,19 @@ func itoa(n int) string {
 // atomicLoadUint64 reads a *atomic.Uint64 without importing sync/atomic directly.
 func loadU64(v *atomic.Uint64) uint64 { return v.Load() }
 func loadU32(v *atomic.Uint32) uint32 { return v.Load() }
+
+// ── fakeClock ─────────────────────────────────────────────────────────────────
+
+// fakeClock implements schedulerClock for tests, providing a manually-triggered
+// tick channel via Fire().
+type fakeClock struct {
+	ch chan time.Time
+}
+
+func newFakeClock() *fakeClock {
+	return &fakeClock{ch: make(chan time.Time, 1)}
+}
+
+func (f *fakeClock) C() <-chan time.Time { return f.ch }
+func (f *fakeClock) Stop()              {}
+func (f *fakeClock) Fire()              { f.ch <- time.Now() }

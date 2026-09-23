@@ -15,14 +15,14 @@ import (
 type UserEngine struct {
 	mu          sync.RWMutex
 	globalChain *chain.Chain
-	lastState   map[int64]int   // uid → last ratio state
-	pathHistory map[int64][]int // uid → recent state path (capped at pathHistoryLen)
+	lastState   map[int64]int    // uid → last ratio state
+	pathHistory map[int64][]int  // uid → recent state path (capped at pathHistoryLen)
 	pathMaxLen  int
 }
 
-func newUserEngine(decay, alpha float64, pathMaxLen int) *UserEngine {
+func newUserEngine(decay float64, pathMaxLen int) *UserEngine {
 	return &UserEngine{
-		globalChain: chain.NewWithSmoothing(chain.NumUserStates, decay, alpha),
+		globalChain: chain.New(chain.NumUserStates, decay),
 		lastState:   make(map[int64]int),
 		pathHistory: make(map[int64][]int),
 		pathMaxLen:  pathMaxLen,
@@ -45,12 +45,11 @@ func (ue *UserEngine) loadStoredStates(recs []db.StoredUserState) {
 
 func (ue *UserEngine) loadChainCounts(rows []db.ChainCountRow) {
 	n := chain.NumUserStates
-	alpha := ue.globalChain.Smoothing()
 	counts := make([][]float64, n)
 	for i := range counts {
 		counts[i] = make([]float64, n)
 		for j := range counts[i] {
-			counts[i][j] = alpha
+			counts[i][j] = 1.0
 		}
 	}
 	for _, r := range rows {
@@ -69,13 +68,10 @@ func (ue *UserEngine) observe(users []db.UserRow, freeleechUIDs db.FreeleechUID)
 	seenUIDs := make(map[int64]struct{}, len(users))
 	for _, u := range users {
 		seenUIDs[u.ID] = struct{}{}
-		// UMM-01: skip freeleech users from chain observations. Accounting-regime
-		// changes (freeleech on/off) create artificial ratio jumps that corrupt
-		// the chain's model of organic ratio dynamics.
 		_, hasFreeleech := freeleechUIDs[u.ID]
-		newState := chain.UserRatioState(u.Uploaded, u.Downloaded)
+		newState := chain.UserRatioState(u.Uploaded, u.Downloaded, u.CanLeech, hasFreeleech)
 
-		if prev, ok := ue.lastState[u.ID]; ok && prev != newState && !hasFreeleech {
+		if prev, ok := ue.lastState[u.ID]; ok && prev != newState {
 			ue.globalChain.Observe(prev, newState)
 		}
 		ue.lastState[u.ID] = newState
@@ -106,19 +102,16 @@ func (ue *UserEngine) decay() {
 }
 
 // AnomalyResult holds fraud detection output for one user.
-// The model NEVER directly bans users — it only produces advisory risk signals.
-// Operators apply sanctions via policy independent of this layer.
 type AnomalyResult struct {
 	UID               int64
 	State             int
 	PathLogLikelihood float64
-	AnomalyScore      float64 // robust z-score via median/MAD normalization
-	Flagged           bool    // advisory: true means WATCH/SUSPICIOUS, not a ban
+	AnomalyScore      float64 // z-score relative to population mean
+	Flagged           bool
 }
 
-// computeAnomalies scores all users with sufficient path history using
-// normalized per-transition NLL and robust median/MAD normalization.
-// threshold is the MAD z-score above which a user is flagged as suspicious.
+// computeAnomalies scores all users with sufficient path history.
+// threshold is the z-score above which a user is flagged.
 // minPathLen is the minimum number of path observations required.
 func (ue *UserEngine) computeAnomalies(threshold float64, minPathLen int) []AnomalyResult {
 	ue.mu.RLock()
@@ -134,20 +127,19 @@ func (ue *UserEngine) computeAnomalies(threshold float64, minPathLen int) []Anom
 	}
 	ue.mu.RUnlock()
 
-	// Compute normalized NLL (per-transition) for each eligible user.
+	// Compute NLL for each eligible user.
 	type scored struct {
-		uid64 int64
-		nll   float64
+		uid int64
+		nll float64
 	}
 	candidates := make([]scored, 0, len(paths))
 	for uid, path := range paths {
 		if len(path) < minPathLen {
 			continue
 		}
-		// Use normalized NLL for fair cross-user comparison.
-		nll := ue.globalChain.NormalizedPathNLL(path)
+		nll := ue.globalChain.PathLogLikelihood(path)
 		if !math.IsInf(nll, 1) {
-			candidates = append(candidates, scored{uid64: uid, nll: nll})
+			candidates = append(candidates, scored{uid, nll})
 		}
 	}
 
@@ -155,38 +147,141 @@ func (ue *UserEngine) computeAnomalies(threshold float64, minPathLen int) []Anom
 		return nil
 	}
 
-	// Robust normalization via median and MAD (median absolute deviation).
-	// Avoids sensitivity to outliers that plague mean/stddev normalization.
-	nlls := make([]float64, len(candidates))
-	for i, c := range candidates {
-		nlls[i] = c.nll
+	// Compute population mean and stddev.
+	var sum, sumSq float64
+	for _, c := range candidates {
+		sum += c.nll
+		sumSq += c.nll * c.nll
 	}
-	median := percentile(nlls, 0.5)
-	absDevs := make([]float64, len(nlls))
-	for i, v := range nlls {
-		absDevs[i] = math.Abs(v - median)
+	n := float64(len(candidates))
+	mean := sum / n
+	variance := sumSq/n - mean*mean
+	if variance < 0 {
+		variance = 0
 	}
-	mad := percentile(absDevs, 0.5)
-	// Scale factor 1.4826 makes MAD consistent with stddev for normal data.
-	scaledMAD := mad * 1.4826
-	if scaledMAD < 1e-9 {
-		scaledMAD = 1e-9
-	}
+	stddev := math.Sqrt(variance)
 
 	results := make([]AnomalyResult, 0, len(candidates))
 	for _, c := range candidates {
-		z := (c.nll - median) / scaledMAD
+		var z float64
+		if stddev > 1e-9 {
+			z = (c.nll - mean) / stddev
+		}
 		results = append(results, AnomalyResult{
-			UID:               c.uid64,
-			State:             states[c.uid64],
+			UID:               c.uid,
+			State:             states[c.uid],
 			PathLogLikelihood: c.nll,
 			AnomalyScore:      z,
-			Flagged:           z > threshold, // advisory only; operator decides sanctions
+			Flagged:           z > threshold,
 		})
 	}
 	// Sort by anomaly score descending.
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].AnomalyScore > results[j].AnomalyScore
+	})
+	return results
+}
+
+// SeederPageRankResult holds the PageRank score for one user in the seeder graph.
+type SeederPageRankResult struct {
+	UID   int64
+	Score float64
+	State int
+}
+
+// seederStateWeight maps user health states to their seeder contribution quality.
+var seederStateWeight = [chain.NumUserStates]float64{
+	1.0, // HEALTHY: full contribution
+	0.6, // WARNING: reduced contribution
+	0.2, // PROBATION: minimal contribution
+	0.0, // BANNED: no contribution
+	0.9, // FREELEECH: high contribution (active user)
+}
+
+// computeSeederPageRank scores users by their seeder contribution quality using
+// the Markov chain's stationary distribution weighted by per-user path health.
+// dampingFactor is the standard PageRank damping (0.85 is canonical).
+// iterations controls power-iteration convergence (50 is sufficient for 5 states).
+func (ue *UserEngine) computeSeederPageRank(dampingFactor float64, iterations int) []SeederPageRankResult {
+	ue.mu.RLock()
+	paths := make(map[int64][]int, len(ue.pathHistory))
+	states := make(map[int64]int, len(ue.lastState))
+	for uid, p := range ue.pathHistory {
+		c := make([]int, len(p))
+		copy(c, p)
+		paths[uid] = c
+	}
+	for uid, s := range ue.lastState {
+		states[uid] = s
+	}
+	counts := ue.globalChain.Counts()
+	ue.mu.RUnlock()
+
+	n := chain.NumUserStates
+
+	// Row-normalise transition counts → probability matrix P.
+	P := make([][]float64, n)
+	for i := range P {
+		P[i] = make([]float64, n)
+		rowSum := 0.0
+		for j := range P[i] {
+			rowSum += counts[i][j]
+		}
+		if rowSum > 0 {
+			for j := range P[i] {
+				P[i][j] = counts[i][j] / rowSum
+			}
+		} else {
+			P[i][i] = 1.0 // absorbing state
+		}
+	}
+
+	// Power iteration for stationary distribution π.
+	pi := make([]float64, n)
+	for i := range pi {
+		pi[i] = 1.0 / float64(n)
+	}
+	next := make([]float64, n)
+	for iter := 0; iter < iterations; iter++ {
+		for j := range next {
+			next[j] = 0
+		}
+		for i := 0; i < n; i++ {
+			for j := 0; j < n; j++ {
+				next[j] += pi[i] * P[i][j]
+			}
+		}
+		pi, next = next, pi
+	}
+
+	// Score each user: stationary probability of their current state ×
+	// time-averaged path health score, modulated by damping factor.
+	results := make([]SeederPageRankResult, 0, len(states))
+	uniform := (1 - dampingFactor) / float64(n)
+
+	for uid, path := range paths {
+		state, ok := states[uid]
+		if !ok || len(path) == 0 {
+			continue
+		}
+		var healthSum float64
+		for _, s := range path {
+			if s >= 0 && s < n {
+				healthSum += seederStateWeight[s]
+			}
+		}
+		pathHealthScore := healthSum / float64(len(path))
+
+		score := uniform + dampingFactor*pi[state]*pathHealthScore
+		results = append(results, SeederPageRankResult{
+			UID:   uid,
+			Score: score,
+			State: state,
+		})
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
 	})
 	return results
 }

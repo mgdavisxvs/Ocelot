@@ -3,12 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?= htmlspecialchars($pageTitle ?? 'Ocelot Tracker Admin') ?></title>
+    <title><?= $pageTitle ?? 'Ocelot Tracker Admin' ?></title>
 
-    <?php require_once __DIR__ . '/icons.php'; ?>
-
-    <!-- Pinned front-end dependencies. See ASSET_MODE in config.php. -->
-    <?= asset_script('tailwind') ?>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -22,18 +20,19 @@
             }
         }
     </script>
-    <?= asset_script('alpine') ?>
-    <?= asset_script('d3') ?>
+
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+    <!-- D3.js -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
 
     <style>
         [x-cloak] { display: none !important; }
     </style>
-
-    <script>
-        // Token for fetch()-driven endpoints. Same value the forms carry;
-        // readable by same-origin script only, which is the point.
-        const CSRF_TOKEN = <?= json_encode(csrf_token()) ?>;
-    </script>
 </head>
 <body class="h-full">
     <div class="min-h-full">
@@ -62,13 +61,23 @@
                                 <a href="stats.php" class="<?= basename($_SERVER['PHP_SELF']) === 'stats.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> rounded-md px-3 py-2 text-sm font-medium">
                                     Statistics
                                 </a>
+                                <a href="markov.php" class="<?= basename($_SERVER['PHP_SELF']) === 'markov.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> rounded-md px-3 py-2 text-sm font-medium flex items-center gap-1">
+                                    <i data-lucide="git-branch" class="w-3.5 h-3.5"></i>
+                                    Markov
+                                </a>
+                                <a href="whitelist.php" class="<?= basename($_SERVER['PHP_SELF']) === 'whitelist.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> rounded-md px-3 py-2 text-sm font-medium">
+                                    Whitelist
+                                </a>
+                                <a href="audit.php" class="<?= basename($_SERVER['PHP_SELF']) === 'audit.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> rounded-md px-3 py-2 text-sm font-medium">
+                                    Audit
+                                </a>
                             </div>
                         </div>
                     </div>
                     <div class="hidden md:block">
                         <div class="ml-4 flex items-center md:ml-6">
                             <span class="text-sm text-gray-400 mr-4">
-                                <?= icon('database', 'inline-block w-4 h-4') ?>
+                                <i data-lucide="database" class="inline-block w-4 h-4"></i>
                                 <?php
                                 try {
                                     $shards = OcelotDB::getAllShards();
@@ -78,14 +87,14 @@
                                 }
                                 ?>
                             </span>
-                            <a href="logout.php?csrf_token=<?= eu(csrf_token()) ?>" class="text-gray-300 hover:text-white">
-                                <?= icon('log-out', 'w-5 h-5') ?>
+                            <a href="logout.php" class="text-gray-300 hover:text-white">
+                                <i data-lucide="log-out" class="w-5 h-5"></i>
                             </a>
                         </div>
                     </div>
                     <div class="-mr-2 flex md:hidden">
                         <button @click="mobileMenuOpen = !mobileMenuOpen" class="inline-flex items-center justify-center rounded-md bg-gray-800 p-2 text-gray-400 hover:bg-gray-700 hover:text-white">
-                            <?= icon('menu', 'w-6 h-6') ?>
+                            <i data-lucide="menu" class="w-6 h-6"></i>
                         </button>
                     </div>
                 </div>
@@ -99,7 +108,10 @@
                     <a href="users.php" class="<?= basename($_SERVER['PHP_SELF']) === 'users.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Users</a>
                     <a href="peers.php" class="<?= basename($_SERVER['PHP_SELF']) === 'peers.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Peers</a>
                     <a href="stats.php" class="<?= basename($_SERVER['PHP_SELF']) === 'stats.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Statistics</a>
-                    <a href="logout.php?csrf_token=<?= eu(csrf_token()) ?>" class="text-gray-300 hover:bg-gray-700 hover:text-white block rounded-md px-3 py-2 text-base font-medium">Logout</a>
+                    <a href="markov.php" class="<?= basename($_SERVER['PHP_SELF']) === 'markov.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Markov</a>
+                    <a href="whitelist.php" class="<?= basename($_SERVER['PHP_SELF']) === 'whitelist.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Whitelist</a>
+                    <a href="audit.php" class="<?= basename($_SERVER['PHP_SELF']) === 'audit.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Audit</a>
+                    <a href="logout.php" class="text-gray-300 hover:bg-gray-700 hover:text-white block rounded-md px-3 py-2 text-base font-medium">Logout</a>
                 </div>
             </div>
         </nav>

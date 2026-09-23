@@ -119,7 +119,7 @@ include 'includes/header.php';
         <div class="text-sm text-gray-400">Total Peers</div>
     </div>
     <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 text-center">
-        <div class="text-2xl font-bold text-green-400"><?= number_format(array_sum(array_column($peers, 'torrent_left')) === 0 ? count($peers) : 0) ?></div>
+        <div class="text-2xl font-bold text-green-400"><?= number_format(count(array_filter($peers, fn($p) => $p['torrent_left'] == 0))) ?></div>
         <div class="text-sm text-gray-400">Current Page Seeders</div>
     </div>
     <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 text-center">

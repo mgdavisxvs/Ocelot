@@ -8,44 +8,30 @@ import (
 // Chain is a discrete-time Markov chain with online Bayesian learning
 // and exponential temporal decay. Thread-safe.
 type Chain struct {
-	mu       sync.RWMutex
-	n        int
-	counts   [][]float64
-	decay    float64  // multiplied into counts on each Decay() call
-	smoothing float64 // Laplace/Bayesian smoothing α (prior pseudo-count per cell)
+	mu     sync.RWMutex
+	n      int
+	counts [][]float64
+	decay  float64 // multiplied into counts on each Decay() call
 }
 
-// New creates a Chain with n states, Laplace-smoothed prior (α=1.0), and
-// the given per-epoch decay factor.
+// chainEpsilon is added to every cell in P() to guarantee ergodicity, preventing
+// the power-iteration solver (SeederPageRank) from diverging on near-absorbing states.
+const chainEpsilon = 1e-6
+
+// New creates a Chain with n states, Laplace-smoothed uniform prior, and
+// the given per-epoch decay factor (e.g. 0.995 for slow decay).
 func New(n int, decay float64) *Chain {
-	return NewWithSmoothing(n, decay, 1.0)
-}
-
-// NewWithSmoothing creates a Chain with configurable Bayesian smoothing α.
-// α is the prior pseudo-count added to each cell (Laplace: α=1.0; weaker prior: α<1.0).
-// α=0 disables smoothing — not recommended for sparse data.
-func NewWithSmoothing(n int, decay float64, alpha float64) *Chain {
-	if alpha < 0 {
-		alpha = 0
-	}
 	counts := make([][]float64, n)
 	for i := range counts {
 		counts[i] = make([]float64, n)
 		for j := range counts[i] {
-			counts[i][j] = alpha
+			counts[i][j] = 1.0 // uniform Laplace prior
 		}
 	}
-	return &Chain{n: n, counts: counts, decay: decay, smoothing: alpha}
+	return &Chain{n: n, counts: counts, decay: decay}
 }
 
 func (c *Chain) N() int { return c.n }
-
-// Smoothing returns the configured prior α value.
-func (c *Chain) Smoothing() float64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.smoothing
-}
 
 // Observe records a single state transition from → to.
 func (c *Chain) Observe(from, to int) {
@@ -58,6 +44,10 @@ func (c *Chain) Observe(from, to int) {
 }
 
 // P returns the normalized n×n row-stochastic transition matrix.
+// A chainEpsilon floor is added to every cell after normalizing the observed
+// counts, then the row is renormalized. This guarantees the chain is ergodic
+// so that power-iteration solvers (SeederPageRank, fundamental matrix) always
+// converge — G-1/G-2 fix.
 func (c *Chain) P() [][]float64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -68,42 +58,18 @@ func (c *Chain) P() [][]float64 {
 		for j := range c.counts[i] {
 			sum += c.counts[i][j]
 		}
+		// Normalize counts, then inject epsilon floor.
+		var newSum float64
 		for j := range c.counts[i] {
-			p[i][j] = c.counts[i][j] / sum
+			p[i][j] = c.counts[i][j]/sum + chainEpsilon
+			newSum += p[i][j]
+		}
+		// Renormalize so the row sums to exactly 1.
+		for j := range p[i] {
+			p[i][j] /= newSum
 		}
 	}
 	return p
-}
-
-// EffectiveSampleCount returns the effective number of real observations for
-// state i: Σ_j C[i][j] - n×α. Values < 0 indicate only prior has been seen.
-func (c *Chain) EffectiveSampleCount(state int) float64 {
-	if state < 0 || state >= c.n {
-		return 0
-	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	var sum float64
-	for _, v := range c.counts[state] {
-		sum += v
-	}
-	return sum - float64(c.n)*c.smoothing
-}
-
-// EffectiveSampleCounts returns the effective sample count for every state.
-func (c *Chain) EffectiveSampleCounts() []float64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	esc := make([]float64, c.n)
-	prior := float64(c.n) * c.smoothing
-	for i := range c.counts {
-		var sum float64
-		for _, v := range c.counts[i] {
-			sum += v
-		}
-		esc[i] = sum - prior
-	}
-	return esc
 }
 
 // Step advances distribution pi by k steps: returns pi · Pᵏ.
@@ -127,47 +93,6 @@ func (c *Chain) Step(pi []float64, k int) []float64 {
 		cur, tmp = tmp, cur
 	}
 	return cur
-}
-
-// Forecast computes π at each of the given step horizons (e.g. [4, 24, 96, 288]).
-// Returns one distribution slice per horizon.
-func (c *Chain) Forecast(pi []float64, horizons []int) [][]float64 {
-	if len(horizons) == 0 {
-		return nil
-	}
-	// Sort not assumed; compute incrementally by stepping from prior horizon.
-	// We reuse the Step machinery, stepping from the previous horizon.
-	// Make a sorted copy to step incrementally.
-	sorted := make([]int, len(horizons))
-	idx := make([]int, len(horizons))
-	copy(sorted, horizons)
-	for i := range idx {
-		idx[i] = i
-	}
-	// Insertion sort (small n).
-	for i := 1; i < len(sorted); i++ {
-		for j := i; j > 0 && sorted[j] < sorted[j-1]; j-- {
-			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
-			idx[j], idx[j-1] = idx[j-1], idx[j]
-		}
-	}
-
-	out := make([][]float64, len(horizons))
-	cur := make([]float64, len(pi))
-	copy(cur, pi)
-	prev := 0
-	for rank, h := range sorted {
-		steps := h - prev
-		if steps < 0 {
-			steps = 0
-		}
-		cur = c.Step(cur, steps)
-		cp := make([]float64, len(cur))
-		copy(cp, cur)
-		out[idx[rank]] = cp
-		prev = h
-	}
-	return out
 }
 
 // Entropy computes Shannon entropy H(π) in bits.
@@ -200,49 +125,7 @@ func (c *Chain) PathLogLikelihood(path []int) float64 {
 	return nll
 }
 
-// NormalizedPathNLL returns the per-transition NLL: PathLogLikelihood / (len-1).
-// This normalizes for path length, enabling fair comparison across users.
-// Returns 0 for paths shorter than 2.
-func (c *Chain) NormalizedPathNLL(path []int) float64 {
-	if len(path) < 2 {
-		return 0
-	}
-	nll := c.PathLogLikelihood(path)
-	if math.IsInf(nll, 1) {
-		return nll
-	}
-	return nll / float64(len(path)-1)
-}
-
-// BrierScore returns the Brier score for a single forecast.
-// pi is the predicted distribution; actual is the observed state index.
-// BrierScore = Σ_i (p_i - o_i)² where o_i = 1 iff i == actual.
-func BrierScore(pi []float64, actual int) float64 {
-	var score float64
-	for i, p := range pi {
-		o := 0.0
-		if i == actual {
-			o = 1.0
-		}
-		d := p - o
-		score += d * d
-	}
-	return score
-}
-
-// LogLoss returns the log loss for a single forecast.
-// LogLoss = -log(p[actual]), clamped to prevent log(0).
-func LogLoss(pi []float64, actual int) float64 {
-	if actual < 0 || actual >= len(pi) {
-		return math.Inf(1)
-	}
-	p := math.Max(1e-15, pi[actual])
-	return -math.Log(p)
-}
-
 // Decay multiplies all counts by the decay factor to down-weight old observations.
-// The smoothing prior cells are not re-floored — they decay proportionally to
-// the observation mass, preserving the relative prior weight.
 func (c *Chain) Decay() {
 	c.mu.Lock()
 	for i := range c.counts {
@@ -338,28 +221,6 @@ func ones(m int) []float64 {
 		v[i] = 1
 	}
 	return v
-}
-
-// DominantTransitionP returns the probability of the most-likely next state
-// from state s under the current smoothed transition matrix. Used by the engine
-// to compute Beta credible intervals without a full Counts() deep copy.
-func (c *Chain) DominantTransitionP(s int) float64 {
-	if s < 0 || s >= c.n {
-		return 0
-	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	var total, maxCount float64
-	for _, v := range c.counts[s] {
-		total += v
-		if v > maxCount {
-			maxCount = v
-		}
-	}
-	if total < 1e-12 {
-		return 1.0 / float64(c.n)
-	}
-	return maxCount / total
 }
 
 // solveLinear solves A·x = b via Gaussian elimination with partial pivoting.

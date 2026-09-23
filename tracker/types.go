@@ -275,6 +275,19 @@ func (ul *UserList) ForEach(fn func(passkey string, u *User) bool) {
 	}
 }
 
+// GetByID returns the first user matching the given UserID.
+// Linear scan — only use off the hot path (e.g. fraud enforcement).
+func (ul *UserList) GetByID(id UserID) (*User, bool) {
+	ul.mu.RLock()
+	defer ul.mu.RUnlock()
+	for _, u := range ul.users {
+		if u.ID == id {
+			return u, true
+		}
+	}
+	return nil, false
+}
+
 // Reset clears all users. Used during full list reloads.
 func (ul *UserList) Reset() {
 	ul.mu.Lock()
@@ -297,6 +310,10 @@ type Stats struct {
 	EvictedPeers      atomic.Uint64
 	AnomalyDetections atomic.Uint64
 	StartTime         time.Time
+
+	// ML security counters — incremented when anomaly/client detectors fire.
+	ClientRejections  atomic.Uint64 // known_malicious_client, suspicious_client_id_pattern
+	AnomalyRejections atomic.Uint64 // ratio_cheating, impossible_upload_speed, ddos_pattern, …
 }
 
 // Whitelist is a concurrent-safe list of allowed BitTorrent client peer_id prefixes.

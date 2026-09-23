@@ -45,14 +45,14 @@ func (a *ConfiguredAdapter) ValidateAgent(agentID []byte) bool {
 
 // ParseEvent converts an HTTP request to a domain-neutral Event.
 // Bencode domains use URL query params (BitTorrent); JSON domains use body.
-func (a *ConfiguredAdapter) ParseEvent(req *http.Request, opts ClientOpts) (*Event, error) {
+func (a *ConfiguredAdapter) ParseEvent(req *http.Request, opts ClientOpts) (*DomainEvent, error) {
 	if a.vocab.WireFormat.Format == "bencode" {
 		return a.parseBencodeEvent(req, opts)
 	}
 	return a.parseJSONEvent(req, opts)
 }
 
-func (a *ConfiguredAdapter) parseBencodeEvent(req *http.Request, opts ClientOpts) (*Event, error) {
+func (a *ConfiguredAdapter) parseBencodeEvent(req *http.Request, opts ClientOpts) (*DomainEvent, error) {
 	params := req.URL.Query()
 	v := a.vocab
 
@@ -116,7 +116,7 @@ func (a *ConfiguredAdapter) parseBencodeEvent(req *http.Request, opts ClientOpts
 		ip = opts.ClientIP
 	}
 
-	return &Event{
+	return &DomainEvent{
 		ResourceKey: resourceKey,
 		AgentID:     agentID,
 		Port:        uint16(port),
@@ -148,7 +148,7 @@ type jsonEventRequest struct {
 	IP          string  `json:"ip,omitempty"`
 }
 
-func (a *ConfiguredAdapter) parseJSONEvent(req *http.Request, opts ClientOpts) (*Event, error) {
+func (a *ConfiguredAdapter) parseJSONEvent(req *http.Request, opts ClientOpts) (*DomainEvent, error) {
 	var body jsonEventRequest
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
@@ -168,7 +168,7 @@ func (a *ConfiguredAdapter) parseJSONEvent(req *http.Request, opts ClientOpts) (
 		ip = opts.ClientIP
 	}
 
-	return &Event{
+	return &DomainEvent{
 		ResourceKey: body.ResourceKey,
 		AgentID:     []byte(body.AgentID),
 		Port:        body.Port,
@@ -296,7 +296,7 @@ func (a *ConfiguredAdapter) FormatError(msg string, httpClose bool) []byte {
 
 // EventToAnnounceRequest converts a domain-neutral Event back to the
 // BT-specific AnnounceRequest so the existing Worker.Announce can be reused.
-func EventToAnnounceRequest(e *Event, v *VocabularyConfig) *AnnounceRequest {
+func EventToAnnounceRequest(e *DomainEvent, v *VocabularyConfig) *AnnounceRequest {
 	var eventStr string
 	switch e.Type {
 	case EventTypeJoin:
