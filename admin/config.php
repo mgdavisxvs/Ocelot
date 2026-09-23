@@ -23,6 +23,67 @@ define('ADMIN_PASS', password_hash('changeme', PASSWORD_BCRYPT));
 // Timezone
 date_default_timezone_set('UTC');
 
+// ---------------------------------------------------------------------------
+// Front-end asset delivery policy
+//
+// 'local' (default, recommended): serve the pinned, vendored copies from this
+//   origin. No third-party origin can execute script inside an authenticated
+//   admin page, and a CDN outage cannot blank the UI. Still zero build step -
+//   the vendored files are the same artifacts the CDN serves.
+//
+// 'cdn': restore third-party delivery. Pinned to the exact versions below and
+//   guarded by Subresource Integrity, so a substituted payload is refused by
+//   the browser rather than executed. Strictly weaker than 'local': it trades
+//   availability and supply-chain risk for origin bandwidth.
+//
+// Switching is a one-line change. Nothing else in the panel depends on it.
+define('ASSET_MODE', 'local');
+
+// Pinned front-end dependencies. SRI digests were computed from the exact
+// bytes served by each CDN at pin time; regenerate with tools/regen-assets.sh
+// whenever a version here changes, or 'cdn' mode will refuse to load.
+const ASSETS = [
+    'tailwind' => [
+        'local' => 'assets/vendor/tailwind-3.4.16.js',
+        'cdn'   => 'https://cdn.tailwindcss.com/3.4.16',
+        'sri'   => 'sha384-mS5Uq7sE90lgbBDN8xgf34ibEgbZo4gB3tfLY40ZRle+M188BQw8onzNHg6GUZaA',
+        'defer' => false,
+    ],
+    'alpine' => [
+        'local' => 'assets/vendor/alpine-3.14.9.js',
+        'cdn'   => 'https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js',
+        'sri'   => 'sha384-9Ax3MmS9AClxJyd5/zafcXXjxmwFhZCdsT6HJoJjarvCaAkJlk5QDzjLJm+Wdx5F',
+        'defer' => true,
+    ],
+    'd3' => [
+        'local' => 'assets/vendor/d3-7.9.0.js',
+        'cdn'   => 'https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js',
+        'sri'   => 'sha384-CjloA8y00+1SDAUkjs099PVfnY2KmDC2BZnws9kh8D/lX1s46w6EPhpXdqMfjK6i',
+        'defer' => false,
+    ],
+];
+
+/**
+ * Emit a <script> tag for a pinned dependency under the active ASSET_MODE.
+ *
+ * In 'cdn' mode the tag always carries integrity + crossorigin. There is no
+ * code path that emits an unpinned or unguarded third-party script.
+ */
+function asset_script(string $key): string
+{
+    $a = ASSETS[$key] ?? null;
+    if ($a === null) {
+        return '';
+    }
+    $defer = $a['defer'] ? ' defer' : '';
+    if (ASSET_MODE === 'cdn') {
+        return '<script' . $defer . ' src="' . htmlspecialchars($a['cdn'], ENT_QUOTES)
+             . '" integrity="' . htmlspecialchars($a['sri'], ENT_QUOTES)
+             . '" crossorigin="anonymous" referrerpolicy="no-referrer"></script>';
+    }
+    return '<script' . $defer . ' src="' . htmlspecialchars($a['local'], ENT_QUOTES) . '"></script>';
+}
+
 // Database Helper - Connects to current or specific shard
 class OcelotDB {
     private static $connections = [];
@@ -112,8 +173,105 @@ function timeAgo($timestamp) {
     return date('Y-m-d H:i', $timestamp);
 }
 
-// Simple session-based auth
-session_start();
+// ---------------------------------------------------------------------------
+// Session hardening (FV-05)
+//
+// Cookie parameters must be set BEFORE session_start() or they are ignored.
+// httponly keeps the session cookie out of reach of any script on the page;
+// samesite=Lax is defence in depth BEHIND the CSRF token below, never instead
+// of it. 'secure' is set only when the request actually arrived over TLS, so
+// this still works on a plain-HTTP development host.
+// ---------------------------------------------------------------------------
+$isHttps = (!empty($_SERVER['HTTPS']) && strtolower($_SERVER['HTTPS']) !== 'off')
+        || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path'     => '/',
+        'httponly' => true,
+        'secure'   => $isHttps,
+        'samesite' => 'Lax',
+    ]);
+    session_start();
+}
+
+// ---------------------------------------------------------------------------
+// CSRF protection (FV-06)
+//
+// Every state-mutating request must present a token bound to the session.
+// Browsers will happily send the session cookie on a cross-site request; they
+// will not send this token, because an attacker's page cannot read it.
+// ---------------------------------------------------------------------------
+
+/** Per-session CSRF token, minted on first use. */
+function csrf_token(): string
+{
+    if (empty($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['csrf_token'];
+}
+
+/** Hidden input carrying the token. Place inside every mutating <form>. */
+function csrf_field(): string
+{
+    return '<input type="hidden" name="csrf_token" value="'
+         . htmlspecialchars(csrf_token(), ENT_QUOTES) . '">';
+}
+
+/** Constant-time comparison against the session token. */
+function csrf_verify(?string $token): bool
+{
+    return is_string($token)
+        && $token !== ''
+        && !empty($_SESSION['csrf_token'])
+        && hash_equals($_SESSION['csrf_token'], $token);
+}
+
+/**
+ * Reject the request unless it carries a valid token.
+ *
+ * Accepts the token from a form field or from the X-CSRF-Token header, so
+ * fetch()-driven endpoints are covered by the same check as <form> posts.
+ */
+function csrf_require(bool $asJson = false): void
+{
+    $token = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    if (csrf_verify(is_string($token) ? $token : '')) {
+        return;
+    }
+    http_response_code(403);
+    if ($asJson) {
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'CSRF token missing or invalid']);
+    } else {
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "403 Forbidden - CSRF token missing or invalid.";
+    }
+    exit;
+}
+
+// ---------------------------------------------------------------------------
+// Output encoding helpers (FV-04 / R-01)
+//
+// Distinct helpers per output context, because the contexts are not
+// interchangeable: HTML text, URL query parameter, and JS numeric literal each
+// require a different encoder. Named short so that escaping is the path of
+// least resistance at the call site.
+// ---------------------------------------------------------------------------
+
+/** Escape for HTML text or a quoted attribute value. */
+function e($value): string
+{
+    return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+}
+
+/** Escape for use inside a URL query string. */
+function eu($value): string
+{
+    return urlencode((string) $value);
+}
 
 function requireAuth() {
     if (!isset($_SESSION['authenticated']) || $_SESSION['authenticated'] !== true) {

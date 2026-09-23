@@ -8,6 +8,7 @@ $error = '';
 
 // Handle torrent actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_require();
     $action = $_POST['action'] ?? '';
 
     try {
@@ -70,7 +71,7 @@ include 'includes/header.php';
     <?php if ($success): ?>
     <div class="rounded-md bg-green-900 border border-green-700 p-4 mb-6">
         <div class="flex">
-            <i data-lucide="check-circle" class="h-5 w-5 text-green-400"></i>
+            <?= icon('check-circle', 'h-5 w-5 text-green-400') ?>
             <div class="ml-3">
                 <p class="text-sm text-green-200"><?= htmlspecialchars($success) ?></p>
             </div>
@@ -81,7 +82,7 @@ include 'includes/header.php';
     <?php if ($error): ?>
     <div class="rounded-md bg-red-900 border border-red-700 p-4 mb-6">
         <div class="flex">
-            <i data-lucide="alert-circle" class="h-5 w-5 text-red-400"></i>
+            <?= icon('alert-circle', 'h-5 w-5 text-red-400') ?>
             <div class="ml-3">
                 <p class="text-sm text-red-200"><?= htmlspecialchars($error) ?></p>
             </div>
@@ -93,13 +94,13 @@ include 'includes/header.php';
     <div class="mb-6 flex justify-between items-center">
         <div>
             <p class="text-sm text-gray-400">
-                <i data-lucide="info" class="inline-block w-4 h-4"></i>
+                <?= icon('info', 'inline-block w-4 h-4') ?>
                 Showing <?= count($torrents) ?> active torrents
             </p>
         </div>
         <button @click="showAddModal = true"
                 class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700">
-            <i data-lucide="plus" class="w-4 h-4 mr-2"></i>
+            <?= icon('plus', 'w-4 h-4 mr-2') ?>
             Add Torrent
         </button>
     </div>
@@ -122,7 +123,7 @@ include 'includes/header.php';
                 <?php if (empty($torrents)): ?>
                 <tr>
                     <td colspan="7" class="px-6 py-8 text-center text-gray-400">
-                        <i data-lucide="disc" class="w-12 h-12 mx-auto mb-2 opacity-50"></i>
+                        <?= icon('disc', 'w-12 h-12 mx-auto mb-2 opacity-50') ?>
                         <p>No active torrents found</p>
                     </td>
                 </tr>
@@ -137,18 +138,18 @@ include 'includes/header.php';
                     ?>
                     <tr>
                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-white">
-                            <?= $torrent['torrent_id'] ?>
+                            <?= e($torrent['torrent_id']) ?>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-green-400">
-                            <i data-lucide="arrow-up" class="inline w-4 h-4"></i>
-                            <?= $torrent['seeders'] ?>
+                            <?= icon('arrow-up', 'inline w-4 h-4') ?>
+                            <?= e($torrent['seeders']) ?>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-yellow-400">
-                            <i data-lucide="arrow-down" class="inline w-4 h-4"></i>
-                            <?= $torrent['leechers'] ?>
+                            <?= icon('arrow-down', 'inline w-4 h-4') ?>
+                            <?= e($torrent['leechers']) ?>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-blue-400">
-                            <?= $torrent['total_peers'] ?>
+                            <?= e($torrent['total_peers']) ?>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-purple-400">
                             <?= $snatches ?>
@@ -180,7 +181,7 @@ include 'includes/header.php';
             <div class="flex justify-between items-center mb-4">
                 <h3 class="text-lg font-medium text-white">Add New Torrent</h3>
                 <button @click="showAddModal = false" class="text-gray-400 hover:text-white">
-                    <i data-lucide="x" class="w-5 h-5"></i>
+                    <?= icon('x', 'w-5 h-5') ?>
                 </button>
             </div>
 
@@ -200,7 +201,7 @@ include 'includes/header.php';
                        class="hidden">
 
                 <div x-show="!uploading && !torrentInfo">
-                    <i data-lucide="upload" class="w-12 h-12 mx-auto mb-2 text-gray-400"></i>
+                    <?= icon('upload', 'w-12 h-12 mx-auto mb-2 text-gray-400') ?>
                     <p class="text-sm text-gray-300">Drop .torrent file here</p>
                     <p class="text-xs text-gray-500 mt-1">or click to browse</p>
                 </div>
@@ -220,7 +221,7 @@ include 'includes/header.php';
                             <p class="text-xs text-gray-400" x-text="torrentInfo?.size_formatted"></p>
                         </div>
                         <button @click.stop="clearTorrent()" class="text-gray-400 hover:text-white ml-2">
-                            <i data-lucide="x" class="w-4 h-4"></i>
+                            <?= icon('x', 'w-4 h-4') ?>
                         </button>
                     </div>
                     <div class="text-xs text-gray-500">
@@ -236,6 +237,7 @@ include 'includes/header.php';
             </div>
 
             <form method="POST" class="space-y-4">
+                <?= csrf_field() ?>
                 <input type="hidden" name="action" value="add">
 
                 <div>
@@ -318,6 +320,8 @@ function torrentUploader() {
             try {
                 const response = await fetch('api/parse-torrent.php', {
                     method: 'POST',
+                    // Same token the forms carry. The endpoint requires it.
+                    headers: { 'X-CSRF-Token': CSRF_TOKEN },
                     body: formData
                 });
 
@@ -329,9 +333,6 @@ function torrentUploader() {
 
                 this.torrentInfo = data;
                 this.infoHash = data.info_hash;
-
-                // Reinitialize Lucide icons for the new content
-                setTimeout(() => lucide.createIcons(), 100);
 
             } catch (error) {
                 this.errorMsg = error.message;
