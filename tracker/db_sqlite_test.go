@@ -923,6 +923,7 @@ func TestPrepareStatements_ClosedDB_ReturnsError(t *testing.T) {
 	}
 }
 
+
 // ── openCurrentDB — existing-path branch (no rotation) ───────────────────────
 
 func TestOpenCurrentDB_WithExistingPath_SkipsRotation(t *testing.T) {
