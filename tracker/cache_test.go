@@ -119,3 +119,29 @@ func TestUserCache_Delete(t *testing.T) {
 		t.Error("user should be gone after Delete")
 	}
 }
+
+// ── Cache TTL expiry ──────────────────────────────────────────────────────────
+
+func TestCache_Get_ExpiredItem(t *testing.T) {
+	c := NewCache(10 * time.Millisecond)
+	c.Set("expiring", "value")
+
+	time.Sleep(25 * time.Millisecond)
+
+	_, ok := c.Get("expiring")
+	if ok {
+		t.Error("expired item should return false from Get")
+	}
+}
+
+func TestCache_SetWithTTL_OverridesDefault(t *testing.T) {
+	c := NewCache(time.Hour)
+	c.SetWithTTL("shortlived", 42, 10*time.Millisecond)
+
+	time.Sleep(25 * time.Millisecond)
+
+	_, ok := c.Get("shortlived")
+	if ok {
+		t.Error("item with short TTL override should be expired")
+	}
+}

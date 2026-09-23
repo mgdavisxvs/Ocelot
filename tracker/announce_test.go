@@ -628,3 +628,272 @@ func TestMinInt(t *testing.T) {
 		t.Error("minInt(4,4) != 4")
 	}
 }
+
+// ── Announce — FreeType paths ─────────────────────────────────────────────────
+
+// doTwoAnnounces performs a "started" then a second announce with higher stats.
+// It returns the mockDB after both calls.
+func doTwoAnnounces(t *testing.T, freeType FreeType, hasToken bool) (*Worker, *mockDB, *mockSiteComm) {
+	t.Helper()
+	w, db, sc := newTestWorker()
+
+	const infoHash = "testhash000000000001"
+	tor := NewTorrent(1)
+	tor.FreeType = freeType
+	if hasToken {
+		u := NewUser(1, true, false)
+		tor.TokenedUsers[u.ID] = struct{}{}
+	}
+	w.Torrents.Set(infoHash, tor)
+	u := NewUser(1, true, false)
+	w.Users.Set("testpasskey", u)
+
+	ip := net.ParseIP("10.0.0.1")
+
+	// First announce: sets baseline uploaded/downloaded.
+	req1 := newAnnounceReq("started", 500)
+	req1.Uploaded = 1000
+	req1.Downloaded = 500
+	if _, err := w.Announce(req1, u, ip, ""); err != nil {
+		t.Fatalf("first announce: %v", err)
+	}
+
+	// Second announce: higher stats → causes transfer-delta calculation.
+	req2 := newAnnounceReq("", 500)
+	req2.Uploaded = 3000
+	req2.Downloaded = 1500
+	if _, err := w.Announce(req2, u, ip, ""); err != nil {
+		t.Fatalf("second announce: %v", err)
+	}
+
+	return w, db, sc
+}
+
+func TestAnnounce_FreeNeutral_NoStatsRecorded(t *testing.T) {
+	_, db, _ := doTwoAnnounces(t, FreeNeutral, false)
+	// FreeNeutral: both uploadedChange and downloadedChange → 0, so RecordUserStats must not be called.
+	if db.userStatRecs != 0 {
+		t.Errorf("userStatRecs = %d, want 0 for FreeNeutral", db.userStatRecs)
+	}
+}
+
+func TestAnnounce_FreeFree_NoDownloadStats(t *testing.T) {
+	_, db, _ := doTwoAnnounces(t, FreeFree, false)
+	// FreeFree: downloadedChange → 0 but uploadedChange stays → RecordUserStats called
+	// with downloaded=0.  The call count is 1.
+	if db.userStatRecs != 1 {
+		t.Errorf("userStatRecs = %d, want 1 for FreeFree", db.userStatRecs)
+	}
+}
+
+func TestAnnounce_TokenExpiry_CalledAndRemoved(t *testing.T) {
+	// Token expiry fires only inside the completedTorrent block.
+	// Sequence: start as leecher with token → complete the download.
+	w, db, sc := newTestWorker()
+
+	const infoHash = "testhash000000000001"
+	tor := NewTorrent(1)
+	tor.FreeType = FreeNormal
+	u := NewUser(1, true, false)
+	tor.TokenedUsers[u.ID] = struct{}{}
+	w.Torrents.Set(infoHash, tor)
+	w.Users.Set("testpasskey", u)
+	ip := net.ParseIP("10.0.0.1")
+
+	// First announce: join as leecher with some upload/download baseline.
+	req1 := newAnnounceReq("started", 500)
+	req1.Uploaded = 1000
+	req1.Downloaded = 500
+	if _, err := w.Announce(req1, u, ip, ""); err != nil {
+		t.Fatalf("first announce: %v", err)
+	}
+
+	// Second announce: complete with higher stats — triggers token expiry path.
+	req2 := newAnnounceReq("completed", 0)
+	req2.Uploaded = 3000
+	req2.Downloaded = 1500
+	if _, err := w.Announce(req2, u, ip, ""); err != nil {
+		t.Fatalf("completed announce: %v", err)
+	}
+
+	// Token present on FreeNormal torrent with delta > 0: expireToken fires.
+	if sc.expired != 1 {
+		t.Errorf("ExpireToken calls = %d, want 1", sc.expired)
+	}
+	// RecordToken (tracking downloaded under token) should be called once.
+	if db.tokenRecs != 1 {
+		t.Errorf("tokenRecs = %d, want 1", db.tokenRecs)
+	}
+	// After expiry the token must be gone from TokenedUsers.
+	tor.mu.RLock()
+	_, stillHas := tor.TokenedUsers[UserID(1)]
+	tor.mu.RUnlock()
+	if stillHas {
+		t.Error("token still in TokenedUsers after expiry")
+	}
+}
+
+// ── Announce — stopped seeder decrements seeders ─────────────────────────────
+
+func TestAnnounce_StoppedSeeder_DecrementsSeeders(t *testing.T) {
+	w, _, _, u := setupAnnounce(t)
+	ip := net.ParseIP("10.0.0.1")
+
+	// Join as seeder (left=0).
+	req := newAnnounceReq("started", 0)
+	if _, err := w.Announce(req, u, ip, ""); err != nil {
+		t.Fatal(err)
+	}
+	if w.Stats.Seeders.Load() != 1 {
+		t.Fatalf("seeders = %d, want 1 after seeder join", w.Stats.Seeders.Load())
+	}
+
+	// Stop the seeder.
+	req2 := newAnnounceReq("stopped", 0)
+	if _, err := w.Announce(req2, u, ip, ""); err != nil {
+		t.Fatal(err)
+	}
+	if w.Stats.Seeders.Load() != 0 {
+		t.Errorf("seeders = %d, want 0 after seeder stop", w.Stats.Seeders.Load())
+	}
+}
+
+// ── selectPeers — leecher receives other leechers when no seeders ─────────────
+
+func TestSelectPeers_LeecherReceivesOtherLeechers(t *testing.T) {
+	w, _, _ := newTestWorker()
+	tor := NewTorrent(1)
+
+	// Add 2 leechers (no seeders)
+	for i := 0; i < 2; i++ {
+		p := &Peer{
+			UserID:  UserID(10 + i),
+			IP:      net.ParseIP("3.3.3.3"),
+			Port:    uint16(7000 + i),
+			Visible: true,
+		}
+		p.IPPort = CompactIPPort(p.IP, p.Port)
+		tor.Leechers.Set(string(rune('m'+i)), p)
+	}
+
+	// The requesting leecher (UserID=99) is NOT in the list.
+	self := &Peer{UserID: 99}
+	got := w.selectPeers(tor, self, 99, 50, true)
+	// Should receive both other leechers (12 bytes = 2×6).
+	if len(got) != 12 {
+		t.Errorf("leecher-to-leecher: got %d bytes, want 12", len(got))
+	}
+}
+
+// ── Announce — stats-reset path (client restarted) ───────────────────────────
+
+func TestAnnounce_UploadReset_UpdatesPeer(t *testing.T) {
+	w, db, _, u := setupAnnounce(t)
+	ip := net.ParseIP("10.0.0.1")
+
+	// First announce: uploaded=5000
+	req1 := newAnnounceReq("started", 500)
+	req1.Uploaded = 5000
+	req1.Downloaded = 2000
+	if _, err := w.Announce(req1, u, ip, ""); err != nil {
+		t.Fatalf("first announce: %v", err)
+	}
+
+	// Second announce: uploaded=100 (lower — client restarted) → reset branch
+	req2 := newAnnounceReq("", 500)
+	req2.Uploaded = 100
+	req2.Downloaded = 50
+	if _, err := w.Announce(req2, u, ip, ""); err != nil {
+		t.Fatalf("reset announce: %v", err)
+	}
+
+	// peerChanged=true on reset; peer record should be updated.
+	if db.peerRecords < 2 {
+		t.Errorf("peerRecords = %d, want ≥ 2 (one per announce)", db.peerRecords)
+	}
+}
+
+// ── Announce — corrupt bytes change path ─────────────────────────────────────
+
+func TestAnnounce_CorruptChange_UpdatesBalance(t *testing.T) {
+	w, _, _, u := setupAnnounce(t)
+	ip := net.ParseIP("10.0.0.1")
+
+	// First announce: corrupt=0
+	req1 := newAnnounceReq("started", 500)
+	req1.Corrupt = 0
+	if _, err := w.Announce(req1, u, ip, ""); err != nil {
+		t.Fatalf("first announce: %v", err)
+	}
+
+	// Second announce: corrupt=1000 → corruptChange > 0 → balance decremented
+	req2 := newAnnounceReq("", 500)
+	req2.Corrupt = 1000
+	if _, err := w.Announce(req2, u, ip, ""); err != nil {
+		t.Fatalf("corrupt announce: %v", err)
+	}
+
+	tor, _ := w.Torrents.Get(req1.InfoHash)
+	tor.mu.RLock()
+	balance := tor.Balance
+	tor.mu.RUnlock()
+	if balance != -1000 {
+		t.Errorf("torrent Balance = %d, want -1000 (corrupt bytes subtracted)", balance)
+	}
+}
+
+// ── Commons economic settlement ───────────────────────────────────────────────
+
+func TestAnnounce_CommonsSettlement_Called(t *testing.T) {
+	mc := newMockCommons()
+	db := &mockDB{}
+	sc := &mockSiteComm{}
+	w := &Worker{
+		Config: &Config{
+			AnnounceInterval: 1800,
+			NumWantLimit:     50,
+			PeersTimeout:     7200,
+		},
+		DB:       db,
+		SiteComm: sc,
+		Commons:  mc,
+		Torrents: NewTorrentList(),
+		Users:    NewUserList(),
+		Whitelist: NewWhitelist(),
+		Stats:    &Stats{StartTime: time.Now()},
+	}
+
+	const infoHash = "testhash000000000001"
+	tor := NewTorrent(1)
+	tor.FreeType = FreeNormal
+	w.Torrents.Set(infoHash, tor)
+	u := NewUser(1, true, false)
+	w.Users.Set("testpasskey", u)
+	ip := net.ParseIP("10.0.0.1")
+
+	// First announce: establish baseline uploaded/downloaded.
+	req1 := newAnnounceReq("started", 500)
+	req1.Uploaded = 1000
+	req1.Downloaded = 500
+	if _, err := w.Announce(req1, u, ip, ""); err != nil {
+		t.Fatalf("first announce: %v", err)
+	}
+
+	// Second announce: higher stats → uploadedChange > 0 → Commons.SettleAnnounce goroutine fires.
+	req2 := newAnnounceReq("", 500)
+	req2.Uploaded = 3000
+	req2.Downloaded = 1500
+	if _, err := w.Announce(req2, u, ip, ""); err != nil {
+		t.Fatalf("second announce: %v", err)
+	}
+
+	// Allow the async goroutine to complete.
+	time.Sleep(20 * time.Millisecond)
+
+	mc.mu.Lock()
+	settled := len(mc.Settled)
+	mc.mu.Unlock()
+	if settled == 0 {
+		t.Error("expected Commons.SettleAnnounce to be called at least once")
+	}
+}

@@ -1153,3 +1153,78 @@ func TestGetPeers_LimitTruncates(t *testing.T) {
 		t.Errorf("expected 2 peers (limit), got %d", len(peers))
 	}
 }
+
+func TestGetPeers_IncludesLeechers(t *testing.T) {
+	w := newAdminWorker()
+	ih := "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"
+	tor := NewTorrent(5)
+
+	// One seeder, one leecher — both should appear.
+	seeder := &Peer{UserID: 1, IP: net.ParseIP("1.1.1.1"), Port: 6000}
+	tor.Seeders.Set("sk1", seeder)
+	leecher := &Peer{UserID: 2, IP: net.ParseIP("2.2.2.2"), Port: 7000}
+	tor.Leechers.Set("lk1", leecher)
+	w.Torrents.Set(ih, tor)
+
+	data, err := w.GetPeers(ih, 10)
+	if err != nil {
+		t.Fatalf("GetPeers: %v", err)
+	}
+	var ps []PeerInfo
+	json.Unmarshal(data, &ps)
+	if len(ps) != 2 {
+		t.Errorf("expected 2 peers (1 seeder + 1 leecher), got %d", len(ps))
+	}
+}
+
+func TestGetPeers_TorrentNotFound(t *testing.T) {
+	w := newAdminWorker()
+	_, err := w.GetPeers("nonexistenthash00000000000000000000000", 10)
+	if err == nil {
+		t.Error("expected error for missing torrent")
+	}
+}
+
+// ── removeUser ────────────────────────────────────────────────────────────────
+
+func TestRemoveUser_NotFound(t *testing.T) {
+	w := newAdminWorker()
+	resp, _ := w.removeUser(map[string][]string{
+		"passkey": {"doesnotexist12345678901234567890"},
+	})
+	var result map[string]string
+	json.Unmarshal(resp, &result)
+	if result["status"] != "error" {
+		t.Errorf("status = %q, want \"error\"", result["status"])
+	}
+}
+
+func TestRemoveUser_Success(t *testing.T) {
+	w := newAdminWorker()
+	w.Users.Set("removeme12345678901234567890", NewUser(77, true, false))
+
+	resp, err := w.removeUser(map[string][]string{
+		"passkey": {"removeme12345678901234567890"},
+	})
+	if err != nil {
+		t.Fatalf("removeUser: %v", err)
+	}
+	var result map[string]string
+	json.Unmarshal(resp, &result)
+	if result["status"] != "ok" {
+		t.Errorf("status = %q, want \"ok\"", result["status"])
+	}
+	if _, ok := w.Users.Get("removeme12345678901234567890"); ok {
+		t.Error("user still in Users map after removeUser")
+	}
+}
+
+func TestRemoveUser_MissingPasskey(t *testing.T) {
+	w := newAdminWorker()
+	resp, _ := w.removeUser(map[string][]string{})
+	var result map[string]string
+	json.Unmarshal(resp, &result)
+	if result["status"] != "error" {
+		t.Errorf("status = %q, want \"error\"", result["status"])
+	}
+}

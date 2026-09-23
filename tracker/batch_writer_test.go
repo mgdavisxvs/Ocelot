@@ -253,3 +253,83 @@ func TestBatchWriter_FlushPeerAnnounce(t *testing.T) {
 		t.Error("expected at least one peer row in DB after flush")
 	}
 }
+
+// ── processLoop — ticker-based flush ─────────────────────────────────────────
+
+func TestBatchWriter_TickerFlush(t *testing.T) {
+	db := newBatchDB(t)
+	db.Exec("INSERT INTO torrents (info_hash, seeders, leechers, last_action) VALUES ('tickhash', 0, 0, 0)")
+
+	// batchSize=100 means a single item won't trigger a size-based flush;
+	// the short interval ensures the ticker fires first.
+	bw := NewBatchWriter(db, 100, 20*time.Millisecond)
+
+	bw.QueueTorrentUpdate("tickhash", 9, 4)
+
+	// Wait for ticker to fire (≥20ms) then a bit more for the flush to land.
+	time.Sleep(80 * time.Millisecond)
+	bw.Stop()
+
+	var seeders int
+	db.QueryRow("SELECT seeders FROM torrents WHERE info_hash = 'tickhash'").Scan(&seeders)
+	if seeders != 9 {
+		t.Errorf("seeders = %d, want 9 after ticker flush", seeders)
+	}
+}
+
+// ── flush error paths ─────────────────────────────────────────────────────────
+
+func TestBatchWriter_Flush_ClosedDB_DoesNotPanic(t *testing.T) {
+	db := newBatchDB(t)
+	bw := &BatchWriter{
+		db:        db,
+		buffer:    make(chan DBOperation, 1),
+		ticker:    time.NewTicker(time.Hour),
+		batchSize: 10,
+		stopChan:  make(chan struct{}),
+		logger:    GetDefaultLogger(),
+		metrics:   GetMetricsRecorder(),
+	}
+	defer bw.ticker.Stop()
+
+	// Close the DB so Begin() fails — flush must not panic.
+	db.Close()
+	bw.flush([]DBOperation{{
+		Type: "torrent_update",
+		Data: map[string]interface{}{"info_hash": "h1", "seeders": 1, "leechers": 0},
+	}})
+}
+
+func TestBatchWriter_Flush_MissingPeersTable_DoesNotPanic(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+
+	// Only create torrents table — peers table is missing so tx.Prepare for peer insert fails.
+	db.Exec(`CREATE TABLE torrents (
+		info_hash TEXT PRIMARY KEY,
+		seeders INTEGER NOT NULL DEFAULT 0,
+		leechers INTEGER NOT NULL DEFAULT 0,
+		last_action INTEGER NOT NULL DEFAULT 0
+	)`)
+
+	bw := &BatchWriter{
+		db:        db,
+		buffer:    make(chan DBOperation, 1),
+		ticker:    time.NewTicker(time.Hour),
+		batchSize: 10,
+		stopChan:  make(chan struct{}),
+		logger:    GetDefaultLogger(),
+		metrics:   GetMetricsRecorder(),
+	}
+	defer bw.ticker.Stop()
+
+	// flush with a peer_announce op triggers the tx.Prepare error path for peers table.
+	bw.flush([]DBOperation{{
+		Type: "peer_announce",
+		Data: &PeerAnnounceData{InfoHash: "h", PeerID: "p", IP: "1.2.3.4", Port: 6881},
+	}})
+}

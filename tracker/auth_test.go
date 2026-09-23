@@ -213,3 +213,12 @@ func TestCreateAPIKeysTable_Idempotent(t *testing.T) {
 		t.Errorf("second CreateAPIKeysTable: %v", err)
 	}
 }
+
+func TestValidateAPIKey_DBClosed_ReturnsError(t *testing.T) {
+	db := newAuthDB(t)
+	db.Close() // force a DB-level error on QueryRow
+	_, err := ValidateAPIKey(db, "some-api-key")
+	if err == nil {
+		t.Error("expected error when DB is closed")
+	}
+}

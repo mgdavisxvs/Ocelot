@@ -2,6 +2,8 @@ package tracker
 
 import (
 	"database/sql"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -522,5 +524,155 @@ func TestLoader_LoadAll_TokenOrphanSkipped(t *testing.T) {
 	// No torrent in list → LoadAll should not panic or error
 	if torrents.Size() != 0 {
 		t.Errorf("expected 0 torrents, got %d", torrents.Size())
+	}
+}
+
+// ── loadHistoricalDBs ─────────────────────────────────────────────────────────
+
+func TestLoadHistoricalDBs_PicksUpOldFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a historical DB file using a past-month name so it won't be treated
+	// as the current month's DB.
+	oldName := "ocelot-2020-01.db"
+	oldPath := filepath.Join(dir, oldName)
+	tmpSM := &SQLiteShardManager{dbDir: dir, historicalDBs: make(map[string]*sql.DB)}
+	oldDB, err := tmpSM.openDB(oldPath)
+	if err != nil {
+		t.Fatalf("create old db: %v", err)
+	}
+	oldDB.Close()
+
+	// NewSQLiteShardManager should call loadHistoricalDBs and open ocelot-2020-01.db.
+	sm, err := NewSQLiteShardManager(dir)
+	if err != nil {
+		t.Fatalf("NewSQLiteShardManager: %v", err)
+	}
+	defer sm.Close()
+
+	if len(sm.historicalDBs) != 1 {
+		t.Errorf("historicalDBs = %d, want 1", len(sm.historicalDBs))
+	}
+	if _, ok := sm.historicalDBs[oldName]; !ok {
+		t.Errorf("expected key %q in historicalDBs", oldName)
+	}
+}
+
+func TestLoadHistoricalDBs_IgnoresNonDBFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Put a non-.db file in the dir — it must be ignored.
+	if err := writePlainFile(dir, "readme.txt", []byte("ignored")); err != nil {
+		t.Fatalf("write txt: %v", err)
+	}
+	// Also put a historical db to confirm the filter is selective, not total.
+	oldPath := filepath.Join(dir, "ocelot-2019-06.db")
+	tmpSM := &SQLiteShardManager{dbDir: dir, historicalDBs: make(map[string]*sql.DB)}
+	oldDB, _ := tmpSM.openDB(oldPath)
+	oldDB.Close()
+
+	sm, err := NewSQLiteShardManager(dir)
+	if err != nil {
+		t.Fatalf("NewSQLiteShardManager: %v", err)
+	}
+	defer sm.Close()
+
+	if len(sm.historicalDBs) != 1 {
+		t.Errorf("historicalDBs = %d, want 1 (only .db files)", len(sm.historicalDBs))
+	}
+}
+
+func TestGetUserStats_AggregatesAcrossShards(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create historical db, insert user stats into it.
+	oldPath := filepath.Join(dir, "ocelot-2020-01.db")
+	tmpSM := &SQLiteShardManager{dbDir: dir, historicalDBs: make(map[string]*sql.DB)}
+	oldDB, err := tmpSM.openDB(oldPath)
+	if err != nil {
+		t.Fatalf("open old db: %v", err)
+	}
+	// Create users table in the historical db.
+	_, err = oldDB.Exec(`CREATE TABLE IF NOT EXISTS users (
+		id INTEGER PRIMARY KEY,
+		uploaded INTEGER NOT NULL DEFAULT 0,
+		downloaded INTEGER NOT NULL DEFAULT 0
+	)`)
+	if err != nil {
+		oldDB.Close()
+		t.Fatalf("create users table: %v", err)
+	}
+	_, err = oldDB.Exec(`INSERT INTO users (id, uploaded, downloaded) VALUES (42, 1000, 500)`)
+	if err != nil {
+		oldDB.Close()
+		t.Fatalf("insert historical stats: %v", err)
+	}
+	oldDB.Close()
+
+	sm, err := NewSQLiteShardManager(dir)
+	if err != nil {
+		t.Fatalf("NewSQLiteShardManager: %v", err)
+	}
+	defer sm.Close()
+
+	// Write stats in the current shard as well.
+	sm.RecordUserStats(42, 2000, 800)
+
+	up, down, err := sm.GetUserStats(42)
+	if err != nil {
+		t.Fatalf("GetUserStats: %v", err)
+	}
+	if up != 3000 {
+		t.Errorf("uploaded = %d, want 3000 (1000 historical + 2000 current)", up)
+	}
+	if down != 1300 {
+		t.Errorf("downloaded = %d, want 1300 (500 historical + 800 current)", down)
+	}
+}
+
+// writePlainFile writes content to name inside dir.
+func writePlainFile(dir, name string, content []byte) error {
+	return os.WriteFile(filepath.Join(dir, name), content, 0644)
+}
+
+func TestGetDBStats_WithHistoricalDBs(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a historical db.
+	oldPath := filepath.Join(dir, "ocelot-2021-03.db")
+	tmpSM := &SQLiteShardManager{dbDir: dir, historicalDBs: make(map[string]*sql.DB)}
+	oldDB, err := tmpSM.openDB(oldPath)
+	if err != nil {
+		t.Fatalf("create historical db: %v", err)
+	}
+	oldDB.Close()
+
+	sm, err := NewSQLiteShardManager(dir)
+	if err != nil {
+		t.Fatalf("NewSQLiteShardManager: %v", err)
+	}
+	defer sm.Close()
+
+	curSize, numHist, total, err := sm.GetDBStats()
+	if err != nil {
+		t.Fatalf("GetDBStats: %v", err)
+	}
+	if numHist != 1 {
+		t.Errorf("numHistorical = %d, want 1", numHist)
+	}
+	if total < curSize {
+		t.Errorf("totalSize (%d) < currentSize (%d)", total, curSize)
+	}
+}
+
+// ── loadHistoricalDBs — non-existent directory ────────────────────────────────
+
+func TestLoadHistoricalDBs_NonExistentDir_ReturnsNil(t *testing.T) {
+	sm := &SQLiteShardManager{
+		dbDir:         "/nonexistent/dir/for/test/ocelot_xyz",
+		historicalDBs: make(map[string]*sql.DB),
+	}
+	if err := sm.loadHistoricalDBs(); err != nil {
+		t.Errorf("expected nil for non-existent dir, got: %v", err)
 	}
 }
