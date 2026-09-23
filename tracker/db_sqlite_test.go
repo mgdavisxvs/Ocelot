@@ -808,3 +808,23 @@ func TestReload_UsersError(t *testing.T) {
 		t.Fatal("expected error when user_passkeys missing, got nil")
 	}
 }
+
+func TestReload_WhitelistError(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	sm.currentDB.Exec("DROP TABLE whitelist")
+
+	loader := NewLoader(sm, NewTorrentList(), NewUserList(), NewWhitelist())
+	if err := loader.Reload(); err == nil {
+		t.Fatal("expected error when whitelist table missing, got nil")
+	}
+}
+
+func TestReload_TokensError(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	sm.currentDB.Exec("DROP TABLE tokens")
+
+	loader := NewLoader(sm, NewTorrentList(), NewUserList(), NewWhitelist())
+	if err := loader.Reload(); err == nil {
+		t.Fatal("expected error when tokens table missing, got nil")
+	}
+}

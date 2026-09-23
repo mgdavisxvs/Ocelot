@@ -259,3 +259,21 @@ func TestAuditLogger_Query_DBClosed_ReturnsError(t *testing.T) {
 		t.Error("expected error when DB is closed, got nil")
 	}
 }
+
+func TestAuditLogger_Query_FilterByEndTime(t *testing.T) {
+	db := newAuditDB(t)
+	al := NewAuditLogger(db)
+	ctx := context.Background()
+
+	al.Log(ctx, "old_act", "res", "id", true, nil)
+
+	// EndTime in the past → should exclude the row we just inserted
+	past := time.Now().Add(-time.Minute)
+	entries, err := al.Query(AuditFilters{EndTime: &past, Limit: 50})
+	if err != nil {
+		t.Fatalf("Query by end time: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected 0 entries before past end time, got %d", len(entries))
+	}
+}

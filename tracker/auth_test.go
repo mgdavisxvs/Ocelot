@@ -222,3 +222,12 @@ func TestValidateAPIKey_DBClosed_ReturnsError(t *testing.T) {
 		t.Error("expected error when DB is closed")
 	}
 }
+
+func TestCreateAPIKey_DBClosed_ReturnsError(t *testing.T) {
+	db := newAuthDB(t)
+	db.Close()
+	_, err := CreateAPIKey(db, 1, []string{"read"}, nil)
+	if err == nil {
+		t.Error("expected error when DB is closed, got nil")
+	}
+}

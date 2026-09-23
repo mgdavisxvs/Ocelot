@@ -316,3 +316,21 @@ func TestValidateIPNotPrivate_PrivateRanges(t *testing.T) {
 		}
 	}
 }
+
+// ── PeerKeyPrime ──────────────────────────────────────────────────────────────
+
+func TestPeerKeyPrime_ShortPeerID_ReturnsAsIs(t *testing.T) {
+	short := []byte("tooshort")
+	result := PeerKeyPrime(short, 1, 1)
+	if result != string(short) {
+		t.Errorf("short peerID: got %q, want %q", result, string(short))
+	}
+}
+
+func TestPeerKeyPrime_FullPeerID_ProducesLongerKey(t *testing.T) {
+	peerID := []byte("-qB40000000000000000") // exactly 20 bytes
+	result := PeerKeyPrime(peerID, 42, 100)
+	if len(result) <= len(peerID) {
+		t.Errorf("full peerID key length = %d, expected > %d", len(result), len(peerID))
+	}
+}
