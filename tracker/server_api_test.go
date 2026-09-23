@@ -563,3 +563,24 @@ func TestShutdown_NoListener_ReturnsNil(t *testing.T) {
 		t.Errorf("Shutdown on idle server: %v", err)
 	}
 }
+
+// TestShutdown_WithListener_ClosesListener verifies that Shutdown closes a
+// non-nil listener (covers the s.listener != nil branch at server.go:449).
+func TestShutdown_WithListener_ClosesListener(t *testing.T) {
+	f := newTestFixture()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.server.listener = ln
+
+	if err := f.server.Shutdown(); err != nil {
+		t.Errorf("Shutdown with listener: %v", err)
+	}
+
+	// Listener should be closed; a second Close returns an error.
+	if err := ln.Close(); err == nil {
+		t.Error("expected listener already closed, but Close succeeded again")
+	}
+}

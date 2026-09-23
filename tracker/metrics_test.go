@@ -46,3 +46,13 @@ func TestGetMetricsRecorder_ReturnsNonNil(t *testing.T) {
 		t.Fatal("GetMetricsRecorder() returned nil")
 	}
 }
+
+// TestStartMetricsServer_InvalidAddr covers the logger.Info + http.Handle +
+// http.ListenAndServe path by passing a syntactically invalid address that
+// fails immediately.
+func TestStartMetricsServer_InvalidAddr_ReturnsError(t *testing.T) {
+	err := StartMetricsServer("invalid-addr-no-colon")
+	if err == nil {
+		t.Error("expected error for invalid listen address, got nil")
+	}
+}
