@@ -112,9 +112,9 @@ func main() {
 	reaper.Start()
 	defer reaper.Stop()
 
-	scheduler := tracker.NewScheduler(db, config.ScheduleInterval)
-	scheduler.Start()
-	defer scheduler.Stop()
+	dbMaintainer := tracker.NewDBMaintainer(db, config.ScheduleInterval)
+	dbMaintainer.Start()
+	defer dbMaintainer.Stop()
 
 	// ── Signal handlers ───────────────────────────────────────────────────────
 	sigCh := make(chan os.Signal, 1)
