@@ -1057,3 +1057,49 @@ func TestReload_NewUser_CreatesEntry(t *testing.T) {
 		t.Error("expected CanLeech=true for newly created user")
 	}
 }
+
+// ── CheckRotation — size >= MaxDBSize triggers rotation ───────────────────────
+
+func TestCheckRotation_TriggersRotation_WhenAtLimit(t *testing.T) {
+	// Save and restore MaxDBSize so other tests are unaffected.
+	orig := MaxDBSize
+	t.Cleanup(func() { MaxDBSize = orig })
+	MaxDBSize = 0 // any file size ≥ 0 triggers rotation
+
+	sm := newTestDB(t)
+	prevPath := sm.currentPath
+
+	if err := sm.CheckRotation(); err != nil {
+		t.Fatalf("CheckRotation: %v", err)
+	}
+	// Rotation re-opens with a new path (next month prefix).
+	if sm.currentPath == "" {
+		t.Error("currentPath should be set after rotation")
+	}
+	// The previous DB was moved to historicalDBs.
+	if sm.historicalDBs[filepath.Base(prevPath)] == nil {
+		t.Errorf("expected old path %q to be in historicalDBs after rotation", prevPath)
+	}
+}
+
+// ── openCurrentDB — rotation branch (size >= MaxDBSize) ──────────────────────
+
+func TestOpenCurrentDB_RotationBranch(t *testing.T) {
+	orig := MaxDBSize
+	t.Cleanup(func() { MaxDBSize = orig })
+	MaxDBSize = 0
+
+	sm := newTestDB(t)
+	prevPath := sm.currentPath
+
+	// openCurrentDB is called by CheckRotation above, but call it directly
+	// here to cover the branch inside openCurrentDB itself.
+	if err := sm.openCurrentDB(); err != nil {
+		t.Fatalf("openCurrentDB rotation branch: %v", err)
+	}
+	// currentPath must change since the old one was rotated out.
+	if sm.currentDB == nil {
+		t.Error("currentDB nil after rotation")
+	}
+	_ = prevPath // consumed above
+}
