@@ -2,6 +2,7 @@ package virtualserver_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -262,17 +263,15 @@ func TestIntegration_Volume_ReleasingToReleased(t *testing.T) {
 		t.Fatalf("set releasing: %v", err)
 	}
 
-	// Reconcile: releasing → driver.Delete → released
+	// Reconcile: releasing → driver.Delete → released → row deleted
 	for pass := 0; pass < 2; pass++ {
 		rec.Reconcile(ctx) //nolint:errcheck
 	}
 
-	final, err := s.GetVolume(ctx, "vol-rel-1")
-	if err != nil {
-		t.Fatalf("get released volume: %v", err)
-	}
-	if final.State != domain.VolumeReleased {
-		t.Errorf("expected released, got %q", final.State)
+	// The reconciler deletes the DB row after release; GetVolume must return ErrNotFound.
+	_, err = s.GetVolume(ctx, "vol-rel-1")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("expected ErrNotFound after volume release+delete, got err=%v", err)
 	}
 	// Verify disk cleanup: directory must be gone after release.
 	if _, statErr := os.Stat(diskPath); !os.IsNotExist(statErr) {

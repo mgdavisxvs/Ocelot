@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	defaultInterval = 15 * time.Second
-	retryBaseDelay  = 2 * time.Second
+	defaultInterval      = 15 * time.Second
+	retryBaseDelay       = 2 * time.Second
+	defaultNodeTTL       = 90 * time.Second
+	degradedFailTimeout  = 5 * time.Minute
 )
 
 // StoreInterface is the subset of VSStore the reconciler requires.
@@ -34,6 +36,14 @@ type StoreInterface interface {
 	UpdateRuntimeHandle(ctx context.Context, instanceID string, handle map[string]string) error
 	WriteAuditLog(ctx context.Context, action, resourceType, resourceID, ipAddr string, success bool, errMsg string) error
 
+	// Node lifecycle
+	UpdateNodeState(ctx context.Context, id string, to domain.NodeState) error
+
+	// Service / instance creation (desired-count reconciliation)
+	ListServices(ctx context.Context, namespace string) ([]domain.Service, error)
+	CreateInstance(ctx context.Context, serviceID int64, vsPath domain.VSPath) (string, error)
+	ListInstancesByService(ctx context.Context, serviceID int64) ([]domain.ServiceInstance, error)
+
 	// Volume methods
 	ListVolumesByState(ctx context.Context, state domain.VolumeState) ([]domain.Volume, error)
 	GetVolume(ctx context.Context, id string) (*domain.Volume, error)
@@ -42,6 +52,7 @@ type StoreInterface interface {
 	UpdateVolumeHandle(ctx context.Context, id string, handle map[string]string) error
 	UpdateVolumeBoundNode(ctx context.Context, id, nodeID string) error
 	UpdateVolumeFailure(ctx context.Context, id, reason string) error
+	DeleteVolume(ctx context.Context, id string) error
 	BindMount(ctx context.Context, m domain.VolumeMount) (int64, error)
 	UpdateMountState(ctx context.Context, id int64, to domain.VolumeMountState) error
 	ListMountsByInstance(ctx context.Context, instanceID string) ([]domain.VolumeMount, error)
@@ -62,6 +73,7 @@ type VSReconciler struct {
 	sched        *scheduler.Scheduler
 	catalog      ArtifactCatalog
 	interval     time.Duration
+	nodeTTL      time.Duration
 
 	runningMu sync.Mutex
 
@@ -77,6 +89,9 @@ type Config struct {
 	Sched        *scheduler.Scheduler
 	Catalog      ArtifactCatalog
 	Interval     time.Duration
+	// NodeTTL is the heartbeat absence duration after which a ready node is marked degraded.
+	// Defaults to 90 s if zero. Nodes that have never sent a heartbeat are not expired.
+	NodeTTL time.Duration
 }
 
 // New creates a VSReconciler. Interval defaults to 15 s if zero.
@@ -84,6 +99,10 @@ func New(cfg Config) *VSReconciler {
 	interval := cfg.Interval
 	if interval <= 0 {
 		interval = defaultInterval
+	}
+	nodeTTL := cfg.NodeTTL
+	if nodeTTL <= 0 {
+		nodeTTL = defaultNodeTTL
 	}
 	drivers := cfg.ClassDrivers
 	if drivers == nil {
@@ -96,6 +115,7 @@ func New(cfg Config) *VSReconciler {
 		sched:        cfg.Sched,
 		catalog:      cfg.Catalog,
 		interval:     interval,
+		nodeTTL:      nodeTTL,
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
 	}
@@ -160,9 +180,19 @@ func (r *VSReconciler) Reconcile(ctx context.Context) error {
 
 // reconcile is the internal single-pass implementation.
 func (r *VSReconciler) reconcile(ctx context.Context) error {
+	// C2: expire nodes whose heartbeat has gone silent.
+	if err := r.reconcileNodeHeartbeats(ctx); err != nil {
+		r.store.WriteAuditLog(ctx, "node_ttl_error", "node", "", "", false, err.Error()) //nolint:errcheck
+	}
+
 	if err := r.reconcileVolumes(ctx); err != nil {
 		// Non-fatal: log and continue with instance reconciliation.
 		r.store.WriteAuditLog(ctx, "volume_reconcile_error", "volume", "", "", false, err.Error()) //nolint:errcheck
+	}
+
+	// C4: create instances missing from the desired count.
+	if err := r.reconcileDesiredCount(ctx); err != nil {
+		r.store.WriteAuditLog(ctx, "desired_count_error", "service", "", "", false, err.Error()) //nolint:errcheck
 	}
 
 	nodes, err := r.store.ListNodes(ctx, "")
@@ -207,6 +237,11 @@ func (r *VSReconciler) reconcile(ctx context.Context) error {
 	for i := range failed {
 		r.handleFailedInstance(ctx, &failed[i])
 	}
+
+	// C3: monitor running instances, recover degraded ones, drain stopping ones.
+	r.reconcileRunningInstances(ctx)
+	r.reconcileDegradedInstances(ctx)
+	r.reconcileStoppingInstances(ctx)
 
 	return nil
 }
@@ -481,7 +516,8 @@ func (r *VSReconciler) reconcileVolumes(ctx context.Context) error {
 }
 
 // reconcileReleasingVolumes calls the storage driver to delete the backing storage for
-// every volume in the releasing state, then transitions it to released.
+// every volume in the releasing state, then transitions to released and removes the DB row.
+// Volumes with no driver handle (declared but never provisioned) skip the driver call.
 func (r *VSReconciler) reconcileReleasingVolumes(ctx context.Context) error {
 	releasing, err := r.store.ListVolumesByState(ctx, domain.VolumeReleasing)
 	if err != nil {
@@ -489,22 +525,25 @@ func (r *VSReconciler) reconcileReleasingVolumes(ctx context.Context) error {
 	}
 	for i := range releasing {
 		vol := &releasing[i]
-		drv, ok := r.classDrivers[vol.Manifest.Spec.Class]
-		if !ok {
-			r.store.UpdateVolumeFailure(ctx, vol.ID, fmt.Sprintf("no driver for class %q", vol.Manifest.Spec.Class)) //nolint:errcheck
-			continue
+		if len(vol.DriverHandle) > 0 {
+			drv, ok := r.classDrivers[vol.Manifest.Spec.Class]
+			if !ok {
+				r.store.UpdateVolumeFailure(ctx, vol.ID, fmt.Sprintf("no driver for class %q", vol.Manifest.Spec.Class)) //nolint:errcheck
+				continue
+			}
+			err := drv.Delete(ctx, vol.DriverHandle)
+			vsmetrics.VolumeOperations.WithLabelValues(drv.Name(), "delete", outcomeStr(err)).Inc()
+			if err != nil {
+				r.store.UpdateVolumeFailure(ctx, vol.ID, err.Error()) //nolint:errcheck
+				continue
+			}
+			r.store.WriteAuditLog(ctx, "volume_released", "volume", vol.ID, "", true, //nolint:errcheck
+				fmt.Sprintf("class=%s driver=%s", vol.Manifest.Spec.Class, drv.Name()))
 		}
-		err := drv.Delete(ctx, vol.DriverHandle)
-		vsmetrics.VolumeOperations.WithLabelValues(drv.Name(), "delete", outcomeStr(err)).Inc()
-		if err != nil {
-			r.store.UpdateVolumeFailure(ctx, vol.ID, err.Error()) //nolint:errcheck
-			continue
-		}
-		r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeReleased)          //nolint:errcheck
+		r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeReleased) //nolint:errcheck
 		volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeReleasing, domain.VolumeReleased)
 		vsmetrics.VolumeCapacityMiB.WithLabelValues(vol.Manifest.Spec.Class).Sub(float64(vol.Manifest.Spec.CapacityMiB))
-		r.store.WriteAuditLog(ctx, "volume_released", "volume", vol.ID, "", true, //nolint:errcheck
-			fmt.Sprintf("class=%s driver=%s", vol.Manifest.Spec.Class, drv.Name()))
+		r.store.DeleteVolume(ctx, vol.ID) //nolint:errcheck
 	}
 	return nil
 }
@@ -621,6 +660,220 @@ func outcomeStr(err error) string {
 	return "error"
 }
 
+// ── C2: node heartbeat TTL expiry ─────────────────────────────────────────────
+
+// reconcileNodeHeartbeats marks ready nodes degraded when no heartbeat has
+// been received within nodeTTL. Nodes that have never sent a heartbeat
+// (LastHeartbeat == nil) are left alone — they may be newly registered.
+func (r *VSReconciler) reconcileNodeHeartbeats(ctx context.Context) error {
+	nodes, err := r.store.ListNodes(ctx, string(domain.NodeReady))
+	if err != nil {
+		return fmt.Errorf("list ready nodes: %w", err)
+	}
+	now := time.Now()
+	for _, n := range nodes {
+		if n.LastHeartbeat == nil {
+			continue // never sent a heartbeat yet; don't expire
+		}
+		if now.Sub(*n.LastHeartbeat) <= r.nodeTTL {
+			continue
+		}
+		if err := r.store.UpdateNodeState(ctx, n.ID, domain.NodeDegraded); err != nil {
+			r.store.WriteAuditLog(ctx, "node_ttl_expire_failed", "node", n.ID, "", false, err.Error()) //nolint:errcheck
+			continue
+		}
+		r.store.WriteAuditLog(ctx, "node_degraded_ttl", "node", n.ID, "", false, //nolint:errcheck
+			fmt.Sprintf("no heartbeat for >%s last=%s", r.nodeTTL, n.LastHeartbeat.Format(time.RFC3339)))
+	}
+	return nil
+}
+
+// ── C4: desired-count reconciliation ─────────────────────────────────────────
+
+// reconcileDesiredCount ensures that each service has at least DesiredCount
+// non-terminal instances. Missing instances are created in declared state so
+// the normal scheduling pipeline picks them up on the next pass.
+func (r *VSReconciler) reconcileDesiredCount(ctx context.Context) error {
+	svcs, err := r.store.ListServices(ctx, "")
+	if err != nil {
+		return fmt.Errorf("list services: %w", err)
+	}
+	for _, svc := range svcs {
+		if svc.DesiredCount <= 0 {
+			continue
+		}
+		insts, err := r.store.ListInstancesByService(ctx, svc.ID)
+		if err != nil {
+			continue
+		}
+		active := 0
+		for _, inst := range insts {
+			if !domain.IsTerminalInstanceState(inst.State) {
+				active++
+			}
+		}
+		needed := svc.DesiredCount - active
+		for idx := 0; idx < needed; idx++ {
+			vsPath := domain.VSPath{
+				Namespace: svc.Manifest.Metadata.Namespace,
+				Service:   svc.Manifest.Metadata.Name,
+				Instance:  fmt.Sprintf("%d", active+idx),
+			}
+			id, err := r.store.CreateInstance(ctx, svc.ID, vsPath)
+			if err != nil {
+				r.store.WriteAuditLog(ctx, "create_instance_failed", "service", //nolint:errcheck
+					fmt.Sprintf("%d", svc.ID), "", false, err.Error())
+				continue
+			}
+			r.store.WriteAuditLog(ctx, "instance_created", "instance", id, "", true, //nolint:errcheck
+				fmt.Sprintf("service=%d desired=%d active=%d", svc.ID, svc.DesiredCount, active))
+		}
+	}
+	return nil
+}
+
+// ── C3: adapter lifecycle passes ─────────────────────────────────────────────
+
+// reconcileRunningInstances calls Inspect on every running instance. A process
+// that has exited is transitioned to failed immediately. A healthy but
+// unhealthy-check instance is transitioned to degraded.
+func (r *VSReconciler) reconcileRunningInstances(ctx context.Context) {
+	running, err := r.store.ListInstances(ctx, string(domain.InstanceRunning))
+	if err != nil {
+		return
+	}
+	for i := range running {
+		r.inspectInstance(ctx, &running[i])
+	}
+}
+
+func (r *VSReconciler) inspectInstance(ctx context.Context, inst *domain.ServiceInstance) {
+	svc, err := r.store.GetService(ctx, inst.ServiceID)
+	if err != nil {
+		return
+	}
+	ad, ok := r.adapters[svc.Manifest.Spec.Runtime]
+	if !ok {
+		return
+	}
+	handle := adapter.RuntimeHandle{AdapterName: ad.Name(), InstanceID: inst.ID, Data: inst.RuntimeHandle}
+
+	status, err := ad.Inspect(ctx, handle)
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "inspect", outcomeStr(err)).Inc()
+	if err != nil || !status.Running {
+		r.teardownMounts(ctx, inst.ID)
+		r.store.ReleaseAllocation(ctx, inst.ID)                                         //nolint:errcheck
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceFailed)                //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "instance_process_exited", "instance", inst.ID, "", false, //nolint:errcheck
+			fmt.Sprintf("adapter=%s running=false", ad.Name()))
+		return
+	}
+
+	health, err := ad.Health(ctx, handle)
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "health", outcomeStr(err)).Inc()
+	if err != nil || !health.Healthy {
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceDegraded) //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "instance_degraded", "instance", inst.ID, "", false, //nolint:errcheck
+			fmt.Sprintf("health=%v msg=%s", health.Healthy, health.Message))
+	}
+}
+
+// reconcileDegradedInstances re-checks health of degraded instances. Recovered
+// instances return to running; instances degraded beyond degradedFailTimeout are
+// failed so the restart policy can decide what happens next.
+func (r *VSReconciler) reconcileDegradedInstances(ctx context.Context) {
+	degraded, err := r.store.ListInstances(ctx, string(domain.InstanceDegraded))
+	if err != nil {
+		return
+	}
+	for i := range degraded {
+		r.handleDegradedInstance(ctx, &degraded[i])
+	}
+}
+
+func (r *VSReconciler) handleDegradedInstance(ctx context.Context, inst *domain.ServiceInstance) {
+	svc, err := r.store.GetService(ctx, inst.ServiceID)
+	if err != nil {
+		return
+	}
+	ad, ok := r.adapters[svc.Manifest.Spec.Runtime]
+	if !ok {
+		return
+	}
+	handle := adapter.RuntimeHandle{AdapterName: ad.Name(), InstanceID: inst.ID, Data: inst.RuntimeHandle}
+
+	health, err := ad.Health(ctx, handle)
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "health", outcomeStr(err)).Inc()
+	if err == nil && health.Healthy {
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceRunning) //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "instance_recovered", "instance", inst.ID, "", true, "") //nolint:errcheck
+		return
+	}
+
+	if time.Since(inst.UpdatedAt) > degradedFailTimeout {
+		r.teardownMounts(ctx, inst.ID)
+		r.store.ReleaseAllocation(ctx, inst.ID)            //nolint:errcheck
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceFailed) //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "instance_degraded_timeout", "instance", inst.ID, "", false, //nolint:errcheck
+			fmt.Sprintf("degraded for >%s", degradedFailTimeout))
+	}
+}
+
+// reconcileStoppingInstances drives instances in the stopping state through
+// Stop → Destroy → terminated, releasing all resources.
+func (r *VSReconciler) reconcileStoppingInstances(ctx context.Context) {
+	stopping, err := r.store.ListInstances(ctx, string(domain.InstanceStopping))
+	if err != nil {
+		return
+	}
+	for i := range stopping {
+		r.stopInstance(ctx, &stopping[i])
+	}
+}
+
+func (r *VSReconciler) stopInstance(ctx context.Context, inst *domain.ServiceInstance) {
+	svc, err := r.store.GetService(ctx, inst.ServiceID)
+	if err != nil {
+		return
+	}
+	ad, ok := r.adapters[svc.Manifest.Spec.Runtime]
+	if !ok {
+		return
+	}
+	handle := adapter.RuntimeHandle{AdapterName: ad.Name(), InstanceID: inst.ID, Data: inst.RuntimeHandle}
+
+	t0 := time.Now()
+	stopErr := ad.Stop(ctx, handle, adapter.StopGraceful)
+	vsmetrics.AdapterDuration.WithLabelValues(ad.Name(), "stop").Observe(time.Since(t0).Seconds())
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "stop", outcomeStr(stopErr)).Inc()
+
+	_ = ad.Destroy(ctx, handle) // best-effort cleanup regardless of stop outcome
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "destroy", "ok").Inc()
+
+	r.teardownMounts(ctx, inst.ID)
+	r.store.ReleaseAllocation(ctx, inst.ID)                                    //nolint:errcheck
+	r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceTerminated)       //nolint:errcheck
+	r.store.WriteAuditLog(ctx, "instance_stopped", "instance", inst.ID, "", true, //nolint:errcheck
+		fmt.Sprintf("adapter=%s stop_err=%v", ad.Name(), stopErr))
+}
+
+// destroyInstance calls Destroy on the adapter for an instance that is being
+// permanently terminated. Errors are logged but do not block termination.
+func (r *VSReconciler) destroyInstance(ctx context.Context, svc *domain.Service, inst *domain.ServiceInstance) {
+	if svc == nil || len(inst.RuntimeHandle) == 0 {
+		return
+	}
+	ad, ok := r.adapters[svc.Manifest.Spec.Runtime]
+	if !ok {
+		return
+	}
+	handle := adapter.RuntimeHandle{AdapterName: ad.Name(), InstanceID: inst.ID, Data: inst.RuntimeHandle}
+	if err := ad.Destroy(ctx, handle); err != nil {
+		r.store.WriteAuditLog(ctx, "destroy_failed", "instance", inst.ID, "", false, err.Error()) //nolint:errcheck
+	}
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "destroy", outcomeStr(nil)).Inc()
+}
+
 func (r *VSReconciler) handleFailedInstance(ctx context.Context, inst *domain.ServiceInstance) {
 	svc, err := r.store.GetService(ctx, inst.ServiceID)
 	if err != nil {
@@ -630,7 +883,8 @@ func (r *VSReconciler) handleFailedInstance(ctx context.Context, inst *domain.Se
 	policy := svc.Manifest.Spec.Restart
 
 	if policy.Policy == "never" || (policy.Policy != "on-failure" && policy.Policy != "always") {
-		// Permanently terminal: mark terminated so the instance doesn't stay stuck in failed.
+		// Permanently terminal: clean up adapter resources before marking terminated.
+		r.destroyInstance(ctx, svc, inst)
 		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceTerminated) //nolint:errcheck
 		r.store.WriteAuditLog(ctx, "terminated_no_restart", "instance", inst.ID, "", true, //nolint:errcheck
 			fmt.Sprintf("policy=%s", policy.Policy))
@@ -640,6 +894,7 @@ func (r *VSReconciler) handleFailedInstance(ctx context.Context, inst *domain.Se
 	// maxAttempts=0 means unlimited; any positive value caps retries.
 	maxAttempts := policy.MaximumAttempts
 	if maxAttempts > 0 && inst.RetryCount >= maxAttempts {
+		r.destroyInstance(ctx, svc, inst)
 		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceTerminated) //nolint:errcheck
 		r.store.WriteAuditLog(ctx, "abandoned", "instance", inst.ID, "", false, //nolint:errcheck
 			fmt.Sprintf("retries=%d max=%d policy=%s", inst.RetryCount, maxAttempts, policy.Policy))

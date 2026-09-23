@@ -454,18 +454,18 @@ func (h *Handlers) DeleteVolume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusConflict, "volume has active mounts", "CONFLICT")
 		return
 	}
-	// Transition ready/declared → releasing → released.
-	if v.State != domain.VolumeReleased {
-		if v.State == domain.VolumeReady || v.State == domain.VolumeDeclared || v.State == domain.VolumeBound {
-			_ = h.store.UpdateVolumeState(r.Context(), id, domain.VolumeReleasing)
-		}
-		_ = h.store.UpdateVolumeState(r.Context(), id, domain.VolumeReleased)
+	// Already queued or completed — nothing more to do.
+	if v.State == domain.VolumeReleasing || v.State == domain.VolumeReleased {
+		w.WriteHeader(http.StatusAccepted)
+		return
 	}
-	if err := h.store.DeleteVolume(r.Context(), id); err != nil {
+	// Transition to releasing; the reconciler drives driver.Delete() asynchronously
+	// so physical storage is always cleaned up before the DB row is removed.
+	if err := h.store.UpdateVolumeState(r.Context(), id, domain.VolumeReleasing); err != nil {
 		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // GET /v1/volumes/{id}/mounts

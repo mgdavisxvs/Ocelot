@@ -3,6 +3,7 @@ package reconciler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -173,6 +174,56 @@ func (m *mockStore) ListMountsByInstance(_ context.Context, _ string) ([]domain.
 func (m *mockStore) ListActiveMountsByVolume(_ context.Context, _ string) ([]domain.VolumeMount, error) {
 	return nil, nil
 }
+
+// C2/C4 stubs — required by the expanded StoreInterface.
+func (m *mockStore) UpdateNodeState(_ context.Context, id string, to domain.NodeState) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.nodes {
+		if m.nodes[i].ID == id {
+			m.nodes[i].State = to
+		}
+	}
+	return nil
+}
+
+func (m *mockStore) ListServices(_ context.Context, _ string) ([]domain.Service, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Service
+	for _, svc := range m.services {
+		out = append(out, *svc)
+	}
+	return out, nil
+}
+
+func (m *mockStore) CreateInstance(_ context.Context, serviceID int64, vsPath domain.VSPath) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id := fmt.Sprintf("inst-created-%d-%s", serviceID, vsPath.Instance)
+	m.instances[id] = &domain.ServiceInstance{
+		ID:        id,
+		ServiceID: serviceID,
+		State:     domain.InstanceDeclared,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	return id, nil
+}
+
+func (m *mockStore) ListInstancesByService(_ context.Context, serviceID int64) ([]domain.ServiceInstance, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.ServiceInstance
+	for _, inst := range m.instances {
+		if inst.ServiceID == serviceID {
+			out = append(out, *inst)
+		}
+	}
+	return out, nil
+}
+
+func (m *mockStore) DeleteVolume(_ context.Context, _ string) error { return nil }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -414,6 +465,133 @@ func TestReconciler_MissingAdapter_SkipsInstance(t *testing.T) {
 	ms.mu.Unlock()
 	if finalState != domain.InstanceFailed {
 		t.Logf("state=%q (acceptable if error logged)", finalState)
+	}
+}
+
+// C2: a ready node whose heartbeat has gone stale must be marked degraded.
+func TestReconciler_NodeHeartbeatTTL(t *testing.T) {
+	ms := newMockStore()
+	stale := time.Now().Add(-5 * time.Minute)
+	ms.nodes = []domain.Node{{
+		ID:            "n1",
+		Name:          "node1",
+		State:         domain.NodeReady,
+		LastHeartbeat: &stale,
+	}}
+
+	r := newReconcilerWithMock(ms, nil)
+	r.nodeTTL = 90 * time.Second
+	if err := r.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ms.mu.Lock()
+	state := ms.nodes[0].State
+	ms.mu.Unlock()
+	if state != domain.NodeDegraded {
+		t.Errorf("expected NodeDegraded after stale heartbeat, got %q", state)
+	}
+}
+
+// C3: a running instance whose process has exited (Inspect returns Running=false)
+// must transition to failed immediately.
+func TestReconciler_InspectRunning_ProcessDied(t *testing.T) {
+	ms := newMockStore()
+	ms.services[1] = newTestService("mock")
+	ms.nodes = []domain.Node{newTestNode()}
+
+	// Instance is marked running in the store but was never registered in the adapter.
+	// MockAdapter.Inspect returns Running=false for unregistered instances.
+	inst := &domain.ServiceInstance{
+		ID:            "inst-died",
+		ServiceID:     1,
+		State:         domain.InstanceRunning,
+		NodeID:        "n1",
+		RuntimeHandle: map[string]string{"pid": "99"},
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	ms.addInstance(inst)
+
+	r := newReconcilerWithMock(ms, adapter.NewMockAdapter())
+	if err := r.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ms.mu.Lock()
+	finalState := ms.instances["inst-died"].State
+	ms.mu.Unlock()
+	if finalState != domain.InstanceFailed {
+		t.Errorf("expected InstanceFailed after process exit, got %q", finalState)
+	}
+}
+
+// C3: an instance in stopping state must be driven through Stop+Destroy to terminated.
+func TestReconciler_StoppingToTerminated(t *testing.T) {
+	ms := newMockStore()
+	ms.services[1] = newTestService("mock")
+	ms.nodes = []domain.Node{newTestNode()}
+
+	inst := &domain.ServiceInstance{
+		ID:            "inst-stopping",
+		ServiceID:     1,
+		State:         domain.InstanceStopping,
+		NodeID:        "n1",
+		RuntimeHandle: map[string]string{"pid": "42"},
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	ms.addInstance(inst)
+
+	ad := adapter.NewMockAdapter()
+	r := newReconcilerWithMock(ms, ad)
+	if err := r.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ms.mu.Lock()
+	finalState := ms.instances["inst-stopping"].State
+	ms.mu.Unlock()
+	if finalState != domain.InstanceTerminated {
+		t.Errorf("expected InstanceTerminated after stop, got %q", finalState)
+	}
+	if ad.StopCalls != 1 {
+		t.Errorf("expected Stop called once, got %d", ad.StopCalls)
+	}
+	if ad.DestroyCalls != 1 {
+		t.Errorf("expected Destroy called once, got %d", ad.DestroyCalls)
+	}
+}
+
+// C4: when active instance count is below DesiredCount, new declared instances
+// must be created to fill the gap.
+func TestReconciler_DesiredCount_CreatesMissingInstance(t *testing.T) {
+	ms := newMockStore()
+	svc := newTestService("mock")
+	svc.DesiredCount = 2
+	ms.services[1] = svc
+	ms.nodes = []domain.Node{newTestNode()}
+
+	// Only one non-terminal instance exists; a second must be created.
+	ms.addInstance(&domain.ServiceInstance{
+		ID:        "inst-existing",
+		ServiceID: 1,
+		State:     domain.InstanceRunning,
+		NodeID:    "n1",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+
+	r := newReconcilerWithMock(ms, adapter.NewMockAdapter())
+	if err := r.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ms.mu.Lock()
+	total := len(ms.instances)
+	ms.mu.Unlock()
+	if total < 2 {
+		t.Errorf("expected at least 2 instances after desired-count reconciliation, got %d", total)
 	}
 }
 

@@ -31,14 +31,14 @@ const (
 )
 
 var allowedVolumeTransitions = map[VolumeState]map[VolumeState]bool{
-	VolumeDeclared:      {VolumeProvisioning: true},
+	VolumeDeclared:      {VolumeProvisioning: true, VolumeReleasing: true},
 	VolumeProvisioning:  {VolumeReady: true, VolumeFailed: true},
 	VolumeReady:         {VolumeBound: true, VolumeReleasing: true},
 	VolumeBound:         {VolumeReady: true, VolumeReleasing: true, VolumeQuotaExceeded: true},
 	VolumeReleasing:     {VolumeReleased: true, VolumeFailed: true},
 	VolumeReleased:      {},
-	VolumeFailed:        {VolumeDeclared: true},
-	VolumeQuotaExceeded: {VolumeBound: true},
+	VolumeFailed:        {VolumeDeclared: true, VolumeReleasing: true},
+	VolumeQuotaExceeded: {VolumeBound: true, VolumeReleasing: true},
 }
 
 // IsTerminalVolumeState returns true when the volume has reached a terminal state.
