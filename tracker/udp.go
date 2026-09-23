@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"encoding/binary"
 	"math/rand"
 	"net"
@@ -218,7 +219,7 @@ func (s *UDPServer) handleAnnounce(pkt []byte, addr *net.UDPAddr, transID uint32
 		NumWant:    numWant,
 	}
 
-	resp, err := s.worker.Announce(req, user, clientIP, "UDP/BEP15")
+	resp, err := s.worker.Announce(context.Background(), req, user, clientIP, "UDP/BEP15", "")
 	if err != nil {
 		s.sendError(addr, transID, err.Error())
 		return

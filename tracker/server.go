@@ -277,7 +277,7 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 	}
 
 	userAgent := req.Header.Get("User-Agent")
-	announceResp, err := s.worker.Announce(announceReq, user, clientIP, userAgent)
+	announceResp, err := s.worker.Announce(req.Context(), announceReq, user, clientIP, userAgent, passkey)
 	if err != nil {
 		return s.errorResponse(err.Error(), httpClose)
 	}
@@ -559,6 +559,7 @@ type Worker struct {
 	UserCache      *UserCache
 	Redis          *RedisBackend
 	Bus            *EventBus // internal event pub/sub; nil disables publishing
+	Admission      *SwarmAdmissionPolicy // nil = all peers admitted
 
 	reaper *Reaper // started/stopped by Start/Stop
 }

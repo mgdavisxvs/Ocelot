@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -40,8 +41,13 @@ type AnnounceResponse struct {
 
 // Announce handles a BitTorrent announce request.
 // Go equivalent of worker::announce() (worker.cpp:266-735).
-func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, userAgent string) (*AnnounceResponse, error) {
+func (w *Worker) Announce(_ context.Context, req *AnnounceRequest, user *User, clientIP net.IP, userAgent, passkey string) (*AnnounceResponse, error) {
 	now := time.Now()
+
+	// Admission policy: if set, check whether this passkey is allowed to join the swarm.
+	if w.Admission != nil && !w.Admission.IsAdmitted(req.InfoHash, passkey) {
+		return nil, fmt.Errorf("not admitted to swarm")
+	}
 
 	if !req.Compact {
 		return nil, fmt.Errorf("your client does not support compact announces")
