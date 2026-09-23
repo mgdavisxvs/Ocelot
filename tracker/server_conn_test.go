@@ -73,6 +73,107 @@ func TestHandleConnection_EOF_ClosesCleanly(t *testing.T) {
 	f.server.wg.Wait()
 }
 
+// TestHandleConnection_TCPConn_SetsNoDelay uses a real TCP loopback pair so
+// the (*net.TCPConn) type assertion succeeds and SetNoDelay/KeepAlive are covered.
+func TestHandleConnection_TCPConn_SetsNoDelay(t *testing.T) {
+	f := newTestFixture()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			accepted <- c
+		}
+	}()
+
+	clientConn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientConn.Close()
+
+	serverConn := <-accepted
+
+	f.server.mu.Lock()
+	f.server.activeConns[serverConn] = struct{}{}
+	f.server.mu.Unlock()
+	f.server.stats.OpenConnections.Add(1)
+	f.server.wg.Add(1)
+
+	go f.server.handleConnection(serverConn)
+
+	rawReq := "GET /" + sitePass + "/stats HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+	clientConn.Write([]byte(rawReq))
+
+	buf := make([]byte, 4096)
+	var total int
+	for total < len(buf) {
+		n, err := clientConn.Read(buf[total:])
+		total += n
+		if err != nil {
+			break
+		}
+	}
+
+	if !strings.Contains(string(buf[:total]), "200 OK") {
+		t.Errorf("TCP conn: expected 200 OK, got: %q", string(buf[:total]))
+	}
+
+	f.server.wg.Wait()
+}
+
+// TestHandleConnection_MalformedRequest covers the non-EOF error path in the
+// http.ReadRequest loop (if err != io.EOF {} branch).
+func TestHandleConnection_MalformedRequest_ClosesCleanly(t *testing.T) {
+	f := newTestFixture()
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	f.server.mu.Lock()
+	f.server.activeConns[serverConn] = struct{}{}
+	f.server.mu.Unlock()
+	f.server.stats.OpenConnections.Add(1)
+	f.server.wg.Add(1)
+
+	go f.server.handleConnection(serverConn)
+
+	// Send malformed HTTP — ReadRequest returns non-EOF error, server exits.
+	clientConn.Write([]byte("NOTHTTP\r\n\r\n"))
+
+	f.server.wg.Wait()
+}
+
+// TestHandleConnection_WriteError covers the conn.Write error return path by
+// closing the client connection before the server can write the response.
+func TestHandleConnection_WriteError_ClosesCleanly(t *testing.T) {
+	f := newTestFixture()
+
+	serverConn, clientConn := net.Pipe()
+
+	f.server.mu.Lock()
+	f.server.activeConns[serverConn] = struct{}{}
+	f.server.mu.Unlock()
+	f.server.stats.OpenConnections.Add(1)
+	f.server.wg.Add(1)
+
+	go f.server.handleConnection(serverConn)
+
+	// Write the request, then immediately close the client so the server's
+	// conn.Write(response) fails with a closed-pipe error.
+	rawReq := "GET /" + sitePass + "/stats HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+	clientConn.Write([]byte(rawReq))
+	clientConn.Close()
+
+	f.server.wg.Wait()
+}
+
 // ── RedirectHTTPToHTTPS ───────────────────────────────────────────────────────
 
 func TestRedirectHTTPToHTTPS_NoQuery(t *testing.T) {
