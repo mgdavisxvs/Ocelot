@@ -81,7 +81,12 @@ func CreateAPIKey(db *sql.DB, userID int, permissions []string, expiresAt *time.
 		VALUES (?, ?, ?, ?, ?, 0)`
 
 	permJSON := strings.Join(permissions, ",")
-	_, err := db.Exec(query, keyHash, userID, permJSON, time.Now().Unix(), expiresAt)
+	var expiresUnix *int64
+	if expiresAt != nil {
+		t := expiresAt.Unix()
+		expiresUnix = &t
+	}
+	_, err := db.Exec(query, keyHash, userID, permJSON, time.Now().Unix(), expiresUnix)
 	if err != nil {
 		return "", ErrDatabaseQuery.WithError(err)
 	}
@@ -98,11 +103,12 @@ func ValidateAPIKey(db *sql.DB, apiKey string) (*APIKey, error) {
 
 	var ak APIKey
 	var permStr string
+	var createdUnix int64
 	var expiresUnix, lastUsedUnix *int64
 
 	err := db.QueryRow(query, keyHash).Scan(
 		&ak.ID, &ak.UserID, &permStr,
-		&ak.CreatedAt, &expiresUnix, &lastUsedUnix, &ak.Revoked,
+		&createdUnix, &expiresUnix, &lastUsedUnix, &ak.Revoked,
 	)
 
 	if err == sql.ErrNoRows {
@@ -111,6 +117,8 @@ func ValidateAPIKey(db *sql.DB, apiKey string) (*APIKey, error) {
 	if err != nil {
 		return nil, ErrDatabaseQuery.WithError(err)
 	}
+
+	ak.CreatedAt = time.Unix(createdUnix, 0)
 
 	if ak.Revoked {
 		return nil, ErrUnauthorized.WithDetail("API key has been revoked")

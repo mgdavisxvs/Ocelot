@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/mgdavisxvs/Ocelot/commons"
 )
 
 // UpdateResponse represents the tracker's response to an update
@@ -48,6 +50,10 @@ func (w *Worker) HandleUpdate(req *http.Request) ([]byte, error) {
 		return w.addWhitelist(q)
 	case "remove_whitelist":
 		return w.removeWhitelist(q)
+	case "set_priority_class":
+		return w.setPriorityClass(q)
+	case "set_budget":
+		return w.setBudget(q)
 	default:
 		return w.updateError(fmt.Sprintf("Unknown action: %s", action))
 	}
@@ -104,7 +110,7 @@ func (w *Worker) updateTorrent(q url.Values) ([]byte, error) {
 
 	torrent, ok := w.Torrents.Get(infoHash)
 	if !ok {
-		return w.updateError("Torrent not found")
+		return w.updateError("torrent not found")
 	}
 
 	torrent.mu.Lock()
@@ -170,9 +176,10 @@ func (w *Worker) changeFreeleech(q url.Values) ([]byte, error) {
 	if infoHash == "" {
 		return w.updateError("Missing info_hash")
 	}
+
 	torrent, ok := w.Torrents.Get(infoHash)
 	if !ok {
-		return w.updateError("Torrent not found")
+		return w.updateError("torrent not found")
 	}
 	ft, err := strconv.Atoi(q.Get("free_type"))
 	if err != nil || ft < 0 || ft > 2 {
@@ -306,7 +313,14 @@ func (w *Worker) changePasskey(q url.Values) ([]byte, error) {
 }
 
 func (w *Worker) addToken(q url.Values) ([]byte, error) {
-	id, err := strconv.Atoi(q.Get("id"))
+	idStr := q.Get("user_id")
+	if idStr == "" {
+		idStr = q.Get("id")
+	}
+	if idStr == "" {
+		return w.updateError("Invalid user_id")
+	}
+	id, err := strconv.Atoi(idStr)
 	if err != nil || id <= 0 {
 		return w.updateError("Invalid user_id")
 	}
@@ -316,7 +330,7 @@ func (w *Worker) addToken(q url.Values) ([]byte, error) {
 	}
 	torrent, ok := w.Torrents.Get(infoHash)
 	if !ok {
-		return w.updateError("Torrent not found")
+		return w.updateError("torrent not found")
 	}
 	torrent.mu.Lock()
 	torrent.TokenedUsers[UserID(id)] = struct{}{}
@@ -325,7 +339,14 @@ func (w *Worker) addToken(q url.Values) ([]byte, error) {
 }
 
 func (w *Worker) removeToken(q url.Values) ([]byte, error) {
-	id, err := strconv.Atoi(q.Get("id"))
+	idStr := q.Get("user_id")
+	if idStr == "" {
+		idStr = q.Get("id")
+	}
+	if idStr == "" {
+		return w.updateError("Invalid user_id")
+	}
+	id, err := strconv.Atoi(idStr)
 	if err != nil || id <= 0 {
 		return w.updateError("Invalid user_id")
 	}
@@ -335,7 +356,7 @@ func (w *Worker) removeToken(q url.Values) ([]byte, error) {
 	}
 	torrent, ok := w.Torrents.Get(infoHash)
 	if !ok {
-		return w.updateError("Torrent not found")
+		return w.updateError("torrent not found")
 	}
 	torrent.mu.Lock()
 	delete(torrent.TokenedUsers, UserID(id))
@@ -373,6 +394,75 @@ func (w *Worker) removeWhitelist(q url.Values) ([]byte, error) {
 	return w.updateSuccess(fmt.Sprintf("Removed whitelist prefix: %s", prefix))
 }
 
+// setPriorityClass sets the ComputeCommons priority class (0–3) for a user.
+// Requires: id (user_id), priority_class (0=P0Critical … 3=P3Opportunistic).
+func (w *Worker) setPriorityClass(q url.Values) ([]byte, error) {
+	if w.Commons == nil {
+		return w.updateError("compute commons not enabled")
+	}
+	idStr := q.Get("id")
+	if idStr == "" {
+		return w.updateError("missing id")
+	}
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil || id == 0 {
+		return w.updateError("invalid id")
+	}
+	pcStr := q.Get("priority_class")
+	if pcStr == "" {
+		return w.updateError("missing priority_class")
+	}
+	pcInt, err := strconv.Atoi(pcStr)
+	if err != nil {
+		return w.updateError("invalid priority_class")
+	}
+	pc := commons.PriorityClass(pcInt)
+	if !pc.IsValid() {
+		return w.updateError(fmt.Sprintf("priority_class must be 0–3, got %d", pcInt))
+	}
+	if err := w.Commons.SetUserPriority(uint32(id), pc); err != nil {
+		return w.updateError(err.Error())
+	}
+	return w.updateOK()
+}
+
+// setBudget sets a per-torrent (or global) CC spending cap for a user.
+// Requires: id (user_id), max_credits (whole CC units).
+// Optional: torrent_id (omit or 0 for global cap).
+func (w *Worker) setBudget(q url.Values) ([]byte, error) {
+	if w.Commons == nil {
+		return w.updateError("compute commons not enabled")
+	}
+	idStr := q.Get("id")
+	if idStr == "" {
+		return w.updateError("missing id")
+	}
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil || id == 0 {
+		return w.updateError("invalid id")
+	}
+	mcStr := q.Get("max_credits")
+	if mcStr == "" {
+		return w.updateError("missing max_credits")
+	}
+	maxCredits, err := strconv.ParseInt(mcStr, 10, 64)
+	if err != nil || maxCredits < 0 {
+		return w.updateError("invalid max_credits")
+	}
+	var torrentID uint32
+	if tidStr := q.Get("torrent_id"); tidStr != "" {
+		tid, err := strconv.ParseUint(tidStr, 10, 32)
+		if err != nil {
+			return w.updateError("invalid torrent_id")
+		}
+		torrentID = uint32(tid)
+	}
+	if err := w.Commons.SetUserBudget(uint32(id), torrentID, maxCredits); err != nil {
+		return w.updateError(err.Error())
+	}
+	return w.updateOK()
+}
+
 func (w *Worker) updateSuccess(message string) ([]byte, error) {
 	resp := UpdateResponse{Status: "ok", Message: message}
 	return json.Marshal(resp)
@@ -384,15 +474,20 @@ func (w *Worker) updateError(errMsg string) ([]byte, error) {
 	return data, fmt.Errorf("%s", errMsg)
 }
 
+func (w *Worker) updateOK() ([]byte, error) {
+	return json.Marshal(map[string]string{"status": "ok"})
+}
+
 // StatsResponse contains live tracker statistics for JSON API
 type StatsResponse struct {
-	Uptime        string `json:"uptime_seconds"`
-	Torrents      int    `json:"torrent_count"`
-	Users         int    `json:"user_count"`
+	Uptime        string `json:"uptime"`
+	UptimeSeconds int64  `json:"uptime_seconds"`
+	TorrentCount  int    `json:"torrent_count"`
+	UserCount     int    `json:"user_count"`
 	Seeders       uint32 `json:"seeders"`
 	Leechers      uint32 `json:"leechers"`
 	Connections   uint32 `json:"connections"`
-	Announces     uint64 `json:"announcements"`
+	Announcements uint64 `json:"announcements"`
 	SuccAnnounces uint64 `json:"successful_announces"`
 	Scrapes       uint64 `json:"scrapes"`
 	BytesRead     uint64 `json:"bytes_read"`
@@ -405,12 +500,13 @@ func (w *Worker) GetStats() ([]byte, error) {
 
 	stats := StatsResponse{
 		Uptime:        uptime.Round(time.Second).String(),
-		Torrents:      w.Torrents.Size(),
-		Users:         w.Users.Size(),
+		UptimeSeconds: int64(uptime.Seconds()),
+		TorrentCount:  w.Torrents.Size(),
+		UserCount:     w.Users.Size(),
 		Seeders:       w.Stats.Seeders.Load(),
 		Leechers:      w.Stats.Leechers.Load(),
 		Connections:   w.Stats.OpenConnections.Load(),
-		Announces:     w.Stats.Announcements.Load(),
+		Announcements: w.Stats.Announcements.Load(),
 		SuccAnnounces: w.Stats.SuccAnnouncements.Load(),
 		Scrapes:       w.Stats.Scrapes.Load(),
 		BytesRead:     w.Stats.BytesRead.Load(),
@@ -423,7 +519,7 @@ func (w *Worker) GetStats() ([]byte, error) {
 // TorrentInfo represents torrent details for JSON API
 type TorrentInfo struct {
 	InfoHash  string `json:"info_hash"`
-	TorrentID uint32 `json:"id"`
+	ID        uint32 `json:"id"`
 	Seeders   int    `json:"seeders"`
 	Leechers  int    `json:"leechers"`
 	Completed uint32 `json:"completed"`
@@ -445,7 +541,7 @@ func (w *Worker) GetTorrents(limit int) ([]byte, error) {
 		torrent.mu.RLock()
 		info := TorrentInfo{
 			InfoHash:  hash,
-			TorrentID: uint32(torrent.ID),
+			ID:        uint32(torrent.ID),
 			Seeders:   torrent.Seeders.Size(),
 			Leechers:  torrent.Leechers.Size(),
 			Completed: torrent.Completed,

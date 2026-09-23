@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/mgdavisxvs/Ocelot/commons"
 )
 
 // AnnounceRequest represents a parsed BitTorrent announce request.
@@ -198,6 +200,23 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 				}); err != nil {
 					GetDefaultLogger().Error("RecordUserStats failed", err)
 				}
+
+				// Async economic settlement — non-blocking on the announce critical path.
+				if w.Commons != nil {
+					ul, dl := uploadedChange, downloadedChange
+					cStats := &commons.AnnounceStats{
+						UserID:              uint32(user.ID),
+						TorrentID:           uint32(torrent.ID),
+						EffectiveUploaded:   ul,
+						EffectiveDownloaded: dl,
+						Seeders:             torrent.Seeders.Size(),
+						Leechers:            torrent.Leechers.Size(),
+						IsSeeder:            req.Left == 0,
+						IsStopped:           stoppedTorrent,
+						Timestamp:           now,
+					}
+					go func() { _ = w.Commons.SettleAnnounce(cStats) }()
+				}
 			}
 		}
 	}
@@ -310,7 +329,7 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 	if w.PeerScorer != nil {
 		peers = SelectPeersScored(torrent, peer, ip, user.ID, numwant, req.Left > 0, w.PeerScorer)
 	} else {
-		peers = SelectPeersOptimized(torrent, peer, user.ID, numwant, req.Left > 0)
+		peers = w.selectPeersWithEconomics(torrent, peer, user.ID, numwant, req.Left > 0)
 	}
 
 	w.Stats.SuccAnnouncements.Add(1)
@@ -360,11 +379,15 @@ func (w *Worker) Announce(req *AnnounceRequest, user *User, clientIP net.IP, use
 		return nil, fmt.Errorf("access denied, leeching forbidden")
 	}
 
-	baseInterval := int32(w.Config.AnnounceInterval)
-	interval := AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval)
+	minInterval := int32(w.Config.AnnounceInterval)
+	adaptive := AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval)
+	if adaptive < minInterval {
+		adaptive = minInterval
+	}
+
 	response := &AnnounceResponse{
-		Interval:    interval,
-		MinInterval: baseInterval,
+		Interval:    adaptive,
+		MinInterval: minInterval,
 		Complete:    int32(seederCount),
 		Incomplete:  int32(leecherCount),
 		Peers:       peers,

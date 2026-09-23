@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mgdavisxvs/Ocelot/commons"
 	"github.com/mgdavisxvs/Ocelot/ml"
 )
 
@@ -489,8 +490,18 @@ type Worker struct {
 	CircuitBreak *CircuitBreaker
 	AuditLog     *AuditLogger
 	Metrics      *MetricsRecorder
-	PeerScorer   *ml.PeerScorer // nil = random selection via SelectPeersOptimized
-	BatchWriter  *BatchWriter   // nil = synchronous DB writes; non-nil = batched writes
+	PeerScorer   *ml.PeerScorer   // nil = random selection via SelectPeersOptimized
+	BatchWriter  *BatchWriter     // nil = synchronous DB writes; non-nil = batched writes
+	Commons      CommonsInterface // optional: nil disables economic settlement
+}
+
+// CommonsInterface is the subset of commons.ComputeCommons used by the tracker.
+// Defined as an interface to support mocking in tests.
+type CommonsInterface interface {
+	SettleAnnounce(stats *commons.AnnounceStats) error
+	EvaluatePeers(req *commons.AllocationRequest) *commons.AllocationDecision
+	SetUserPriority(userID uint32, pc commons.PriorityClass) error
+	SetUserBudget(userID, torrentID uint32, maxCredits int64) error
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.

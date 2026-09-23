@@ -11,10 +11,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const (
-	MaxDBSize          = 84 * 1024 * 1024 * 1024 // 84 GB per shard
-	WALCheckpointPages = 1000
-)
+const WALCheckpointPages = 1000
+
+// MaxDBSize is the per-shard file size limit. Declared as a var so tests can
+// lower it temporarily to exercise the rotation path without creating 84 GB files.
+var MaxDBSize int64 = 84 * 1024 * 1024 * 1024
 
 // torrentLoadRow is the data transfer object for restoring a torrent from DB.
 type torrentLoadRow struct {

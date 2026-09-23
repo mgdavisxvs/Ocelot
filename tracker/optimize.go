@@ -5,6 +5,7 @@ import (
 	"net"
 	"sort"
 
+	"github.com/mgdavisxvs/Ocelot/commons"
 	"github.com/mgdavisxvs/Ocelot/ml"
 )
 
@@ -386,4 +387,106 @@ func BuildTrieFromSlice(prefixes []string) *WhitelistTrie {
 		trie.Add(prefix)
 	}
 	return trie
+}
+
+// selectPeersWithEconomics ranks seeder candidates via the economic scheduler
+// when Commons is wired up, then emits compact peer bytes for the leecher.
+// Falls back to SelectPeersOptimized when Commons is nil or no seeders exist.
+// Seeder selection is in economic rank order; remaining slots are filled with
+// leechers using reservoir sampling (Erdős).
+func (w *Worker) selectPeersWithEconomics(
+	torrent *Torrent,
+	self *Peer,
+	userID UserID,
+	numwant int32,
+	isLeecher bool,
+) []byte {
+	if !isLeecher || w.Commons == nil || numwant <= 0 {
+		return SelectPeersOptimized(torrent, self, userID, numwant, isLeecher)
+	}
+
+	torrent.mu.RLock()
+	seeders := collectVisiblePeers(torrent.Seeders, userID)
+	seederCount := torrent.Seeders.Size()
+	leecherCount := torrent.Leechers.Size()
+	torrentID := torrent.ID
+	torrent.mu.RUnlock()
+
+	if len(seeders) == 0 {
+		return SelectPeersOptimized(torrent, self, userID, numwant, isLeecher)
+	}
+
+	candidates := make([]*commons.SeederCandidate, len(seeders))
+	peerByUserID := make(map[uint32]*Peer, len(seeders))
+	for i, p := range seeders {
+		uptimeSec := int64(p.Announces) * int64(w.Config.AnnounceInterval)
+		candidates[i] = &commons.SeederCandidate{
+			UserID:          uint32(p.UserID),
+			UptimeSec:       uptimeSec,
+			ReputationScore: commons.ReputationDefault,
+			PriorityClass:   commons.P2Standard,
+		}
+		peerByUserID[uint32(p.UserID)] = p
+	}
+
+	req := &commons.AllocationRequest{
+		LeecherUserID: uint32(userID),
+		TorrentID:     uint32(torrentID),
+		Candidates:    candidates,
+		Seeders:       seederCount,
+		Leechers:      leecherCount,
+	}
+
+	decision := w.Commons.EvaluatePeers(req)
+	if !decision.Accepted {
+		return []byte{}
+	}
+
+	n := int(numwant)
+	result := make([]byte, 0, n*6)
+
+	// Emit seeders in ranked order
+	for _, sc := range decision.RankedSeeders {
+		if len(result)/6 >= n {
+			break
+		}
+		p, ok := peerByUserID[sc.UserID]
+		if !ok || len(p.IPPort) != 6 {
+			continue
+		}
+		result = append(result, p.IPPort...)
+	}
+
+	// Fill remaining slots with leechers via reservoir sampling
+	remaining := n - len(result)/6
+	if remaining > 0 {
+		torrent.mu.RLock()
+		leechers := collectVisiblePeers(torrent.Leechers, userID)
+		torrent.mu.RUnlock()
+
+		selected := ReservoirSample(leechers, remaining)
+		FisherYatesShuffle(selected)
+		for _, p := range selected {
+			if len(p.IPPort) == 6 {
+				result = append(result, p.IPPort...)
+			}
+		}
+	}
+
+	return result
+}
+
+// selectPeers is the unified peer-selection entry point called by Announce.
+// When a PeerScorer is configured it uses ML-based scoring; otherwise it falls
+// through to selectPeersWithEconomics (which itself falls back to the
+// Erdős-optimised reservoir-sampling path when Commons is nil).
+func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool) []byte {
+	if w.PeerScorer != nil {
+		var ip net.IP
+		if self != nil {
+			ip = self.IP
+		}
+		return SelectPeersScored(torrent, self, ip, userID, numwant, isLeecher, w.PeerScorer)
+	}
+	return w.selectPeersWithEconomics(torrent, self, userID, numwant, isLeecher)
 }
