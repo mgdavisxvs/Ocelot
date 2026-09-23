@@ -109,7 +109,8 @@ type Torrent struct {
 	LastFlushed  time.Time
 	Seeders      *PeerList
 	Leechers     *PeerList
-	TokenedUsers map[UserID]struct{}
+	TokenedUsers       map[UserID]struct{}
+	LastSelectedSeeder string
 }
 
 func NewTorrent(id TorrentID) *Torrent {
