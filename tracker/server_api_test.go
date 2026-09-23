@@ -450,3 +450,31 @@ func TestResponse_HTMLTrue_SetsHTMLContentType(t *testing.T) {
 		t.Errorf("html=true response should have text/html content-type: %s", string(raw))
 	}
 }
+
+// ── handleRequest — update route + jsonResponse keep-alive ───────────────────
+
+func TestHandleRequest_UpdateRoute_KeepAlive(t *testing.T) {
+	f := newTestFixture()
+	// Enable keep-alive so httpClose=false on HTTP/1.1 requests,
+	// routing "update" with valid sitePass (lines 190-192) and
+	// the else branch in jsonResponse (Connection: keep-alive, line 341-343).
+	f.server.config.KeepaliveTimeout = 30
+
+	// add_torrent succeeds: use a distinct info_hash not in the fixture.
+	newHash := strings.Repeat("\x02", 20)
+	req, _ := http.NewRequest("GET",
+		"/"+sitePass+"/update?action=add_torrent&id=99&info_hash="+urlEscapeRaw(newHash),
+		nil)
+	req.Proto = "HTTP/1.1"
+	req.ProtoMajor = 1
+	req.ProtoMinor = 1
+	// No "Connection: close" header → httpClose = false
+
+	raw, httpClose := f.server.handleRequest(req, net.ParseIP(testIP))
+	if httpClose {
+		t.Error("expected httpClose=false for HTTP/1.1 keep-alive request")
+	}
+	if !strings.Contains(string(raw), "Connection: keep-alive") {
+		t.Errorf("expected keep-alive header in response: %s", string(raw))
+	}
+}
