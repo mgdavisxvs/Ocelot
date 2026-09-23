@@ -30,6 +30,20 @@ func TestNewSQLiteShardManager_Opens(t *testing.T) {
 	}
 }
 
+func TestNewSQLiteShardManager_MkdirError_ReturnsError(t *testing.T) {
+	// Pass a path whose parent is an existing file — os.MkdirAll fails.
+	f, err := os.CreateTemp(t.TempDir(), "notadir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	_, err = NewSQLiteShardManager(filepath.Join(f.Name(), "subdir"))
+	if err == nil {
+		t.Error("expected error when dbDir parent is a file, got nil")
+	}
+}
+
 // ── Peer writes ───────────────────────────────────────────────────────────────
 
 func TestRecordPeer_Insert(t *testing.T) {
@@ -827,4 +841,135 @@ func TestReload_TokensError(t *testing.T) {
 	if err := loader.Reload(); err == nil {
 		t.Fatal("expected error when tokens table missing, got nil")
 	}
+}
+
+// ── CurrentDB ─────────────────────────────────────────────────────────────────
+
+func TestCurrentDB_ReturnsNonNil(t *testing.T) {
+	sm := newTestDB(t)
+	db := sm.CurrentDB()
+	if db == nil {
+		t.Fatal("CurrentDB() returned nil after successful open")
+	}
+}
+
+// ── closeCurrentDB ────────────────────────────────────────────────────────────
+
+func TestCloseCurrentDB_MovesToHistorical(t *testing.T) {
+	sm := newTestDB(t)
+	basename := filepath.Base(sm.currentPath)
+	if err := sm.closeCurrentDB(); err != nil {
+		t.Fatalf("closeCurrentDB: %v", err)
+	}
+	if sm.currentDB != nil {
+		t.Error("currentDB should be nil after closeCurrentDB")
+	}
+	if _, ok := sm.historicalDBs[basename]; !ok {
+		t.Errorf("closed DB not found in historicalDBs under key %q", basename)
+	}
+}
+
+func TestCloseCurrentDB_NilDB_Noop(t *testing.T) {
+	sm := &SQLiteShardManager{
+		dbDir:         t.TempDir(),
+		historicalDBs: make(map[string]*sql.DB),
+	}
+	if err := sm.closeCurrentDB(); err != nil {
+		t.Fatalf("closeCurrentDB on nil DB returned error: %v", err)
+	}
+}
+
+// ── getDBSize ─────────────────────────────────────────────────────────────────
+
+func TestGetDBSize_NonExistentFile_ReturnsError(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	_, err := sm.getDBSize("/nonexistent/path/ocelot-2000-01.db")
+	if err == nil {
+		t.Error("expected error for non-existent file, got nil")
+	}
+}
+
+func TestGetDBSize_ExistingFile_ReturnsSize(t *testing.T) {
+	sm := newTestDB(t)
+	size, err := sm.getDBSize(sm.currentPath)
+	if err != nil {
+		t.Fatalf("getDBSize on existing file: %v", err)
+	}
+	if size < 0 {
+		t.Errorf("getDBSize returned negative size %d", size)
+	}
+}
+
+// ── CheckRotation ─────────────────────────────────────────────────────────────
+
+func TestCheckRotation_GetDBSizeError_ReturnsError(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	sm.mu.Lock()
+	sm.currentPath = "/nonexistent/path/ocelot-2000-01.db"
+	sm.mu.Unlock()
+
+	if err := sm.CheckRotation(); err == nil {
+		t.Error("expected error from CheckRotation when getDBSize fails, got nil")
+	}
+}
+
+// ── prepareStatements ─────────────────────────────────────────────────────────
+
+func TestPrepareStatements_ClosedDB_ReturnsError(t *testing.T) {
+	sm := newSMForErrorTest(t)
+	sm.currentDB.Close()
+	if err := sm.prepareStatements(); err == nil {
+		t.Error("expected error from prepareStatements with closed DB, got nil")
+	}
+}
+
+// ── openCurrentDB — existing-path branch (no rotation) ───────────────────────
+
+func TestOpenCurrentDB_WithExistingPath_SkipsRotation(t *testing.T) {
+	sm := newTestDB(t)
+	// sm already has currentPath set from NewSQLiteShardManager.
+	// Calling openCurrentDB again covers the sm.currentPath != "" branch;
+	// the file is tiny so size < MaxDBSize and rotation is skipped.
+	if err := sm.openCurrentDB(); err != nil {
+		t.Fatalf("openCurrentDB on already-open SM: %v", err)
+	}
+	if sm.currentDB == nil {
+		t.Error("currentDB should be non-nil after second openCurrentDB")
+	}
+}
+
+// ── loadHistoricalDBs — openDB failure triggers warning+continue ──────────────
+
+func TestLoadHistoricalDBs_UnreadableEntry_Warns(t *testing.T) {
+	sm := newTestDB(t)
+	// Create a directory with a .db extension inside the SM's dbDir.
+	// openDB on a directory path fails (SQLite cannot open a directory),
+	// triggering the warning+continue branch in loadHistoricalDBs.
+	badPath := filepath.Join(sm.dbDir, "ocelot-2000-01.db")
+	if err := os.Mkdir(badPath, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// loadHistoricalDBs must not return an error — it only warns.
+	if err := sm.loadHistoricalDBs(); err != nil {
+		t.Fatalf("loadHistoricalDBs: %v", err)
+	}
+}
+
+// ── loadTokens — skip unknown torrent ─────────────────────────────────────────
+
+func TestLoadTokens_SkipsUnknownTorrent(t *testing.T) {
+	sm := newSMForErrorTest(t)
+
+	// Insert a torrent record + hash, then a token for that torrent.
+	sm.currentDB.Exec("INSERT INTO torrent_stats (torrent_id, seeders, leechers, snatched, balance, last_action) VALUES (77,0,0,0,0,0)")
+	sm.currentDB.Exec("INSERT INTO torrent_hashes (torrent_id, info_hash) VALUES (77,'unknown-hash-xyz')")
+	sm.currentDB.Exec("INSERT INTO tokens (user_id, torrent_id, downloaded) VALUES (3,77,500)")
+
+	// TorrentList does NOT contain "unknown-hash-xyz"
+	torrents := NewTorrentList()
+	loader := NewLoader(sm, torrents, NewUserList(), NewWhitelist())
+	if err := loader.loadTokens(); err != nil {
+		t.Fatalf("loadTokens: %v", err)
+	}
+	// If the torrent is not in the list the continue branch fires and nothing panics.
 }

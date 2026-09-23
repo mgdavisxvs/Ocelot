@@ -236,3 +236,23 @@ func TestDefaultFileConfig_Sensible(t *testing.T) {
 		t.Error("DBDir must not be empty")
 	}
 }
+
+func TestParseConfigFile_OpenError_ReturnsError(t *testing.T) {
+	// A path with a null byte causes os.Open to return EINVAL, which is NOT
+	// treated as os.IsNotExist, so it must propagate as an error.
+	_, err := ParseConfigFile("/tmp/ocelot\x00invalid")
+	if err == nil {
+		t.Error("expected error for path with null byte, got nil")
+	}
+}
+
+func TestParseConfigFile_LineWithoutEquals_Skipped(t *testing.T) {
+	path := writeConf(t, "noequalssign\nlisten_port = 1234\n")
+	cfg, err := ParseConfigFile(path)
+	if err != nil {
+		t.Fatalf("ParseConfigFile: %v", err)
+	}
+	if cfg.ListenPort != 1234 {
+		t.Errorf("ListenPort = %d, want 1234", cfg.ListenPort)
+	}
+}

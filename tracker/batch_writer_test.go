@@ -333,3 +333,42 @@ func TestBatchWriter_Flush_MissingPeersTable_DoesNotPanic(t *testing.T) {
 		Data: &PeerAnnounceData{InfoHash: "h", PeerID: "p", IP: "1.2.3.4", Port: 6881},
 	}})
 }
+
+func TestBatchWriter_Flush_MissingTorrentsTable_DoesNotPanic(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+
+	// Only create peers table — torrents table is absent so torrentStmt.Exec() fails.
+	db.Exec(`CREATE TABLE peers (
+		info_hash TEXT NOT NULL,
+		peer_id   TEXT NOT NULL,
+		ip        TEXT NOT NULL,
+		port      INTEGER NOT NULL,
+		uploaded  INTEGER NOT NULL DEFAULT 0,
+		downloaded INTEGER NOT NULL DEFAULT 0,
+		remaining INTEGER NOT NULL DEFAULT 0,
+		last_announce INTEGER NOT NULL,
+		active    INTEGER NOT NULL DEFAULT 1,
+		PRIMARY KEY (info_hash, peer_id)
+	)`)
+
+	bw := &BatchWriter{
+		db:        db,
+		buffer:    make(chan DBOperation, 1),
+		ticker:    time.NewTicker(time.Hour),
+		batchSize: 10,
+		stopChan:  make(chan struct{}),
+		logger:    GetDefaultLogger(),
+		metrics:   GetMetricsRecorder(),
+	}
+	defer bw.ticker.Stop()
+
+	bw.flush([]DBOperation{{
+		Type: "torrent_update",
+		Data: map[string]interface{}{"info_hash": "h1", "seeders": 1, "leechers": 0},
+	}})
+}

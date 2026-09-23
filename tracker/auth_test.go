@@ -2,6 +2,8 @@ package tracker
 
 import (
 	"database/sql"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -229,5 +231,93 @@ func TestCreateAPIKey_DBClosed_ReturnsError(t *testing.T) {
 	_, err := CreateAPIKey(db, 1, []string{"read"}, nil)
 	if err == nil {
 		t.Error("expected error when DB is closed, got nil")
+	}
+}
+
+// ── AuthMiddleware ────────────────────────────────────────────────────────────
+
+func TestAuthMiddleware_NoAuth_Returns401(t *testing.T) {
+	db := newAuthDB(t)
+	cfg := AuthConfig{JWTSecret: []byte("testsecret"), TokenDuration: time.Hour}
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := AuthMiddleware(cfg, db)(next)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestAuthMiddleware_InvalidAPIKey_Returns401(t *testing.T) {
+	db := newAuthDB(t)
+	cfg := AuthConfig{JWTSecret: []byte("testsecret"), TokenDuration: time.Hour}
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := AuthMiddleware(cfg, db)(next)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-API-Key", "not-in-db-api-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for invalid API key, got %d", rec.Code)
+	}
+}
+
+func TestAuthMiddleware_InvalidBearerToken_Returns401(t *testing.T) {
+	db := newAuthDB(t)
+	cfg := AuthConfig{JWTSecret: []byte("testsecret"), TokenDuration: time.Hour}
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := AuthMiddleware(cfg, db)(next)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer not.a.valid.jwt")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for invalid bearer, got %d", rec.Code)
+	}
+}
+
+func TestAuthMiddleware_ValidBearerToken_Passes(t *testing.T) {
+	db := newAuthDB(t)
+	secret := []byte("mw-secret")
+	cfg := AuthConfig{JWTSecret: secret, TokenDuration: time.Hour}
+
+	token, err := GenerateToken(42, "admin", cfg)
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+
+	reached := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := AuthMiddleware(cfg, db)(next)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	if !reached {
+		t.Error("next handler was not called with valid bearer token")
 	}
 }

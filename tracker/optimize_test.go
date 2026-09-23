@@ -334,3 +334,14 @@ func TestPeerKeyPrime_FullPeerID_ProducesLongerKey(t *testing.T) {
 		t.Errorf("full peerID key length = %d, expected > %d", len(result), len(peerID))
 	}
 }
+
+// ── IsAllowed — exact-length peerID covers end-of-loop return ────────────────
+
+func TestIsAllowed_ExactPrefixLength_AllowedViaEndReturn(t *testing.T) {
+	// peerID exactly matches the stored prefix; the loop exhausts the peerID
+	// without hitting the inner isPrefix check, so `return node.isPrefix` fires.
+	trie := BuildTrieFromSlice([]string{"-TR"})
+	if !trie.IsAllowed([]byte("-TR")) {
+		t.Error("peerID that exactly equals a stored prefix should be allowed")
+	}
+}

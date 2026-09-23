@@ -897,3 +897,209 @@ func TestAnnounce_CommonsSettlement_Called(t *testing.T) {
 		t.Error("expected Commons.SettleAnnounce to be called at least once")
 	}
 }
+
+// ── Announce — completed event edge cases ─────────────────────────────────────
+
+func TestAnnounce_Completed_FromNewPeer_AddedToSeeders(t *testing.T) {
+	// Peer sends "completed" as first-ever announce (not previously in Leechers
+	// or Seeders). Lines 101-103 in announce.go.
+	w, _, _, u := setupAnnounce(t)
+	req := newAnnounceReq("completed", 0) // completed, left=0, peer not in any map
+	if _, err := w.Announce(req, u, net.ParseIP("10.0.0.1"), ""); err != nil {
+		t.Fatalf("Announce: %v", err)
+	}
+	tor, _ := w.Torrents.Get(req.InfoHash)
+	if tor.Seeders.Size() != 1 {
+		t.Errorf("expected 1 seeder after completed-from-new-peer, got %d", tor.Seeders.Size())
+	}
+}
+
+func TestAnnounce_Completed_PeerAlreadySeeder_CompletedFlagCleared(t *testing.T) {
+	// Peer first announces as seeder (left=0, no event), then sends "completed".
+	// Since the peer is in Seeders but not Leechers, completedTorrent is set
+	// to false (lines 104-106).
+	w, _, _, u := setupAnnounce(t)
+	ip := net.ParseIP("10.0.0.1")
+
+	req1 := newAnnounceReq("started", 0) // left=0 → seeder
+	if _, err := w.Announce(req1, u, ip, ""); err != nil {
+		t.Fatalf("first announce: %v", err)
+	}
+
+	req2 := newAnnounceReq("completed", 0) // peer already in Seeders
+	if _, err := w.Announce(req2, u, ip, ""); err != nil {
+		t.Fatalf("second announce: %v", err)
+	}
+
+	tor, _ := w.Torrents.Get(req1.InfoHash)
+	if tor.Seeders.Size() != 1 {
+		t.Errorf("seeder count = %d, want 1", tor.Seeders.Size())
+	}
+	if tor.Leechers.Size() != 0 {
+		t.Errorf("leecher count = %d, want 0", tor.Leechers.Size())
+	}
+}
+
+// ── ParseAnnounceParams — ipv4 fallback ───────────────────────────────────────
+
+func TestParseAnnounceParams_IPv4Fallback(t *testing.T) {
+	params := url.Values{
+		"info_hash": {"00000000000000000001"},
+		"peer_id":   {"-qB40000000000000000"},
+		"port":      {"6881"},
+		"ipv4":      {"1.2.3.4"},
+		// no "ip" param
+	}
+	req, err := ParseAnnounceParams(params, net.ParseIP("10.0.0.1"))
+	if err != nil {
+		t.Fatalf("ParseAnnounceParams: %v", err)
+	}
+	if req.IP == nil || req.IP.String() != "1.2.3.4" {
+		t.Errorf("expected IP 1.2.3.4, got %v", req.IP)
+	}
+}
+
+// ── Announce — numwant clamping ───────────────────────────────────────────────
+
+func TestAnnounce_NumWantZero_ClampsToLimit(t *testing.T) {
+	w, _, _, u := setupAnnounce(t)
+	req := newAnnounceReq("started", 1000)
+	req.NumWant = 0
+	_, err := w.Announce(req, u, net.ParseIP("10.0.0.1"), "")
+	if err != nil {
+		t.Fatalf("Announce with numwant=0: %v", err)
+	}
+}
+
+func TestAnnounce_NumWantExceedsLimit_Clamped(t *testing.T) {
+	w, _, _, u := setupAnnounce(t)
+	req := newAnnounceReq("started", 1000)
+	req.NumWant = 9999 // exceeds NumWantLimit=50
+	_, err := w.Announce(req, u, net.ParseIP("10.0.0.1"), "")
+	if err != nil {
+		t.Fatalf("Announce with numwant=9999: %v", err)
+	}
+}
+
+// ── Announce — leecher promoted to seeder without "completed" ─────────────────
+
+func TestAnnounce_LeecherPromotedToSeeder_WithoutCompleted(t *testing.T) {
+	w, _, _, u := setupAnnounce(t)
+	ip := net.ParseIP("10.0.0.1")
+
+	// First announce: join as leecher (left > 0)
+	req1 := newAnnounceReq("started", 1000)
+	if _, err := w.Announce(req1, u, ip, ""); err != nil {
+		t.Fatalf("first announce: %v", err)
+	}
+
+	tor, _ := w.Torrents.Get(req1.InfoHash)
+	if tor.Leechers.Size() != 1 {
+		t.Fatalf("expected 1 leecher after first announce, got %d", tor.Leechers.Size())
+	}
+
+	// Second announce: left=0, no "completed" event → leecher promoted to seeder
+	req2 := newAnnounceReq("", 0) // no event, left=0
+	if _, err := w.Announce(req2, u, ip, ""); err != nil {
+		t.Fatalf("second announce: %v", err)
+	}
+
+	if tor.Leechers.Size() != 0 {
+		t.Errorf("expected 0 leechers after promotion, got %d", tor.Leechers.Size())
+	}
+	if tor.Seeders.Size() != 1 {
+		t.Errorf("expected 1 seeder after promotion, got %d", tor.Seeders.Size())
+	}
+}
+
+// ── selectPeers — leecher loop branches ──────────────────────────────────────
+
+func TestSelectPeers_LeecherLoop_SameUserSkipped(t *testing.T) {
+	w, _, _ := newTestWorker()
+	tor := NewTorrent(1)
+
+	// Two leechers: one with requesting UserID (skipped), one different (included).
+	pSelf := &Peer{UserID: UserID(5), Visible: true, IPPort: []byte{1, 2, 3, 4, 0, 10}}
+	pOther := &Peer{UserID: UserID(99), Visible: true, IPPort: []byte{5, 6, 7, 8, 0, 20}}
+	tor.Leechers.Set("self", pSelf)
+	tor.Leechers.Set("other", pOther)
+
+	// isLeecher=true, no seeders → falls into leecher sub-loop
+	got := w.selectPeers(tor, pSelf, UserID(5), 10, true)
+	// Only the other peer (6 bytes); self-user is skipped.
+	if len(got) != 6 {
+		t.Errorf("expected 6 bytes (1 peer), got %d", len(got))
+	}
+}
+
+func TestSelectPeers_LeecherLoop_InvisibleSkipped(t *testing.T) {
+	w, _, _ := newTestWorker()
+	tor := NewTorrent(1)
+
+	pInvis := &Peer{UserID: UserID(10), Visible: false, IPPort: []byte{1, 2, 3, 4, 0, 10}}
+	pVis := &Peer{UserID: UserID(11), Visible: true, IPPort: []byte{5, 6, 7, 8, 0, 20}}
+	tor.Leechers.Set("inv", pInvis)
+	tor.Leechers.Set("vis", pVis)
+
+	self := &Peer{UserID: UserID(99)}
+	got := w.selectPeers(tor, self, UserID(99), 10, true)
+	if len(got) != 6 {
+		t.Errorf("expected 6 bytes (1 visible), got %d", len(got))
+	}
+}
+
+func TestSelectPeers_LeecherLoop_EarlyExit(t *testing.T) {
+	w, _, _ := newTestWorker()
+	tor := NewTorrent(1)
+
+	// 3 leechers, no seeders, numwant=1 → early exit after first found.
+	for i := 0; i < 3; i++ {
+		p := &Peer{UserID: UserID(10 + i), Visible: true}
+		p.IPPort = CompactIPPort(net.ParseIP("1.2.3.4"), uint16(6000+i))
+		tor.Leechers.Set(string(rune('a'+i)), p)
+	}
+
+	self := &Peer{UserID: UserID(99)}
+	got := w.selectPeers(tor, self, UserID(99), 1, true)
+	if len(got) != 6 {
+		t.Errorf("expected 6 bytes (numwant=1 hit early exit), got %d", len(got))
+	}
+}
+
+func TestSelectPeers_SeederPath_SameUserLeecherSkipped(t *testing.T) {
+	w, _, _ := newTestWorker()
+	tor := NewTorrent(1)
+
+	// isLeecher=false: seeder asking for leechers.
+	// One leecher matches requester's UserID (skipped), one is different.
+	pSelf := &Peer{UserID: UserID(5), Visible: true}
+	pSelf.IPPort = CompactIPPort(net.ParseIP("1.2.3.4"), 6000)
+	pOther := &Peer{UserID: UserID(99), Visible: true}
+	pOther.IPPort = CompactIPPort(net.ParseIP("5.6.7.8"), 6001)
+	tor.Leechers.Set("self", pSelf)
+	tor.Leechers.Set("other", pOther)
+
+	self := &Peer{UserID: UserID(5)}
+	got := w.selectPeers(tor, self, UserID(5), 10, false)
+	if len(got) != 6 {
+		t.Errorf("expected 6 bytes (1 peer, self skipped), got %d", len(got))
+	}
+}
+
+func TestSelectPeers_SeederPath_EarlyExit(t *testing.T) {
+	w, _, _ := newTestWorker()
+	tor := NewTorrent(1)
+
+	// 3 leechers, isLeecher=false, numwant=1 → early exit after first found.
+	for i := 0; i < 3; i++ {
+		p := &Peer{UserID: UserID(10 + i), Visible: true}
+		p.IPPort = CompactIPPort(net.ParseIP("1.2.3.4"), uint16(6000+i))
+		tor.Leechers.Set(string(rune('a'+i)), p)
+	}
+
+	self := &Peer{UserID: UserID(99)}
+	got := w.selectPeers(tor, self, UserID(99), 1, false)
+	if len(got) != 6 {
+		t.Errorf("expected 6 bytes (numwant=1 early exit), got %d", len(got))
+	}
+}

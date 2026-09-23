@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ── bencodedAnnounceResponse ──────────────────────────────────────────────────
@@ -262,6 +263,110 @@ func buildAPIRequest(sitePassword, action, queryExtra string) *http.Request {
 	return req
 }
 
+// ── handleAnnounce ────────────────────────────────────────────────────────────
+
+func TestHandleAnnounce_Success(t *testing.T) {
+	f := newTestFixture()
+	req := buildAnnounceURL(testPasskey, testInfoHash, testPeerID, "started", 0, 0, 1<<20)
+	raw, _ := f.server.handleRequest(req, net.ParseIP(testIP))
+	body := httpBody(raw)
+	if !strings.Contains(body, "interval") {
+		t.Errorf("expected interval in announce response: %s", body)
+	}
+	if strings.Contains(body, "failure reason") {
+		t.Errorf("unexpected failure in announce: %s", body)
+	}
+}
+
+func TestHandleAnnounce_InvalidPasskey_Returns_Failure(t *testing.T) {
+	f := newTestFixture()
+	badPasskey := strings.Repeat("z", 32)
+	req := buildAnnounceURL(badPasskey, testInfoHash, testPeerID, "started", 0, 0, 1<<20)
+	raw, _ := f.server.handleRequest(req, net.ParseIP(testIP))
+	body := httpBody(raw)
+	if !strings.Contains(body, "failure reason") {
+		t.Errorf("expected failure reason for unknown passkey: %s", body)
+	}
+}
+
+func TestHandleAnnounce_ParseError_MissingPort(t *testing.T) {
+	f := newTestFixture()
+	// Build URL without port — ParseAnnounceParams should error.
+	q := "info_hash=" + urlEscapeRaw(testInfoHash) + "&peer_id=" + urlEscapeRaw(testPeerID) + "&compact=1&uploaded=0&downloaded=0&left=1024"
+	req, _ := http.NewRequest("GET", "/"+testPasskey+"/announce?"+q, nil)
+	raw, _ := f.server.handleRequest(req, net.ParseIP(testIP))
+	body := httpBody(raw)
+	if !strings.Contains(body, "failure reason") {
+		t.Errorf("expected failure for missing port: %s", body)
+	}
+}
+
+func TestHandleAnnounce_XForwardedFor_WithComma(t *testing.T) {
+	f := newTestFixture()
+	req := buildAnnounceURL(testPasskey, testInfoHash, testPeerID, "started", 0, 0, 1<<20)
+	req.Header.Set("X-Forwarded-For", "5.6.7.8,9.10.11.12")
+	// Pass 0.0.0.0 as clientIP so the XFF branch fires.
+	raw, _ := f.server.handleRequest(req, net.ParseIP("0.0.0.0"))
+	body := httpBody(raw)
+	if strings.Contains(body, "failure reason") {
+		t.Errorf("unexpected failure with XFF: %s", body)
+	}
+}
+
+func TestHandleAnnounce_XForwardedFor_NoComma(t *testing.T) {
+	f := newTestFixture()
+	req := buildAnnounceURL(testPasskey, testInfoHash, testPeerID, "started", 0, 0, 1<<20)
+	req.Header.Set("X-Forwarded-For", "5.6.7.8")
+	raw, _ := f.server.handleRequest(req, net.ParseIP("0.0.0.0"))
+	body := httpBody(raw)
+	if strings.Contains(body, "failure reason") {
+		t.Errorf("unexpected failure with XFF (no comma): %s", body)
+	}
+}
+
+// ── handleRequest — KeepaliveTimeout branches ─────────────────────────────────
+
+func TestHandleRequest_KeepaliveTimeout_HTTP10_AlwaysClose(t *testing.T) {
+	f := newTestFixture()
+	f.server.config.KeepaliveTimeout = time.Second
+	req, _ := http.NewRequest("GET", "/"+testPasskey+"/foobar", nil)
+	req.Proto = "HTTP/1.0"
+	req.ProtoMajor = 1
+	req.ProtoMinor = 0
+	_, httpClose := f.server.handleRequest(req, net.ParseIP(testIP))
+	if !httpClose {
+		t.Error("HTTP/1.0 with KeepaliveTimeout should always close")
+	}
+}
+
+func TestHandleRequest_KeepaliveTimeout_HTTP11_ConnectionClose(t *testing.T) {
+	f := newTestFixture()
+	f.server.config.KeepaliveTimeout = time.Second
+	req, _ := http.NewRequest("GET", "/"+testPasskey+"/foobar", nil)
+	req.Proto = "HTTP/1.1"
+	req.ProtoMajor = 1
+	req.ProtoMinor = 1
+	req.Header.Set("Connection", "close")
+	_, httpClose := f.server.handleRequest(req, net.ParseIP(testIP))
+	if !httpClose {
+		t.Error("HTTP/1.1 Connection:close with KeepaliveTimeout should close")
+	}
+}
+
+func TestHandleRequest_KeepaliveTimeout_HTTP11_KeepAlive(t *testing.T) {
+	f := newTestFixture()
+	f.server.config.KeepaliveTimeout = time.Second
+	req, _ := http.NewRequest("GET", "/"+testPasskey+"/foobar", nil)
+	req.Proto = "HTTP/1.1"
+	req.ProtoMajor = 1
+	req.ProtoMinor = 1
+	// No Connection: close header → keepalive
+	_, httpClose := f.server.handleRequest(req, net.ParseIP(testIP))
+	if httpClose {
+		t.Error("HTTP/1.1 without Connection:close should keep alive")
+	}
+}
+
 // httpBody strips the HTTP response headers and returns only the body.
 func httpBody(raw []byte) string {
 	s := string(raw)
@@ -289,4 +394,33 @@ func urlEscapeRaw(s string) string {
 func hexByte(b byte) string {
 	const hex = "0123456789ABCDEF"
 	return string([]byte{hex[b>>4], hex[b&0xF]})
+}
+
+// ── Authentication failure for admin endpoints ────────────────────────────────
+
+func TestTorrentsAPI_WrongPassword(t *testing.T) {
+	f := newTestFixture()
+	req := buildAPIRequest(strings.Repeat("x", 32), "torrents", "")
+	raw, _ := f.server.handleRequest(req, net.ParseIP(testIP))
+	if !strings.Contains(string(raw), "Authentication failure") {
+		t.Errorf("torrents wrong password should yield Authentication failure: %s", string(raw))
+	}
+}
+
+func TestPeersAPI_WrongPassword(t *testing.T) {
+	f := newTestFixture()
+	req := buildAPIRequest(strings.Repeat("x", 32), "peers", "info_hash="+urlEscapeRaw(testInfoHash))
+	raw, _ := f.server.handleRequest(req, net.ParseIP(testIP))
+	if !strings.Contains(string(raw), "Authentication failure") {
+		t.Errorf("peers wrong password should yield Authentication failure: %s", string(raw))
+	}
+}
+
+func TestWhitelistAPI_WrongPassword(t *testing.T) {
+	f := newTestFixture()
+	req := buildAPIRequest(strings.Repeat("x", 32), "whitelist", "")
+	raw, _ := f.server.handleRequest(req, net.ParseIP(testIP))
+	if !strings.Contains(string(raw), "Authentication failure") {
+		t.Errorf("whitelist wrong password should yield Authentication failure: %s", string(raw))
+	}
 }
