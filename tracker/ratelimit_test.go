@@ -96,3 +96,50 @@ func TestGetClientIP_RemoteAddr(t *testing.T) {
 		t.Errorf("GetClientIP = %q, want \"9.10.11.12:1234\"", ip)
 	}
 }
+
+// ── RateLimitMiddleware ───────────────────────────────────────────────────────
+
+func TestRateLimitMiddleware_AllowsRequest(t *testing.T) {
+	limiter := NewRateLimiter(100, 100, 1000)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := RateLimitMiddleware(limiter)(handler)
+
+	req := httptest.NewRequest(http.MethodGet, "/announce", nil)
+	req.Header.Set("X-Forwarded-For", "203.0.113.1")
+	rec := httptest.NewRecorder()
+	mw.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 OK, got %d", rec.Code)
+	}
+}
+
+func TestRateLimitMiddleware_BlocksExceededRate(t *testing.T) {
+	// Burst of 1 so the second request is rate-limited.
+	limiter := NewRateLimiter(1, 1, 1000)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mw := RateLimitMiddleware(limiter)(handler)
+
+	ip := "203.0.113.99"
+
+	// First request consumes the burst.
+	req1 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req1.Header.Set("X-Forwarded-For", ip)
+	rec1 := httptest.NewRecorder()
+	mw.ServeHTTP(rec1, req1)
+
+	// Second request should be rate-limited.
+	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req2.Header.Set("X-Forwarded-For", ip)
+	rec2 := httptest.NewRecorder()
+	mw.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 Too Many Requests, got %d", rec2.Code)
+	}
+}

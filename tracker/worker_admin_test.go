@@ -1295,3 +1295,184 @@ func TestHandleUpdate_AddToken_MissingInfoHash(t *testing.T) {
 		t.Error("expected error when info_hash is missing")
 	}
 }
+
+// ── changePasskey — missing key ───────────────────────────────────────────────
+
+func TestHandleUpdate_ChangePasskey_MissingNewKey(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":      {"change_passkey"},
+		"old_passkey": {"someoldpasskey12345678901234567"},
+		// new_passkey intentionally absent
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when new_passkey is missing")
+	}
+}
+
+// ── removeToken — invalid user_id / missing info_hash ────────────────────────
+
+func TestHandleUpdate_RemoveToken_InvalidUserID(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":  {"remove_token"},
+		"user_id": {"-3"}, // non-positive → invalid
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for invalid user_id in remove_token")
+	}
+}
+
+func TestHandleUpdate_RemoveToken_MissingInfoHash(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":  {"remove_token"},
+		"user_id": {"5"},
+		// info_hash intentionally absent
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when info_hash is missing in remove_token")
+	}
+}
+
+// ── setBudget — missing id / missing max_credits ──────────────────────────────
+
+func TestHandleUpdate_SetBudget_MissingID2(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	req := newAdminRequest(url.Values{
+		"action":      {"set_budget"},
+		"max_credits": {"100"},
+		// id intentionally absent
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when id is missing in set_budget")
+	}
+}
+
+func TestHandleUpdate_SetBudget_MissingMaxCredits(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	req := newAdminRequest(url.Values{
+		"action": {"set_budget"},
+		"id":     {"5"},
+		// max_credits intentionally absent
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when max_credits is missing in set_budget")
+	}
+}
+
+// ── addTorrent — missing info_hash / invalid free_type ───────────────────────
+
+func TestHandleUpdate_AddTorrent_MissingInfoHash(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action": {"add_torrent"},
+		"id":     {"99"},
+		// info_hash intentionally absent
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when info_hash is missing in add_torrent")
+	}
+}
+
+func TestHandleUpdate_AddTorrent_InvalidFreeType(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action":    {"add_torrent"},
+		"id":        {"99"},
+		"info_hash": {"uniquehash0000000001"},
+		"free_type": {"5"}, // out of valid range 0–2
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error for invalid free_type=5 in add_torrent")
+	}
+}
+
+// ── updateTorrent — missing info_hash ────────────────────────────────────────
+
+func TestHandleUpdate_UpdateTorrent_MissingInfoHash(t *testing.T) {
+	w := newAdminWorker()
+	req := newAdminRequest(url.Values{
+		"action": {"update_torrent"},
+		// info_hash intentionally absent
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when info_hash is missing in update_torrent")
+	}
+}
+
+// ── setPriorityClass — SetUserPriority error ──────────────────────────────────
+
+func TestHandleUpdate_SetPriorityClass_CommonsError(t *testing.T) {
+	w := newAdminWorkerWithCommons()
+	w.Commons.(*MockCommons).ReturnErr = fmt.Errorf("commons unavailable")
+	req := newAdminRequest(url.Values{
+		"action":         {"set_priority_class"},
+		"id":             {"1"},
+		"priority_class": {"2"},
+	})
+	_, err := w.HandleUpdate(req)
+	if err == nil {
+		t.Error("expected error when SetUserPriority returns error")
+	}
+}
+
+// ── GetPeers — leecher ForEach early exit ────────────────────────────────────
+
+func TestGetPeers_LeeacherLimit_EarlyExit(t *testing.T) {
+	w := newAdminWorker()
+	ih := "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+	tor := NewTorrent(88)
+
+	// 1 seeder — uses 1 of the 2 slots
+	tor.Seeders.Set("sk1", &Peer{UserID: 1, IP: net.ParseIP("1.1.1.1"), Port: 6000})
+
+	// 3 leechers — only 1 should fit; ForEach returns false when count hits 2
+	for i := 0; i < 3; i++ {
+		tor.Leechers.Set(fmt.Sprintf("lk%d", i), &Peer{
+			UserID: UserID(10 + i),
+			IP:     net.ParseIP("2.2.2.2"),
+			Port:   uint16(7000 + i),
+		})
+	}
+	w.Torrents.Set(ih, tor)
+
+	data, err := w.GetPeers(ih, 2)
+	if err != nil {
+		t.Fatalf("GetPeers: %v", err)
+	}
+	var peers []PeerInfo
+	if err := json.Unmarshal(data, &peers); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(peers) != 2 {
+		t.Errorf("expected exactly 2 peers (limit), got %d", len(peers))
+	}
+}
+
+// ── TorrentList.ForEach — early exit via return false ────────────────────────
+
+func TestTorrentList_ForEach_EarlyExit(t *testing.T) {
+	tl := NewTorrentList()
+	tl.Set("h1", NewTorrent(1))
+	tl.Set("h2", NewTorrent(2))
+	tl.Set("h3", NewTorrent(3))
+
+	count := 0
+	tl.ForEach(func(_ string, _ *Torrent) bool {
+		count++
+		return false // stop after first
+	})
+
+	if count != 1 {
+		t.Errorf("ForEach early exit: expected fn called 1 time, got %d", count)
+	}
+}

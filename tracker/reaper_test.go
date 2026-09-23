@@ -132,6 +132,34 @@ func TestReaper_StartStop(t *testing.T) {
 	// Stop should not deadlock; if we reach here the goroutine exited cleanly
 }
 
+func TestReaper_TickerFires_CallsReap(t *testing.T) {
+	torrents := NewTorrentList()
+	tor := NewTorrent(1)
+	// Add a peer that is old enough to be reaped (2 hours old, timeout = 1s).
+	p := &Peer{
+		UserID:        1,
+		LastAnnounced: time.Now().Add(-2 * time.Hour),
+	}
+	tor.Seeders.Set("key1", p)
+	torrents.Set("hash1", tor)
+
+	// Use struct literal so we can set 1ms interval without converting to seconds.
+	r := &Reaper{
+		torrents: torrents,
+		interval: time.Millisecond,
+		timeout:  time.Second,
+		stop:     make(chan struct{}),
+	}
+	r.Start()
+	time.Sleep(20 * time.Millisecond)
+	r.Stop()
+
+	// The reap should have removed the old peer.
+	if tor.Seeders.Size() != 0 {
+		t.Error("expected old peer to be reaped after ticker fired")
+	}
+}
+
 // ── NoOpSiteComm ──────────────────────────────────────────────────────────────
 
 func TestNoOpSiteComm_ExpireToken(t *testing.T) {
