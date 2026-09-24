@@ -1,0 +1,807 @@
+<title>Ocelot Tracker Manual</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap">
+<style>
+:root {
+  --bg:       #0f1117;
+  --surface:  #1a1d27;
+  --surface2: #22263a;
+  --border:   #2a2d3e;
+  --text:     #e2e6f0;
+  --muted:    #8892a4;
+  --accent:   #5b8cf7;
+  --acc-hi:   #7aa4ff;
+  --ok:       #4ade80;
+  --warn:     #facc15;
+  --err:      #f87171;
+  --code-bg:  #141720;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+  --bg:#f5f6fa; --surface:#fff; --surface2:#eef0f6; --border:#d4d8e8;
+  --text:#111827; --muted:#6b7280; --accent:#3d6bd4; --acc-hi:#2d56b8;
+  --ok:#16a34a; --warn:#b45309; --err:#dc2626; --code-bg:#f0f2f8; color-scheme:light;
+}}
+:root[data-theme="light"] {
+  --bg:#f5f6fa; --surface:#fff; --surface2:#eef0f6; --border:#d4d8e8;
+  --text:#111827; --muted:#6b7280; --accent:#3d6bd4; --acc-hi:#2d56b8;
+  --ok:#16a34a; --warn:#b45309; --err:#dc2626; --code-bg:#f0f2f8; color-scheme:light;
+}
+:root[data-theme="dark"] {
+  --bg:#0f1117; --surface:#1a1d27; --surface2:#22263a; --border:#2a2d3e;
+  --text:#e2e6f0; --muted:#8892a4; --accent:#5b8cf7; --acc-hi:#7aa4ff;
+  --ok:#4ade80; --warn:#facc15; --err:#f87171; --code-bg:#141720; color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;font-size:14px;line-height:1.7}
+a{color:var(--accent);text-decoration:none}
+a:hover{color:var(--acc-hi);text-decoration:underline}
+
+/* shell */
+.shell{display:flex;min-height:100vh}
+
+/* sidebar */
+.sidebar{width:236px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);position:sticky;top:0;height:100vh;overflow-y:auto;display:flex;flex-direction:column}
+.sb-head{padding:18px 18px 14px;border-bottom:1px solid var(--border)}
+.sb-logo{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:14px;color:var(--text);display:flex;align-items:center;gap:7px}
+.sb-logo svg{color:var(--accent)}
+.sb-sub{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-top:3px;font-family:'JetBrains Mono',monospace}
+nav{padding:10px 0 24px;flex:1}
+.nav-group{padding:14px 18px 4px;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+nav a{display:block;padding:4px 18px 4px 22px;font-size:12.5px;color:var(--muted);border-left:2px solid transparent;transition:color .12s,border-color .12s}
+nav a:hover{color:var(--text);text-decoration:none}
+nav a.active{color:var(--accent);border-color:var(--accent)}
+.sb-foot{padding:10px 18px;border-top:1px solid var(--border)}
+.theme-btn{background:none;border:1px solid var(--border);border-radius:5px;padding:4px 9px;font-size:11px;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:5px;width:100%}
+.theme-btn:hover{color:var(--text);border-color:var(--muted)}
+
+/* hamburger */
+.burger{display:none;position:fixed;top:10px;left:10px;z-index:100;background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:7px 9px;cursor:pointer;flex-direction:column;gap:4px}
+.burger span{display:block;width:17px;height:2px;background:var(--text);border-radius:2px}
+
+/* main */
+.main{flex:1;min-width:0;padding:44px clamp(16px,5vw,60px);max-width:840px}
+
+/* page header */
+.pg-head{margin-bottom:44px}
+.pg-head h1{font-family:'JetBrains Mono',monospace;font-size:26px;font-weight:700;margin:0 0 8px;line-height:1.2}
+.pg-head p{color:var(--muted);margin:0 0 12px;max-width:65ch}
+.tags{display:flex;flex-wrap:wrap;gap:7px}
+.tag{font-family:'JetBrains Mono',monospace;font-size:11px;padding:3px 9px;border-radius:4px;border:1px solid;white-space:nowrap}
+.tag-blue{color:var(--accent);border-color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.tag-green{color:var(--ok);border-color:var(--ok);background:color-mix(in srgb,var(--ok) 10%,transparent)}
+.tag-warn{color:var(--warn);border-color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,transparent)}
+
+/* sections */
+section{padding-top:4px;margin-bottom:52px}
+section:target{scroll-margin-top:24px}
+h2{font-family:'JetBrains Mono',monospace;font-size:19px;font-weight:700;margin:0 0 16px;padding-bottom:8px;border-bottom:1px solid var(--border);text-wrap:balance}
+h3{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;margin:26px 0 10px;color:var(--acc-hi)}
+h4{font-size:13px;font-weight:600;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-family:'JetBrains Mono',monospace;font-size:11px}
+p{margin:0 0 12px;max-width:65ch}
+ul,ol{margin:0 0 12px;padding-left:22px;max-width:65ch}
+li{margin-bottom:4px}
+strong{font-weight:600}
+
+/* code */
+code{font-family:'JetBrains Mono',monospace;font-size:12px;background:var(--code-bg);border:1px solid var(--border);border-radius:3px;padding:1px 5px;color:var(--acc-hi)}
+pre{background:var(--code-bg);border:1px solid var(--border);border-radius:7px;padding:14px 18px;overflow-x:auto;margin:0 0 18px}
+pre code{background:none;border:none;padding:0;font-size:12px;color:var(--text);line-height:1.6}
+.c{color:var(--muted);font-style:italic}
+.k{color:#c792ea}
+.s{color:#c3e88d}
+.n{color:#f78c6c}
+
+/* tables */
+.tw{overflow-x:auto;margin:0 0 18px}
+table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+th{font-family:'JetBrains Mono',monospace;font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);padding:7px 11px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap}
+td{padding:8px 11px;border-bottom:1px solid var(--border);vertical-align:top}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--surface2)}
+td code{font-size:11.5px}
+
+/* callouts */
+.note,.warn,.tip{border-left:3px solid;border-radius:0 6px 6px 0;padding:10px 14px;margin:0 0 18px;font-size:13px}
+.note p,.warn p,.tip p{margin:0;max-width:none}
+.note{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,transparent)}
+.warn{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 8%,transparent)}
+.tip{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 8%,transparent)}
+.cl{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px}
+.note .cl{color:var(--accent)} .warn .cl{color:var(--warn)} .tip .cl{color:var(--ok)}
+
+/* signal cards */
+.sig-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin:0 0 18px}
+.sig-card{background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:12px 14px}
+.sig-name{font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;color:var(--accent);margin-bottom:6px}
+.sig-desc{font-size:12.5px;color:var(--muted)}
+
+/* endpoint list */
+.ep{display:flex;align-items:baseline;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
+.ep:last-child{border-bottom:none}
+.method{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;padding:2px 6px;border-radius:3px;border:1px solid;white-space:nowrap;min-width:38px;text-align:center}
+.GET {color:var(--ok);  border-color:var(--ok);  background:color-mix(in srgb,var(--ok)   12%,transparent)}
+.POST{color:var(--warn);border-color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent)}
+.ep-path{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text)}
+.ep-desc{font-size:12px;color:var(--muted);margin-left:auto}
+
+/* metric rows */
+.mrow{padding:8px 0;border-bottom:1px solid var(--border);display:grid;grid-template-columns:1fr auto;gap:12px;align-items:start}
+.mrow:last-child{border-bottom:none}
+.mn{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--acc-hi)}
+.mt{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);background:var(--code-bg);border:1px solid var(--border);border-radius:3px;padding:1px 6px;white-space:nowrap}
+.md{font-size:12px;color:var(--muted);grid-column:1}
+
+/* arch diagram */
+.arch{background:var(--code-bg);border:1px solid var(--border);border-radius:7px;padding:14px 18px;overflow-x:auto;margin:0 0 18px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.6;color:var(--muted);white-space:pre}
+.arch .hi{color:var(--acc-hi)}
+
+@media(max-width:680px){
+  .burger{display:flex}
+  .sidebar{position:fixed;top:0;left:0;z-index:90;transform:translateX(-100%);transition:transform .2s;height:100vh;width:250px}
+  .sidebar.open{transform:translateX(0)}
+  .main{padding:52px 16px 44px}
+  .ep-desc{display:none}
+  .sig-grid{grid-template-columns:1fr}
+}
+</style>
+
+<div class="shell">
+<aside class="sidebar" id="sb">
+  <div class="sb-head">
+    <div class="sb-logo">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
+      Ocelot Tracker
+    </div>
+    <div class="sb-sub">Operator Reference</div>
+  </div>
+  <nav>
+    <div class="nav-group">Getting Started</div>
+    <a href="#overview">Overview</a>
+    <a href="#signals">Signals</a>
+    <a href="#config">Configuration</a>
+
+    <div class="nav-group">HTTP API</div>
+    <a href="#routes">Routes</a>
+    <a href="#announce">Announce</a>
+    <a href="#scrape">Scrape</a>
+    <a href="#admin">Admin Actions</a>
+
+    <div class="nav-group">Storage</div>
+    <a href="#database">Database</a>
+    <a href="#schema">Schema</a>
+    <a href="#wal">SQLite Pragmas</a>
+    <a href="#reload">Reload</a>
+
+    <div class="nav-group">Data Models</div>
+    <a href="#models">Peer / Torrent / User</a>
+    <a href="#freetype">FreeType Values</a>
+
+    <div class="nav-group">Operations</div>
+    <a href="#procedures">Procedures</a>
+    <a href="#monitoring">Monitoring</a>
+    <a href="#troubleshooting">Troubleshooting</a>
+    <a href="#security">Security</a>
+  </nav>
+  <div class="sb-foot">
+    <button class="theme-btn" onclick="toggleTheme()">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      Toggle theme
+    </button>
+  </div>
+</aside>
+
+<button class="burger" id="burger" onclick="toggleNav()"><span></span><span></span><span></span></button>
+
+<main class="main">
+
+<div class="pg-head">
+  <h1># Ocelot Operator Manual</h1>
+  <p>Complete operational reference for the Go rewrite of the Gazelle BitTorrent tracker. Covers configuration, HTTP API, database schema, peer mechanics, and economic settlement.</p>
+  <div class="tags">
+    <span class="tag tag-blue">Go 1.26</span>
+    <span class="tag tag-green">SQLite WAL</span>
+    <span class="tag tag-blue">BEP 3 / BEP 23</span>
+    <span class="tag tag-warn">ComputeCommons</span>
+  </div>
+</div>
+
+<!-- overview -->
+<section id="overview">
+  <h2># Overview</h2>
+  <p>Ocelot is a private BitTorrent tracker serving Gazelle-compatible sites. It handles peer announces, scrapes, admin updates, and optional economic credit settlement via ComputeCommons.</p>
+  <div class="note">
+    <div class="cl">Startup</div>
+    <p>The binary reads its config via the <code>-c</code> flag (default: <code>ocelot.conf</code>). On first run it creates the SQLite database in <code>db_dir</code>. The tracker listens on <code>listen_port</code> over raw TCP — not stdlib <code>net/http</code>.</p>
+  </div>
+  <div class="warn">
+    <div class="cl">IPv4 Only</div>
+    <p>Compact peer format (BEP 23) encodes 4-byte IPv4 + 2-byte port. IPv6 addresses pass initial validation but produce a <code>nil</code> <code>IPPort</code> and are excluded from peer lists with a warning.</p>
+  </div>
+
+  <h3>Process Signals</h3>
+  <div class="sig-grid">
+    <div class="sig-card">
+      <div class="sig-name">SIGUSR1</div>
+      <div class="sig-desc">Merge-reload — reloads torrents, users, whitelist, and tokens from the database without wiping in-memory peer lists.</div>
+    </div>
+    <div class="sig-card">
+      <div class="sig-name">SIGTERM</div>
+      <div class="sig-desc">Graceful shutdown — flushes pending DB writes, checkpoints WAL, closes all shards.</div>
+    </div>
+    <div class="sig-card">
+      <div class="sig-name">SIGHUP</div>
+      <div class="sig-desc">Config hot-reload — re-parses <code>ocelot.conf</code>, applies mutable fields without restart.</div>
+    </div>
+    <div class="sig-card">
+      <div class="sig-name">SIGINT</div>
+      <div class="sig-desc">Same as SIGTERM. Drains active connections with a 30-second timeout.</div>
+    </div>
+  </div>
+
+  <h3>Architecture</h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th>Concern</th><th>C++ original</th><th>Go port</th></tr></thead>
+      <tbody>
+        <tr><td>I/O model</td><td>libev (manual epoll)</td><td>Go netpoller (automatic epoll/kqueue)</td></tr>
+        <tr><td>Database</td><td>MySQL, persistent connection</td><td>SQLite WAL, 84 GB shard rotation</td></tr>
+        <tr><td>Concurrency</td><td>pthreads + manual mutexes</td><td>goroutines + sync.RWMutex + atomics</td></tr>
+        <tr><td>Peer state</td><td>RAM only, lost on restart</td><td>RAM primary; SQLite for restart recovery</td></tr>
+        <tr><td>Config</td><td>ocelot.conf</td><td>ocelot.conf (same keys)</td></tr>
+        <tr><td>Site comms</td><td>HTTP POST to Gazelle</td><td>GazelleSiteComm or NoOpSiteComm</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- signals -->
+<section id="signals">
+  <h2># Signals</h2>
+  <div class="tw">
+    <table>
+      <thead><tr><th>Signal</th><th>Effect</th></tr></thead>
+      <tbody>
+        <tr><td><code>SIGINT</code></td><td>Graceful shutdown: stop accepting, drain connections (30 s), close DB.</td></tr>
+        <tr><td><code>SIGTERM</code></td><td>Same as SIGINT.</td></tr>
+        <tr><td><code>SIGHUP</code></td><td>Hot-reload config: re-parse ocelot.conf, apply mutable fields in-place.</td></tr>
+        <tr><td><code>SIGUSR1</code></td><td>Merge-reload: update torrent metadata, user permissions, whitelist from DB. Does not wipe peer lists.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>SIGHUP — hot-reload fields</h3>
+  <p>Updated without restart: <code>site_password</code>, <code>report_password</code>, <code>numwant_limit</code>, <code>announce_interval</code>, <code>peers_timeout</code>.</p>
+  <p>Require restart: <code>listen_port</code>, <code>max_middlemen</code>, <code>db_dir</code>, <code>gazelle_url</code>, <code>keepalive_timeout</code>, <code>reap_peers_interval</code>.</p>
+<pre><code>kill -HUP $(pgrep ocelot)
+</code></pre>
+
+  <h3>SIGUSR1 — what changes / what does not</h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th>Changes</th><th>Unchanged</th></tr></thead>
+      <tbody>
+        <tr><td>Torrent <code>Completed</code>, <code>Balance</code>, <code>FreeType</code></td><td>Peer lists (Seeders/Leechers) — never wiped</td></tr>
+        <tr><td>New torrents → inserted (empty peer lists)</td><td>Torrent IDs / info hashes of existing entries</td></tr>
+        <tr><td>User <code>CanLeech</code>, <code>ProtectIP</code> flags</td><td>User passkeys of existing entries</td></tr>
+        <tr><td>New users → inserted</td><td></td></tr>
+        <tr><td>Whitelist → fully replaced from DB</td><td></td></tr>
+        <tr><td>Tokens → merged into <code>Torrent.TokenedUsers</code></td><td></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- config -->
+<section id="config">
+  <h2># Configuration</h2>
+  <p>Plain-text key=value file. Comments begin with <code>#</code>. Unknown keys are silently ignored. All values have safe defaults.</p>
+<pre><code><span class="c"># ── Network ─────────────────────────────────────────────</span>
+listen_port         = <span class="n">34000</span>
+max_connections     = <span class="n">128</span>
+max_middlemen       = <span class="n">20000</span>
+max_read_buffer     = <span class="n">4096</span>
+max_request_size    = <span class="n">4096</span>
+connection_timeout  = <span class="n">10</span>
+keepalive_timeout   = <span class="n">0</span>
+
+<span class="c"># ── Tracker behaviour ───────────────────────────────────</span>
+announce_interval   = <span class="n">1800</span>
+numwant_limit       = <span class="n">50</span>
+peers_timeout       = <span class="n">7200</span>
+reap_peers_interval = <span class="n">1800</span>
+
+<span class="c"># ── Maintenance ─────────────────────────────────────────</span>
+schedule_interval   = <span class="n">3</span>
+del_reason_lifetime = <span class="n">86400</span>
+request_log_size    = <span class="n">500</span>
+
+<span class="c"># ── Authentication ──────────────────────────────────────</span>
+site_password   = <span class="n">00000000000000000000000000000000</span>
+report_password = <span class="n">00000000000000000000000000000000</span>
+
+<span class="c"># ── Storage ─────────────────────────────────────────────</span>
+db_dir   = <span class="s">./data/db</span>
+readonly = <span class="k">false</span>
+
+<span class="c"># ── Gazelle integration (optional) ──────────────────────</span>
+gazelle_url =
+</code></pre>
+
+  <h3>Key quick reference</h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Hot-reload</th></tr></thead>
+      <tbody>
+        <tr><td><code>listen_port</code></td><td>int</td><td>34000</td><td>No</td></tr>
+        <tr><td><code>max_connections</code></td><td>int</td><td>128</td><td>No</td></tr>
+        <tr><td><code>max_middlemen</code></td><td>int</td><td>20000</td><td>No</td></tr>
+        <tr><td><code>announce_interval</code></td><td>int (sec)</td><td>1800</td><td><strong>Yes</strong></td></tr>
+        <tr><td><code>numwant_limit</code></td><td>int</td><td>50</td><td><strong>Yes</strong></td></tr>
+        <tr><td><code>peers_timeout</code></td><td>int (sec)</td><td>7200</td><td><strong>Yes</strong></td></tr>
+        <tr><td><code>reap_peers_interval</code></td><td>int (sec)</td><td>1800</td><td>No</td></tr>
+        <tr><td><code>schedule_interval</code></td><td>int (sec)</td><td>3</td><td>No</td></tr>
+        <tr><td><code>site_password</code></td><td>string</td><td>00…0</td><td><strong>Yes</strong></td></tr>
+        <tr><td><code>report_password</code></td><td>string</td><td>00…0</td><td><strong>Yes</strong></td></tr>
+        <tr><td><code>db_dir</code></td><td>path</td><td>./data/db</td><td>No</td></tr>
+        <tr><td><code>readonly</code></td><td>bool</td><td>false</td><td>No</td></tr>
+        <tr><td><code>gazelle_url</code></td><td>URL</td><td>(empty)</td><td>No</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- routes -->
+<section id="routes">
+  <h2># Routes</h2>
+  <p>All routes on a single TCP port (<code>listen_port</code>). Client routes use the user's 32-char passkey; admin routes use <code>site_password</code>.</p>
+  <div class="ep"><span class="method GET">GET</span><span class="ep-path">/{passkey}/announce</span><span class="ep-desc">BEP-3 announce</span></div>
+  <div class="ep"><span class="method GET">GET</span><span class="ep-path">/{passkey}/scrape</span><span class="ep-desc">BEP-48 scrape</span></div>
+  <div class="ep"><span class="method POST">POST</span><span class="ep-path">/{sitepass}/update</span><span class="ep-desc">Admin mutations (dispatched by ?action=)</span></div>
+  <div class="ep"><span class="method GET">GET</span><span class="ep-path">/{sitepass}/stats</span><span class="ep-desc">Runtime statistics (JSON)</span></div>
+  <div class="ep"><span class="method GET">GET</span><span class="ep-path">/{sitepass}/torrents</span><span class="ep-desc">In-memory torrent list (JSON)</span></div>
+  <div class="ep"><span class="method GET">GET</span><span class="ep-path">/{sitepass}/peers</span><span class="ep-desc">Peer list for one torrent (JSON)</span></div>
+  <div class="ep"><span class="method GET">GET</span><span class="ep-path">/{sitepass}/whitelist</span><span class="ep-desc">Current client whitelist (JSON)</span></div>
+</section>
+
+<!-- announce -->
+<section id="announce">
+  <h2># Announce</h2>
+  <p>Standard BEP-3 announce. Responses use compact format (BEP-23): each peer is 6 bytes (4-byte IP + 2-byte port).</p>
+  <h3>Required parameters</h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th>Parameter</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>info_hash</code></td><td>20-byte raw info hash (URL-encoded)</td></tr>
+        <tr><td><code>peer_id</code></td><td>20-byte peer ID. First 4–8 bytes matched against whitelist.</td></tr>
+        <tr><td><code>port</code></td><td>Client's listening port (1–65535)</td></tr>
+        <tr><td><code>uploaded</code></td><td>Total bytes uploaded this session</td></tr>
+        <tr><td><code>downloaded</code></td><td>Total bytes downloaded this session</td></tr>
+        <tr><td><code>left</code></td><td>Bytes remaining. 0 = seeder.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <h3>Optional parameters</h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>event</code></td><td>—</td><td><code>started</code>, <code>stopped</code>, <code>completed</code></td></tr>
+        <tr><td><code>numwant</code></td><td>25</td><td>Peers requested. Capped at <code>numwant_limit</code>.</td></tr>
+        <tr><td><code>corrupt</code></td><td>0</td><td>Corrupt bytes reported</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note">
+    <div class="cl">Passkey URL</div>
+    <p>Passkeys must be exactly 32 characters: <code>http://tracker.example.com:34000/{32-char-passkey}/announce</code></p>
+  </div>
+</section>
+
+<!-- scrape -->
+<section id="scrape">
+  <h2># Scrape</h2>
+  <p>BEP-48 scrape. Returns seeder, leecher, and completed counts for up to 50 torrents per request.</p>
+<pre><code>GET /{passkey}/scrape?info_hash=&lt;hash1&gt;&amp;info_hash=&lt;hash2&gt;
+</code></pre>
+  <p>Response is bencoded: <code>d5:filesd20:&lt;hash&gt;d8:completei14e10:downloadedi891e10:incompletei3eeee</code></p>
+  <p>If no <code>info_hash</code> parameters are supplied, the tracker returns scrape data for all known torrents (capped at <code>numwant_limit</code>).</p>
+</section>
+
+<!-- admin -->
+<section id="admin">
+  <h2># Admin Actions</h2>
+  <p>All mutations go through <code>POST /{sitepass}/update?action=&lt;action&gt;</code>. Responses are JSON.</p>
+
+  <h3>add_torrent</h3>
+<pre><code>GET /{sitepass}/update?action=add_torrent&amp;id=42&amp;info_hash=&lt;raw&gt;&amp;free_type=0
+</code></pre>
+  <div class="tw"><table><thead><tr><th>Param</th><th>Required</th><th>Description</th></tr></thead><tbody>
+    <tr><td><code>id</code></td><td>Yes</td><td>Torrent ID (uint)</td></tr>
+    <tr><td><code>info_hash</code></td><td>Yes</td><td>20-byte raw info hash</td></tr>
+    <tr><td><code>free_type</code></td><td>No</td><td>0=Normal (default), 1=Free, 2=Neutral</td></tr>
+  </tbody></table></div>
+
+  <h3>delete_torrent</h3>
+<pre><code>GET /{sitepass}/update?action=delete_torrent&amp;info_hash=&lt;raw&gt;
+</code></pre>
+
+  <h3>update_torrent</h3>
+<pre><code>GET /{sitepass}/update?action=update_torrent&amp;info_hash=&lt;raw&gt;&amp;free_type=1
+</code></pre>
+
+  <h3>add_user</h3>
+<pre><code>GET /{sitepass}/update?action=add_user&amp;id=1234&amp;passkey=&lt;32chars&gt;&amp;can_leech=1&amp;protect_ip=0
+</code></pre>
+  <div class="tw"><table><thead><tr><th>Param</th><th>Required</th><th>Description</th></tr></thead><tbody>
+    <tr><td><code>id</code></td><td>Yes</td><td>User ID (uint)</td></tr>
+    <tr><td><code>passkey</code></td><td>Yes</td><td>32-char alphanumeric passkey</td></tr>
+    <tr><td><code>can_leech</code></td><td>No</td><td>1=allowed (default), 0=seed-only</td></tr>
+    <tr><td><code>protect_ip</code></td><td>No</td><td>1=do not store IP in DB</td></tr>
+  </tbody></table></div>
+
+  <h3>remove_user</h3>
+<pre><code>GET /{sitepass}/update?action=remove_user&amp;passkey=&lt;32chars&gt;
+</code></pre>
+
+  <h3>change_passkey</h3>
+<pre><code>GET /{sitepass}/update?action=change_passkey&amp;old_passkey=&lt;32chars&gt;&amp;new_passkey=&lt;32chars&gt;
+</code></pre>
+
+  <h3>add_whitelist / remove_whitelist</h3>
+<pre><code>GET /{sitepass}/update?action=add_whitelist&amp;prefix=-qB5
+GET /{sitepass}/update?action=remove_whitelist&amp;prefix=-qB4
+</code></pre>
+  <p>Common prefixes: <code>-qB4</code> qBittorrent 4.x · <code>-qB5</code> qBittorrent 5.x · <code>-DE13</code> Deluge · <code>-TR3</code> Transmission · <code>-lt</code> libtorrent</p>
+</section>
+
+<!-- database -->
+<section id="database">
+  <h2># Database</h2>
+  <p>SQLite shard files named <code>ocelot-YYYY-MM.db</code>, stored in <code>db_dir</code>. A new shard is created when the current one reaches 84 GB. Historical shards remain open for aggregate reads.</p>
+<pre><code>data/db/
+├── ocelot-2025-01.db   <span class="c">← historical (read-only)</span>
+├── ocelot-2025-06.db   <span class="c">← historical</span>
+└── ocelot-2026-09.db   <span class="c">← current (all writes)</span>
+</code></pre>
+
+  <h3>Startup sequence</h3>
+<pre><code><span class="n">1</span>. Parse <code>-c</code> flag → locate config file
+<span class="n">2</span>. ParseConfigFile() → load key=value pairs
+<span class="n">3</span>. NewSQLiteShardManager(db_dir)
+      → open all monthly .db files
+      → apply WAL pragmas
+      → CREATE TABLE IF NOT EXISTS (8 tables)
+<span class="n">4</span>. Loader.LoadAll() → TorrentList, UserList, Whitelist, Tokens
+<span class="n">5</span>. Select SiteComm: GazelleSiteComm or NoOpSiteComm
+<span class="n">6</span>. Reaper.Start()    → evict stale peers
+<span class="n">7</span>. Scheduler.Start() → WAL checkpoint loop
+<span class="n">8</span>. Server.ListenAndServe()
+<span class="n">9</span>. Block on SIGINT/SIGTERM
+</code></pre>
+</section>
+
+<!-- schema -->
+<section id="schema">
+  <h2># Schema</h2>
+
+  <h4>peers</h4>
+  <div class="tw"><table><thead><tr><th>Column</th><th>Type</th><th>Description</th></tr></thead><tbody>
+    <tr><td><code>user_id</code></td><td>INTEGER PK</td><td>User ID</td></tr>
+    <tr><td><code>torrent_id</code></td><td>INTEGER PK</td><td>Torrent ID</td></tr>
+    <tr><td><code>active</code></td><td>INTEGER</td><td>1 = active, 0 = stopped</td></tr>
+    <tr><td><code>uploaded</code></td><td>INTEGER</td><td>Bytes uploaded this session</td></tr>
+    <tr><td><code>downloaded</code></td><td>INTEGER</td><td>Bytes downloaded this session</td></tr>
+    <tr><td><code>remaining</code></td><td>INTEGER</td><td>Bytes left to download</td></tr>
+    <tr><td><code>ip</code></td><td>TEXT</td><td>Peer IP (empty if ProtectIP)</td></tr>
+    <tr><td><code>peer_id</code></td><td>BLOB</td><td>20-byte BitTorrent peer ID</td></tr>
+    <tr><td><code>last_announce</code></td><td>INTEGER</td><td>Unix timestamp of last announce</td></tr>
+  </tbody></table></div>
+
+  <h4>torrents</h4>
+  <div class="tw"><table><thead><tr><th>Column</th><th>Type</th><th>Description</th></tr></thead><tbody>
+    <tr><td><code>id</code></td><td>INTEGER PK</td><td>Torrent ID</td></tr>
+    <tr><td><code>seeders</code></td><td>INTEGER</td><td>Current seeder count</td></tr>
+    <tr><td><code>leechers</code></td><td>INTEGER</td><td>Current leecher count</td></tr>
+    <tr><td><code>snatched</code></td><td>INTEGER</td><td>Cumulative snatch count</td></tr>
+    <tr><td><code>free_type</code></td><td>INTEGER</td><td>0=Normal 1=Free 2=Neutral</td></tr>
+    <tr><td><code>last_action</code></td><td>INTEGER</td><td>Unix timestamp of last update</td></tr>
+  </tbody></table></div>
+
+  <h4>users</h4>
+  <div class="tw"><table><thead><tr><th>Column</th><th>Type</th><th>Description</th></tr></thead><tbody>
+    <tr><td><code>id</code></td><td>INTEGER PK</td><td>User ID</td></tr>
+    <tr><td><code>uploaded</code></td><td>INTEGER</td><td>Cumulative bytes uploaded</td></tr>
+    <tr><td><code>downloaded</code></td><td>INTEGER</td><td>Cumulative bytes downloaded</td></tr>
+  </tbody></table></div>
+
+  <h4>tokens</h4>
+  <div class="tw"><table><thead><tr><th>Column</th><th>Type</th><th>Description</th></tr></thead><tbody>
+    <tr><td><code>user_id</code></td><td>INTEGER PK</td><td>User ID</td></tr>
+    <tr><td><code>torrent_id</code></td><td>INTEGER PK</td><td>Torrent ID</td></tr>
+    <tr><td><code>downloaded</code></td><td>INTEGER</td><td>Bytes downloaded under this token</td></tr>
+  </tbody></table></div>
+
+  <h4>torrent_hashes</h4>
+  <p>Maps torrent IDs → info_hashes for restart recovery.</p>
+
+  <h4>user_passkeys</h4>
+  <p>Stores passkeys and permissions so UserList survives a restart.</p>
+
+  <h4>whitelist</h4>
+  <p>Peer ID prefix allow-list. Empty = allow all clients.</p>
+</section>
+
+<!-- wal -->
+<section id="wal">
+  <h2># SQLite Pragmas</h2>
+  <p>Applied on every shard open:</p>
+<pre><code>PRAGMA journal_mode = WAL;
+PRAGMA synchronous  = NORMAL;
+PRAGMA busy_timeout = 5000;
+</code></pre>
+  <p>The Scheduler goroutine runs <code>PRAGMA wal_checkpoint(TRUNCATE)</code> every <code>schedule_interval</code> seconds. If the WAL grows large after a crash, truncate it while the tracker is stopped:</p>
+<pre><code>sqlite3 data/db/ocelot-$(date +%Y-%m).db "PRAGMA wal_checkpoint(TRUNCATE);"
+</code></pre>
+  <h3>Manual inspection</h3>
+<pre><code><span class="c"># Top 10 torrents by seeders</span>
+SELECT id, seeders, leechers, snatched FROM torrents ORDER BY seeders DESC LIMIT 10;
+
+<span class="c"># Active peers for a torrent</span>
+SELECT user_id, ip, remaining, datetime(last_announce,'unixepoch')
+FROM peers WHERE torrent_id = 42 AND active = 1;
+</code></pre>
+</section>
+
+<!-- reload -->
+<section id="reload">
+  <h2># Reload</h2>
+  <p>After Gazelle updates the database (new torrents, banned users, token grants), send SIGUSR1 to merge changes without restarting:</p>
+<pre><code>kill -USR1 $(pgrep ocelot)
+<span class="c"># or via systemd:</span>
+kill -USR1 $(systemctl show -p MainPID ocelot | cut -d= -f2)
+</code></pre>
+  <p>For config-only changes (passwords, intervals), use SIGHUP:</p>
+<pre><code>kill -HUP $(pgrep ocelot)
+<span class="c"># or:</span>
+systemctl reload ocelot
+</code></pre>
+</section>
+
+<!-- models -->
+<section id="models">
+  <h2># Peer / Torrent / User</h2>
+
+  <h3>/stats response</h3>
+<pre><code>{
+  <span class="s">"uptime_seconds"</span>:       <span class="n">86400</span>,
+  <span class="s">"open_connections"</span>:     <span class="n">142</span>,
+  <span class="s">"seeders"</span>:              <span class="n">18432</span>,
+  <span class="s">"leechers"</span>:             <span class="n">3021</span>,
+  <span class="s">"requests"</span>:             <span class="n">9843201</span>,
+  <span class="s">"announcements"</span>:        <span class="n">9201044</span>,
+  <span class="s">"succ_announcements"</span>:   <span class="n">9198777</span>,
+  <span class="s">"scrapes"</span>:              <span class="n">641157</span>,
+  <span class="s">"torrent_count"</span>:        <span class="n">50234</span>,
+  <span class="s">"user_count"</span>:           <span class="n">12891</span>,
+  <span class="s">"whitelist_count"</span>:      <span class="n">18</span>
+}
+</code></pre>
+
+  <h3>/peers response</h3>
+<pre><code>[
+  {
+    <span class="s">"user_id"</span>:    <span class="n">1234</span>,
+    <span class="s">"ip"</span>:         <span class="s">"203.0.113.44"</span>,
+    <span class="s">"port"</span>:       <span class="n">51413</span>,
+    <span class="s">"uploaded"</span>:   <span class="n">1073741824</span>,
+    <span class="s">"downloaded"</span>: <span class="n">536870912</span>,
+    <span class="s">"left"</span>:       <span class="n">0</span>,
+    <span class="s">"seeder"</span>:     <span class="k">true</span>
+  }
+]
+</code></pre>
+  <p><code>ip</code> is an empty string when <code>protect_ip = 1</code>.</p>
+</section>
+
+<!-- freetype -->
+<section id="freetype">
+  <h2># FreeType Values</h2>
+  <div class="tw">
+    <table>
+      <thead><tr><th>Value</th><th>Name</th><th>Effect</th></tr></thead>
+      <tbody>
+        <tr><td><code>0</code></td><td>Normal</td><td>Upload and download both counted toward ratio.</td></tr>
+        <tr><td><code>1</code></td><td>Free</td><td>Download not counted; upload still counted.</td></tr>
+        <tr><td><code>2</code></td><td>Neutral</td><td>Neither upload nor download counted.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <h3>Per-user tokens</h3>
+  <p>A token grants one user freeleech on one torrent, overriding the torrent's FreeType. Token lifecycle:</p>
+<pre><code>Gazelle grants token → inserts into tokens table → SIGUSR1
+User announces with Left &gt; 0 and a download delta:
+  tracker detects token → sets downloadedChange = 0
+  → calls DB.RecordToken() → sets expireToken = true
+On completion → SiteComm.ExpireToken(torrentID, userID)
+Gazelle receives callback → marks token consumed
+</code></pre>
+  <p>If <code>gazelle_url</code> is unset, <code>ExpireToken</code> is a no-op (logged only).</p>
+</section>
+
+<!-- procedures -->
+<section id="procedures">
+  <h2># Procedures</h2>
+
+  <h3>Add torrent at runtime</h3>
+<pre><code>curl "${TRACKER}/${SITE_PASS}/update?action=add_torrent&amp;id=42&amp;info_hash=${INFO_HASH}&amp;free_type=0"
+<span class="c"># {"status":"ok","message":"torrent added"}</span>
+</code></pre>
+
+  <h3>Ban a user</h3>
+<pre><code>curl "${TRACKER}/${SITE_PASS}/update?action=remove_user&amp;passkey=abc123...abc123"
+</code></pre>
+  <p>Their next announce returns <code>Passkey not found</code>. Active peers remain until reaped.</p>
+
+  <h3>Rotate site password after incident</h3>
+  <ol>
+    <li>Edit <code>ocelot.conf</code>: change <code>site_password</code></li>
+    <li><code>kill -HUP $(pgrep ocelot)</code> — takes effect immediately</li>
+    <li>Update in Gazelle's tracker settings</li>
+  </ol>
+
+  <h3>Graceful restart (zero-peer-loss window)</h3>
+  <ol>
+    <li>Wait for low-traffic window (e.g. 03:00 local)</li>
+    <li><code>systemctl stop ocelot</code> — drains connections (30 s)</li>
+    <li>Replace the binary</li>
+    <li><code>systemctl start ocelot</code> — <code>Loader.LoadAll()</code> restores torrent/user data</li>
+    <li>Peers re-announce within one interval (default 30 min) and rebuild swarms</li>
+  </ol>
+
+  <h3>Systemd unit</h3>
+<pre><code>[Unit]
+Description=Ocelot BitTorrent Tracker
+After=network.target
+
+[Service]
+Type=simple
+User=ocelot
+WorkingDirectory=/opt/ocelot
+ExecStart=/opt/ocelot/ocelot -c /etc/ocelot/ocelot.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+</code></pre>
+</section>
+
+<!-- monitoring -->
+<section id="monitoring">
+  <h2># Monitoring</h2>
+  <div class="tw">
+    <table>
+      <thead><tr><th>Metric</th><th>Warning threshold</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><code>open_connections</code></td><td>&gt; 80% of <code>max_middlemen</code></td><td>Raise <code>max_middlemen</code>, raise <code>LimitNOFILE</code></td></tr>
+        <tr><td>succ/total announces ratio</td><td>&lt; 0.95</td><td>Check error logs for common failures</td></tr>
+        <tr><td><code>seeders</code> + <code>leechers</code></td><td>Sudden drop</td><td>Check reaper config or restart event</td></tr>
+        <tr><td>DB shard file size</td><td>&gt; 70 GB</td><td>Verify <code>schedule_interval</code> and shard rotation</td></tr>
+        <tr><td>WAL file size</td><td>&gt; 1 GB</td><td>Force checkpoint: <code>PRAGMA wal_checkpoint(TRUNCATE)</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Poll stats</h3>
+<pre><code>watch -n 30 "curl -s http://localhost:34000/${SITE_PASS}/stats | python3 -m json.tool"
+</code></pre>
+
+  <h3>Prometheus scrape (shell exporter)</h3>
+<pre><code>#!/bin/sh
+STATS=$(curl -s "http://localhost:34000/${SITE_PASS}/stats")
+echo "ocelot_seeders $(echo $STATS | jq .seeders)"
+echo "ocelot_leechers $(echo $STATS | jq .leechers)"
+echo "ocelot_announcements_total $(echo $STATS | jq .announcements)"
+echo "ocelot_open_connections $(echo $STATS | jq .open_connections)"
+</code></pre>
+</section>
+
+<!-- troubleshooting -->
+<section id="troubleshooting">
+  <h2># Troubleshooting</h2>
+
+  <h3>"unregistered torrent"</h3>
+  <p>Info hash is not in TorrentList. Either: never added via <code>add_torrent</code>; tracker restarted and <code>torrent_hashes</code> is empty; or info_hash encoding differs. Fix: <code>add_torrent</code> or SIGUSR1 after populating DB.</p>
+
+  <h3>"your client is not on the whitelist"</h3>
+  <p>Peer ID prefix not in whitelist. Fix: <code>add_whitelist</code> for the prefix, or empty the whitelist to allow all clients.</p>
+
+  <h3>"access denied, leeching forbidden"</h3>
+  <p>User's <code>can_leech = 0</code>. Fix: re-add user with <code>can_leech=1</code> or update <code>user_passkeys</code> directly and send SIGUSR1.</p>
+
+  <h3>High announce failure rate</h3>
+  <ol>
+    <li>Whitelist too restrictive — peers using unapproved clients</li>
+    <li>Torrents not registered — Gazelle/tracker sync lag</li>
+    <li>Users not registered — passkey mismatch</li>
+    <li>Client does not support BEP-23 compact format (rare)</li>
+  </ol>
+
+  <h3>"no space left on device"</h3>
+  <p>Free disk or expand the filesystem. To archive old shards:</p>
+<pre><code>systemctl stop ocelot
+gzip -9 data/db/ocelot-2025-01.db
+systemctl start ocelot
+</code></pre>
+  <div class="warn"><div class="cl">Warning</div><p>The tracker will not open compressed files; historical queries for that shard return zero.</p></div>
+
+  <h3>Peers not appearing after restart</h3>
+  <p>Peer state is RAM-only. After a restart, peers re-announce within one interval (default 30 min) and swarms rebuild naturally.</p>
+</section>
+
+<!-- security -->
+<section id="security">
+  <h2># Security</h2>
+
+  <div class="warn">
+    <div class="cl">Change defaults immediately</div>
+    <p>Default passwords are 32 zeros. Any host with network access can call admin routes. Change <code>site_password</code> and <code>report_password</code> before exposing the port to any network.</p>
+  </div>
+
+  <h3>Firewall</h3>
+  <p>Admin routes and client announces share the same port. Restrict admin access via a reverse proxy or internal firewall — there is no port-level distinction between client and admin traffic.</p>
+
+  <h3>IP protection</h3>
+  <p>Users with <code>protect_ip = 1</code> have their IP omitted from the <code>peers</code> table. The IP is still used in-memory for compact peer list construction but is never written to disk.</p>
+
+  <h3>Peer ID whitelist</h3>
+  <p>Run with a non-empty whitelist to restrict to known BitTorrent clients and block automated scrapers:</p>
+<pre><code>-qB4   qBittorrent 4.x
+-qB5   qBittorrent 5.x
+-DE13  Deluge 1.3
+-DE20  Deluge 2.0
+-TR3   Transmission 3.x
+-TR4   Transmission 4.x
+-lt    libtorrent (various)
+</code></pre>
+
+  <h3>Reverse proxy considerations</h3>
+  <ul>
+    <li><code>X-Forwarded-For</code> must be set correctly — the tracker uses it for peer IP</li>
+    <li>Proxy must pass raw binary <code>info_hash</code> values without re-encoding</li>
+    <li><code>proxy_pass</code> should target the raw TCP port</li>
+  </ul>
+</section>
+
+</main>
+</div>
+
+<script>
+function toggleTheme(){
+  const r=document.documentElement;
+  const cur=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+  r.dataset.theme=cur==='dark'?'light':'dark';
+  try{localStorage.setItem('oc-theme',r.dataset.theme)}catch(e){}
+}
+try{const t=localStorage.getItem('oc-theme');if(t)document.documentElement.dataset.theme=t}catch(e){}
+
+function toggleNav(){document.getElementById('sb').classList.toggle('open')}
+document.addEventListener('click',e=>{
+  const sb=document.getElementById('sb');
+  if(sb.classList.contains('open')&&!sb.contains(e.target)&&!document.getElementById('burger').contains(e.target))
+    sb.classList.remove('open');
+});
+
+const secs=document.querySelectorAll('section[id]');
+const links=document.querySelectorAll('nav a');
+new IntersectionObserver(entries=>{
+  entries.forEach(e=>{
+    if(e.isIntersecting)
+      links.forEach(l=>l.classList.toggle('active',l.getAttribute('href')==='#'+e.target.id));
+  });
+},{rootMargin:'-30% 0px -60% 0px'}).observe&&secs.forEach(s=>new IntersectionObserver(entries=>{
+  entries.forEach(e=>{if(e.isIntersecting)links.forEach(l=>l.classList.toggle('active',l.getAttribute('href')==='#'+e.target.id))});
+},{rootMargin:'-30% 0px -60% 0px'}).observe(s));
+</script>
