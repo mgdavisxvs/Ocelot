@@ -1,0 +1,953 @@
+<title>Ocelot Operator Manual</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap">
+<style>
+/* ── tokens ──────────────────────────────────────────────────────────────── */
+:root {
+  --bg:        #0f1117;
+  --surface:   #1a1d27;
+  --surface2:  #22263a;
+  --border:    #2a2d3e;
+  --text:      #e2e6f0;
+  --muted:     #8892a4;
+  --accent:    #5b8cf7;
+  --accent-hi: #7aa4ff;
+  --ok:        #4ade80;
+  --warn:      #facc15;
+  --err:       #f87171;
+  --code-bg:   #141720;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg:        #f5f6fa;
+    --surface:   #ffffff;
+    --surface2:  #eef0f6;
+    --border:    #d4d8e8;
+    --text:      #111827;
+    --muted:     #6b7280;
+    --accent:    #3d6bd4;
+    --accent-hi: #2d56b8;
+    --ok:        #16a34a;
+    --warn:      #b45309;
+    --err:       #dc2626;
+    --code-bg:   #f0f2f8;
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg:        #f5f6fa;
+  --surface:   #ffffff;
+  --surface2:  #eef0f6;
+  --border:    #d4d8e8;
+  --text:      #111827;
+  --muted:     #6b7280;
+  --accent:    #3d6bd4;
+  --accent-hi: #2d56b8;
+  --ok:        #16a34a;
+  --warn:      #b45309;
+  --err:       #dc2626;
+  --code-bg:   #f0f2f8;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg:        #0f1117;
+  --surface:   #1a1d27;
+  --surface2:  #22263a;
+  --border:    #2a2d3e;
+  --text:      #e2e6f0;
+  --muted:     #8892a4;
+  --accent:    #5b8cf7;
+  --accent-hi: #7aa4ff;
+  --ok:        #4ade80;
+  --warn:      #facc15;
+  --err:       #f87171;
+  --code-bg:   #141720;
+  color-scheme: dark;
+}
+
+/* ── reset / base ─────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hi); text-decoration: underline; }
+
+/* ── layout shell ─────────────────────────────────────────────────────────── */
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* ── sidebar ──────────────────────────────────────────────────────────────── */
+.sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.sidebar-logo {
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--border);
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--accent);
+  letter-spacing: .04em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sidebar-logo svg { width: 20px; height: 20px; }
+nav { padding: 12px 0 24px; flex: 1; }
+nav a {
+  display: block;
+  padding: 5px 20px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border-left: 2px solid transparent;
+  transition: color .15s, border-color .15s;
+}
+nav a:hover { color: var(--text); text-decoration: none; }
+nav a.active { color: var(--accent); border-color: var(--accent); }
+nav .nav-group {
+  margin-top: 16px;
+  padding: 0 20px 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.sidebar-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ── theme toggle ─────────────────────────────────────────────────────────── */
+.theme-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.theme-btn:hover { color: var(--text); border-color: var(--muted); }
+
+/* ── hamburger (mobile) ───────────────────────────────────────────────────── */
+.hamburger {
+  display: none;
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 100;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  flex-direction: column;
+  gap: 4px;
+}
+.hamburger span { display: block; width: 18px; height: 2px; background: var(--text); border-radius: 2px; }
+
+/* ── main content ─────────────────────────────────────────────────────────── */
+.main {
+  flex: 1;
+  min-width: 0;
+  padding: 48px clamp(16px, 5vw, 64px);
+  max-width: 860px;
+}
+
+/* ── sections ─────────────────────────────────────────────────────────────── */
+section { padding-top: 8px; margin-bottom: 56px; }
+section:target { scroll-margin-top: 24px; }
+
+/* ── typography ───────────────────────────────────────────────────────────── */
+h1, h2, h3, h4 {
+  font-family: 'JetBrains Mono', monospace;
+  text-wrap: balance;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--text);
+}
+h1 { font-size: 28px; margin: 0 0 8px; }
+h1 .eyebrow {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+h2 {
+  font-size: 20px;
+  margin: 0 0 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+h3 { font-size: 15px; margin: 28px 0 10px; }
+h4 { font-size: 13px; margin: 20px 0 8px; color: var(--muted); }
+p { margin: 0 0 14px; max-width: 65ch; }
+ul, ol { margin: 0 0 14px; padding-left: 22px; max-width: 65ch; }
+li { margin-bottom: 4px; }
+strong { font-weight: 600; color: var(--text); }
+
+/* ── code ─────────────────────────────────────────────────────────────────── */
+code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--accent-hi);
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  overflow-x: auto;
+  margin: 0 0 20px;
+}
+pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.65;
+}
+.hlk  { color: #c792ea; } /* keyword */
+.hls  { color: #c3e88d; } /* string */
+.hlc  { color: var(--muted); font-style: italic; } /* comment */
+.hlt  { color: #82aaff; } /* type */
+.hlf  { color: #82aaff; } /* func */
+.hln  { color: #f78c6c; } /* number */
+.hlp  { color: var(--text); } /* punct */
+
+/* ── tables ───────────────────────────────────────────────────────────────── */
+.table-wrap { overflow-x: auto; margin: 0 0 20px; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+th {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: var(--surface2); }
+
+/* ── callouts ─────────────────────────────────────────────────────────────── */
+.callout {
+  border-left: 3px solid;
+  border-radius: 0 6px 6px 0;
+  padding: 12px 16px;
+  margin: 0 0 20px;
+  font-size: 13px;
+}
+.callout p { margin: 0; max-width: none; }
+.callout-note  { border-color: var(--accent);  background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.callout-warn  { border-color: var(--warn);    background: color-mix(in srgb, var(--warn)   8%, transparent); }
+.callout-tip   { border-color: var(--ok);      background: color-mix(in srgb, var(--ok)     8%, transparent); }
+.callout-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.callout-note  .callout-label { color: var(--accent); }
+.callout-warn  .callout-label { color: var(--warn); }
+.callout-tip   .callout-label { color: var(--ok); }
+
+/* ── badges ───────────────────────────────────────────────────────────────── */
+.badge {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+.badge-get    { color: var(--ok);   border-color: var(--ok);   background: color-mix(in srgb, var(--ok)   12%, transparent); }
+.badge-post   { color: var(--warn); border-color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.badge-put    { color: #60a5fa;     border-color: #60a5fa;     background: color-mix(in srgb, #60a5fa     12%, transparent); }
+.badge-delete { color: var(--err);  border-color: var(--err);  background: color-mix(in srgb, var(--err)  12%, transparent); }
+.badge-state  { color: var(--muted); border-color: var(--border); background: var(--surface2); }
+
+/* ── endpoint rows ────────────────────────────────────────────────────────── */
+.endpoint { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.endpoint:last-child { border-bottom: none; }
+.endpoint-path { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--text); }
+.endpoint-desc { font-size: 12.5px; color: var(--muted); margin-left: auto; text-align: right; white-space: nowrap; }
+
+/* ── state machine diagram ────────────────────────────────────────────────── */
+.state-diagram {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 20px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 0 0 20px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+.state-node {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  white-space: nowrap;
+}
+.state-node.terminal-ok  { border-color: var(--ok);  color: var(--ok); }
+.state-node.terminal-err { border-color: var(--err); color: var(--err); }
+.state-node.start        { border-color: var(--accent); color: var(--accent); }
+.state-arrow { color: var(--muted); font-size: 16px; }
+
+/* ── constraint grid ──────────────────────────────────────────────────────── */
+.constraint-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  margin: 0 0 20px;
+}
+.constraint-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.constraint-card .num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--border);
+  line-height: 1;
+  margin-bottom: 6px;
+}
+.constraint-card .title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.constraint-card .desc  { font-size: 12px; color: var(--muted); }
+
+/* ── metric rows ──────────────────────────────────────────────────────────── */
+.metric-row { padding: 9px 0; border-bottom: 1px solid var(--border); display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: start; }
+.metric-row:last-child { border-bottom: none; }
+.metric-name { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--accent-hi); }
+.metric-type { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted); background: var(--code-bg); border: 1px solid var(--border); border-radius: 3px; padding: 1px 6px; white-space: nowrap; }
+.metric-desc { font-size: 12px; color: var(--muted); grid-column: 1; }
+
+/* ── page header ──────────────────────────────────────────────────────────── */
+.page-header { margin-bottom: 48px; }
+.page-header .version {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  margin-top: 8px;
+}
+
+/* ── mobile overrides ─────────────────────────────────────────────────────── */
+@media (max-width: 700px) {
+  .hamburger { display: flex; }
+  .sidebar {
+    position: fixed;
+    top: 0; left: 0;
+    z-index: 90;
+    transform: translateX(-100%);
+    transition: transform .2s ease;
+    height: 100vh;
+    width: 260px;
+  }
+  .sidebar.open { transform: translateX(0); }
+  .main { padding: 56px 16px 48px; }
+  .constraint-grid { grid-template-columns: 1fr; }
+  .endpoint-desc { display: none; }
+}
+</style>
+
+<div class="shell">
+  <!-- sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+      OCELOT
+    </div>
+    <nav>
+      <a href="#overview" class="active">Overview</a>
+      <a href="#architecture">Architecture</a>
+
+      <div class="nav-group">Configuration</div>
+      <a href="#config">Server Config</a>
+      <a href="#plugins">Registering Plugins</a>
+
+      <div class="nav-group">Resources</div>
+      <a href="#namespaces">Namespaces</a>
+      <a href="#nodes">Nodes</a>
+      <a href="#services">Services</a>
+      <a href="#instances">Instances</a>
+      <a href="#volumes">Volumes</a>
+      <a href="#operations">Operations</a>
+
+      <div class="nav-group">Internals</div>
+      <a href="#scheduler">Scheduler</a>
+      <a href="#reconciler">Reconciler</a>
+      <a href="#catalog">Catalog Gating</a>
+      <a href="#storage">Storage Drivers</a>
+      <a href="#adapters">Backend Adapters</a>
+
+      <div class="nav-group">Reference</div>
+      <a href="#api">HTTP API</a>
+      <a href="#metrics">Prometheus Metrics</a>
+      <a href="#signals">Signals &amp; Lifecycle</a>
+    </nav>
+    <div class="sidebar-footer">
+      <button class="theme-btn" onclick="toggleTheme()">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        Toggle theme
+      </button>
+    </div>
+  </aside>
+
+  <!-- hamburger -->
+  <button class="hamburger" id="hamburger" aria-label="Open navigation" onclick="toggleNav()">
+    <span></span><span></span><span></span>
+  </button>
+
+  <!-- main -->
+  <main class="main">
+
+    <!-- page header -->
+    <div class="page-header">
+      <h1>
+        <span class="eyebrow">Operator Manual</span>
+        Ocelot VirtualServer
+      </h1>
+      <p>A Go control plane that schedules workloads across registered compute nodes, manages persistent volumes, and drives instance lifecycle through a state-machine reconciler.</p>
+      <span class="version">module github.com/mgdavisxvs/Ocelot · package virtualserver</span>
+    </div>
+
+    <!-- overview -->
+    <section id="overview">
+      <h2>Overview</h2>
+      <p>Ocelot VirtualServer sits between a workload catalog (BitTorrent tracker) and a pool of compute nodes. Operators declare <strong>Services</strong> — desired-state workload manifests — and the control plane places, starts, and restarts instances on <strong>Nodes</strong> until the service's restart policy is satisfied.</p>
+      <p>The system is a single Go binary embedding SQLite (WAL mode). There are no external message queues or distributed consensus components; the database is the sole source of truth.</p>
+      <div class="callout callout-note">
+        <div class="callout-label">Note</div>
+        <p>All write operations to the database are serialised through a single mutex. Horizontal scaling of the control plane is <em>not</em> supported; run exactly one instance per SQLite file.</p>
+      </div>
+    </section>
+
+    <!-- architecture -->
+    <section id="architecture">
+      <h2>Architecture</h2>
+      <p>Four subsystems cooperate at runtime:</p>
+      <div class="constraint-grid">
+        <div class="constraint-card">
+          <div class="num">API</div>
+          <div class="title">HTTP Control Plane</div>
+          <div class="desc">Bearer-token-authenticated REST API at <code>/v1/</code>. Reads and mutates all resource types. Snapshot and restore run as tracked async operations.</div>
+        </div>
+        <div class="constraint-card">
+          <div class="num">SCH</div>
+          <div class="title">Scheduler</div>
+          <div class="desc">Filters nodes through 8 hard constraints then scores survivors on 5 dimensions. Returns a single <code>PlacementDecision</code>.</div>
+        </div>
+        <div class="constraint-card">
+          <div class="num">REC</div>
+          <div class="title">Reconciler</div>
+          <div class="desc">Ticks on a configurable interval (default 5 s). Drives instances through the state machine; applies restart policy; tears down mounts on exit.</div>
+        </div>
+        <div class="constraint-card">
+          <div class="num">DB</div>
+          <div class="title">SQLite Store</div>
+          <div class="desc">17 idempotent IF-NOT-EXISTS migrations. Single connection, WAL mode, <code>SetMaxOpenConns(1)</code>.</div>
+        </div>
+      </div>
+      <p>Plugin boundaries are <strong>BackendAdapter</strong> (container runtimes, VMs) and <strong>StorageDriver</strong> (volume backends). Both ship as Go interfaces registered before <code>Start</code>.</p>
+    </section>
+
+    <!-- config -->
+    <section id="config">
+      <h2>Server Config</h2>
+      <p>Construct a <code>Config</code> and call <code>virtualserver.New</code>:</p>
+<pre><code><span class="hlk">import</span> <span class="hls">"github.com/mgdavisxvs/Ocelot/virtualserver"</span>
+
+vs, err := virtualserver.New(virtualserver.Config{
+    DBPath:            <span class="hls">"/var/lib/ocelot/vs.db"</span>,
+    ListenAddr:        <span class="hls">":8080"</span>,
+    BearerToken:       <span class="hls">"changeme"</span>,
+    ReconcileInterval: <span class="hln">5</span> * time.Second,
+    <span class="hlc">// PrometheusRegisterer: myReg, // defaults to prometheus.DefaultRegisterer</span>
+}, slog.Default())
+</code></pre>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>DBPath</code></td><td><code>string</code></td><td>—</td><td>Required. Path to SQLite file. Created on first start.</td></tr>
+            <tr><td><code>ListenAddr</code></td><td><code>string</code></td><td>—</td><td>TCP address for the HTTP API (e.g. <code>:8080</code>). Empty disables HTTP.</td></tr>
+            <tr><td><code>BearerToken</code></td><td><code>string</code></td><td>—</td><td>Shared secret for <code>Authorization: Bearer …</code> header. Empty disables auth.</td></tr>
+            <tr><td><code>ReconcileInterval</code></td><td><code>time.Duration</code></td><td>5 s</td><td>How often the reconciler loop ticks.</td></tr>
+            <tr><td><code>PrometheusRegisterer</code></td><td><code>prometheus.Registerer</code></td><td><code>DefaultRegisterer</code></td><td>Metric registration target. Use an isolated registry in tests.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- plugins -->
+    <section id="plugins">
+      <h2>Registering Plugins</h2>
+      <p>Call <code>RegisterAdapter</code> and <code>RegisterStorageDriver</code> <em>before</em> <code>Start</code>. If no adapter is registered, <code>Start</code> falls back to <code>NoOpAdapter</code> (dry-run mode).</p>
+<pre><code>vs.RegisterAdapter(myDockerAdapter)
+vs.RegisterStorageDriver(myNFSDriver)
+vs.SetCatalog(myTorrentCatalog) <span class="hlc">// optional; omit to skip artifact gating</span>
+</code></pre>
+      <div class="callout callout-warn">
+        <div class="callout-label">Warning</div>
+        <p>Registering a duplicate adapter or driver name panics. Each <code>Name()</code> value must be unique across its registry.</p>
+      </div>
+    </section>
+
+    <!-- namespaces -->
+    <section id="namespaces">
+      <h2>Namespaces</h2>
+      <p>Namespaces provide logical isolation for Services and Volumes. All resources belong to exactly one namespace; the <code>default</code> namespace must be created before any other resource.</p>
+<pre><code>POST /v1/namespaces
+Content-Type: application/json
+
+{ <span class="hls">"name"</span>: <span class="hls">"production"</span> }
+</code></pre>
+    </section>
+
+    <!-- nodes -->
+    <section id="nodes">
+      <h2>Nodes</h2>
+      <p>A Node represents a registered compute host. Nodes must send heartbeats to stay in the scheduler candidate pool.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Field</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>id</code></td><td>Unique identifier. Immutable after creation.</td></tr>
+            <tr><td><code>name</code></td><td>Human-readable label. Used in <code>node_exclusions</code> matching.</td></tr>
+            <tr><td><code>arch</code></td><td><code>amd64</code>, <code>arm64</code>, etc. Matched against service <code>node_selector.arch</code>.</td></tr>
+            <tr><td><code>labels</code></td><td>Arbitrary key/value pairs. Matched against service <code>node_selector</code>.</td></tr>
+            <tr><td><code>state</code></td><td><code>ready</code> | <code>draining</code> | <code>offline</code>. Only <code>ready</code> nodes are scheduled.</td></tr>
+            <tr><td><code>cpu_millicores</code></td><td>Total allocatable CPU in millicores (1 vCPU = 1000).</td></tr>
+            <tr><td><code>ram_bytes</code></td><td>Total allocatable RAM in bytes.</td></tr>
+            <tr><td><code>gpus</code></td><td>List of <code>{device_id, model, vram_bytes}</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Heartbeats</h3>
+      <p>Nodes must <code>PUT /v1/nodes/{id}/heartbeat</code> periodically. The scheduler's health score decays to 0 if <code>last_heartbeat</code> is more than ~150 s old.</p>
+    </section>
+
+    <!-- services -->
+    <section id="services">
+      <h2>Services</h2>
+      <p>A Service is a desired-state manifest. The reconciler continuously creates and restarts Instances to satisfy it.</p>
+<pre><code>{
+  <span class="hls">"id"</span>:               <span class="hls">"svc-inference"</span>,
+  <span class="hls">"namespace"</span>:        <span class="hls">"production"</span>,
+  <span class="hls">"name"</span>:             <span class="hls">"llm-inference"</span>,
+  <span class="hls">"image"</span>:            <span class="hls">"registry/llm:v2"</span>,
+  <span class="hls">"cpu_millicores"</span>:   <span class="hln">4000</span>,
+  <span class="hls">"ram_bytes"</span>:        <span class="hln">17179869184</span>,
+  <span class="hls">"gpus"</span>: [{ <span class="hls">"count"</span>: <span class="hln">1</span>, <span class="hls">"vram_per_device"</span>: <span class="hln">42949672960</span>, <span class="hls">"model_filter"</span>: <span class="hls">"A100"</span> }],
+  <span class="hls">"restart_policy"</span>:   <span class="hls">"Always"</span>,
+  <span class="hls">"node_selector"</span>:    { <span class="hls">"region"</span>: <span class="hls">"us-west"</span> },
+  <span class="hls">"volume_mounts"</span>: [{ <span class="hls">"name"</span>: <span class="hls">"weights"</span>, <span class="hls">"volume_id"</span>: <span class="hls">"vol-weights"</span>, <span class="hls">"mount_path"</span>: <span class="hls">"/models"</span> }],
+  <span class="hls">"artifact_hash"</span>:    <span class="hls">"aabbcc..."</span>
+}
+</code></pre>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>restart_policy</th><th>Behaviour</th></tr></thead>
+          <tbody>
+            <tr><td><code>Always</code></td><td>Reschedule on any exit (success or failure).</td></tr>
+            <tr><td><code>OnFailure</code></td><td>Reschedule only when exit state is <code>failed</code>.</td></tr>
+            <tr><td><code>Never</code></td><td>Terminal — no rescheduling.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><code>artifact_hash</code>: when set, the reconciler queries the CatalogProvider before provisioning. If the torrent swarm is <code>unavailable</code> (0 seeders), the instance is deferred until the next reconcile tick.</p>
+    </section>
+
+    <!-- instances -->
+    <section id="instances">
+      <h2>Instances</h2>
+      <p>An Instance is a single running (or recently terminated) copy of a Service. The reconciler drives it through the following state machine:</p>
+      <div class="state-diagram">
+        <div class="state-node start">scheduled</div>
+        <div class="state-arrow">→</div>
+        <div class="state-node">provisioning</div>
+        <div class="state-arrow">→</div>
+        <div class="state-node">starting</div>
+        <div class="state-arrow">→</div>
+        <div class="state-node">running</div>
+        <div class="state-arrow">→</div>
+        <div class="state-node">stopping</div>
+        <div class="state-arrow">→</div>
+        <div class="state-node terminal-ok">stopped</div>
+        <div class="state-arrow" style="margin-left:auto">↘ on failure</div>
+        <div class="state-node terminal-err" style="margin-left:4px">failed</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>State</th><th>Reconciler action</th></tr></thead>
+          <tbody>
+            <tr><td><code>scheduled</code></td><td>Call <code>adapter.Provision</code>; advance to <code>provisioning</code> or mark <code>failed</code>.</td></tr>
+            <tr><td><code>provisioning</code></td><td>Call <code>adapter.Start</code>; advance to <code>starting</code>.</td></tr>
+            <tr><td><code>starting</code></td><td>Poll <code>adapter.Status</code>; advance to <code>running</code> when ready.</td></tr>
+            <tr><td><code>running</code></td><td>Poll <code>adapter.Status</code>; detect exit → <code>stopping</code> or <code>failed</code>.</td></tr>
+            <tr><td><code>stopping</code></td><td>Poll until stopped; advance to <code>stopped</code>, then apply restart policy.</td></tr>
+            <tr><td><code>stopped</code></td><td>Terminal (unless restart policy triggers reschedule).</td></tr>
+            <tr><td><code>failed</code></td><td>Terminal (unless <code>OnFailure</code> or <code>Always</code> triggers reschedule).</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Stopping an instance</h3>
+      <p>POST <code>/v1/instances/{id}/stop</code>. The reconciler will call <code>adapter.Stop</code> on the next tick and transition the instance to <code>stopping</code>.</p>
+    </section>
+
+    <!-- volumes -->
+    <section id="volumes">
+      <h2>Volumes</h2>
+      <p>Volumes are persistent storage resources managed by a <code>StorageDriver</code>. A volume is bound to exactly one node once its first instance mounts it (node affinity).</p>
+      <h3>Snapshots</h3>
+      <p>Snapshot and restore are async. The API returns an <code>Operation</code> record immediately; poll <code>GET /v1/operations/{id}</code> until state is <code>succeeded</code> or <code>failed</code>.</p>
+<pre><code><span class="hlc"># trigger snapshot</span>
+POST /v1/volumes/{id}/snapshot
+
+<span class="hlc"># restore a snapshot to a new volume</span>
+POST /v1/volumes/{id}/restore/{snapshotID}
+
+<span class="hlc"># poll the operation</span>
+GET /v1/operations/{operationID}
+</code></pre>
+      <div class="callout callout-warn">
+        <div class="callout-label">Warning</div>
+        <p>Deleting a volume while any instance has it mounted returns <code>409 Conflict</code>. Unmount all instances first.</p>
+      </div>
+    </section>
+
+    <!-- operations -->
+    <section id="operations">
+      <h2>Operations</h2>
+      <p>Long-running control-plane actions (snapshot, restore) are tracked as <code>Operation</code> records.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>State</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><span class="badge badge-state">pending</span></td><td>Enqueued, not yet started.</td></tr>
+            <tr><td><span class="badge badge-state">running</span></td><td>In progress.</td></tr>
+            <tr><td><code style="color:var(--ok)">succeeded</code></td><td>Completed successfully. <code>message</code> contains the result handle.</td></tr>
+            <tr><td><code style="color:var(--err)">failed</code></td><td>Completed with error. <code>message</code> contains the reason.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- scheduler -->
+    <section id="scheduler">
+      <h2>Scheduler</h2>
+      <p>The scheduler evaluates every <code>ready</code> node against eight hard constraints, then scores passing nodes on five dimensions to pick the best fit.</p>
+      <h3>Hard constraints (all must pass)</h3>
+      <div class="constraint-grid">
+        <div class="constraint-card"><div class="num">01</div><div class="title">Node state</div><div class="desc">Node must be in <code>ready</code> state.</div></div>
+        <div class="constraint-card"><div class="num">02</div><div class="title">Architecture</div><div class="desc"><code>node_selector.arch</code> must match node <code>arch</code>.</div></div>
+        <div class="constraint-card"><div class="num">03</div><div class="title">Label selectors</div><div class="desc">All keys in <code>node_selector</code> must be present on the node with equal values.</div></div>
+        <div class="constraint-card"><div class="num">04</div><div class="title">Node exclusions</div><div class="desc">Node ID and name must not appear in <code>node_exclusions</code>.</div></div>
+        <div class="constraint-card"><div class="num">05</div><div class="title">CPU headroom</div><div class="desc">Node's free millicores (total − allocated) must ≥ service <code>cpu_millicores</code>.</div></div>
+        <div class="constraint-card"><div class="num">06</div><div class="title">RAM headroom</div><div class="desc">Node's free RAM (total − allocated) must ≥ service <code>ram_bytes</code>.</div></div>
+        <div class="constraint-card"><div class="num">07</div><div class="title">GPU VRAM &amp; model</div><div class="desc">Each <code>GPURequirement</code> must find enough free GPUs matching count, VRAM, and model filter.</div></div>
+        <div class="constraint-card"><div class="num">08</div><div class="title">Volume affinity</div><div class="desc">All volumes with a <code>node_affinity</code> must agree on a single node (conflicting affinities reject all nodes).</div></div>
+      </div>
+      <h3>Scoring dimensions</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Dimension</th><th>Weight</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td>CPU utilisation</td><td>25 %</td><td>Higher allocated fraction → higher score (bin-packing).</td></tr>
+            <tr><td>RAM utilisation</td><td>25 %</td><td>Same bin-packing logic for memory.</td></tr>
+            <tr><td>GPU utilisation</td><td>20 %</td><td>Fraction of GPU device slots in use.</td></tr>
+            <tr><td>Health</td><td>15 %</td><td>Decays linearly from 1.0 (fresh heartbeat) to 0.0 at ~150 s stale.</td></tr>
+            <tr><td>Reliability</td><td>15 %</td><td><code>1 − (recent_failures × 0.2)</code>, clamped to [0, 1]. Counts failed instances in the last 24 h.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- reconciler -->
+    <section id="reconciler">
+      <h2>Reconciler</h2>
+      <p>The reconciler runs a tight loop at <code>ReconcileInterval</code>. Each tick processes all instances that are not in a terminal state, advancing each one step through the state machine by calling the appropriate <code>BackendAdapter</code> method.</p>
+      <h3>Volume mount lifecycle</h3>
+      <p>During <code>provisioning</code>, the reconciler calls <code>resolveMounts</code> for each <code>VolumeMount</code> in the service. This:</p>
+      <ol>
+        <li>Looks up the storage driver by <code>volume.driver_name</code>.</li>
+        <li>Calls <code>driver.Mount(ctx, handle, instanceID)</code>.</li>
+        <li>On the first mount of a volume, records <code>node_affinity</code> in the DB.</li>
+        <li>Persists a <code>VolumeBinding</code> record linking the instance to the volume.</li>
+      </ol>
+      <p>On instance exit (<code>teardownMounts</code>), <code>driver.Unmount</code> is called for every binding and the binding records are deleted.</p>
+    </section>
+
+    <!-- catalog -->
+    <section id="catalog">
+      <h2>Catalog Gating</h2>
+      <p>If a Service has a non-empty <code>artifact_hash</code>, the reconciler calls <code>CatalogProvider.ClassifyArtifact(hash)</code> before provisioning. The result determines whether to proceed:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ArtifactStatus</th><th>Seeders</th><th>Action</th></tr></thead>
+          <tbody>
+            <tr><td><code style="color:var(--ok)">available</code></td><td>≥ 3</td><td>Proceed with provisioning.</td></tr>
+            <tr><td><code style="color:var(--warn)">degraded</code></td><td>1–2</td><td>Proceed with provisioning.</td></tr>
+            <tr><td><code style="color:var(--err)">unavailable</code></td><td>0</td><td>Skip this tick; retry on the next reconcile cycle.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Wiring the Ocelot tracker</h3>
+<pre><code>vs.SetCatalog(virtualserver.OcelotCatalogAdapter(func(hash string) int {
+    <span class="hlc">// return current seeder count from the tracker in-process</span>
+    <span class="hlk">return</span> tracker.TorrentList[hash].Seeders
+}))
+</code></pre>
+      <p>The adapter accepts a <code>func(string) int</code> closure to avoid a circular import between <code>virtualserver</code> and <code>tracker</code>.</p>
+    </section>
+
+    <!-- storage -->
+    <section id="storage">
+      <h2>Storage Drivers</h2>
+      <p>Implement <code>storage.StorageDriver</code> and register it before <code>Start</code>:</p>
+<pre><code><span class="hlk">type</span> <span class="hlt">StorageDriver</span> <span class="hlk">interface</span> {
+    Name()       string
+    Create(ctx context.Context, volumeID string, sizeBytes int64) (VolumeHandle, error)
+    Delete(ctx context.Context, handle VolumeHandle) error
+    Mount(ctx context.Context, handle VolumeHandle, instanceID string) (*MountPoint, error)
+    Unmount(ctx context.Context, handle VolumeHandle, instanceID string) error
+    Stat(ctx context.Context, handle VolumeHandle) (*VolumeStats, error)
+    Snapshot(ctx context.Context, handle VolumeHandle) (VolumeHandle, error)
+    RestoreFrom(ctx context.Context, snapshotHandle VolumeHandle) (VolumeHandle, error)
+}
+</code></pre>
+      <p><code>VolumeHandle</code> is an opaque <code>string</code> alias. The <code>LocalDriver</code> (built-in) uses the absolute path of the volume directory as its handle.</p>
+      <div class="callout callout-tip">
+        <div class="callout-label">Tip</div>
+        <p><code>Delete</code> must return an error if any instance currently has the volume mounted. Check your implementation's mount-reference counting before allowing deletion.</p>
+      </div>
+    </section>
+
+    <!-- adapters -->
+    <section id="adapters">
+      <h2>Backend Adapters</h2>
+      <p>Implement <code>BackendAdapter</code> to plug in a container runtime, VM hypervisor, or any workload executor:</p>
+<pre><code><span class="hlk">type</span> <span class="hlt">BackendAdapter</span> <span class="hlk">interface</span> {
+    Name() string
+    Provision(ctx context.Context, inst *Instance, svc *Service,
+              node *Node, mounts []ResolvedMount, gpuIDs []string) error
+    Start(ctx context.Context, inst *Instance) error
+    Stop(ctx context.Context, inst *Instance) error
+    Status(ctx context.Context, inst *Instance) (InstanceState, string, error)
+    Deprovision(ctx context.Context, inst *Instance) error
+}
+</code></pre>
+      <p><code>NoOpAdapter</code> is the built-in no-op implementation; it always returns success and advances instances to <code>running</code> immediately. It is activated automatically when no real adapter is registered.</p>
+    </section>
+
+    <!-- api -->
+    <section id="api">
+      <h2>HTTP API</h2>
+      <p>All endpoints require <code>Authorization: Bearer &lt;token&gt;</code> when <code>BearerToken</code> is set. Request and response bodies are JSON. Base path: <code>/v1/</code>.</p>
+
+      <h3>Namespaces</h3>
+      <div class="endpoint"><span class="badge badge-get">GET</span><span class="endpoint-path">/v1/namespaces</span><span class="endpoint-desc">List all namespaces</span></div>
+      <div class="endpoint"><span class="badge badge-post">POST</span><span class="endpoint-path">/v1/namespaces</span><span class="endpoint-desc">Create a namespace</span></div>
+      <div class="endpoint"><span class="badge badge-delete">DELETE</span><span class="endpoint-path">/v1/namespaces/{name}</span><span class="endpoint-desc">Delete a namespace</span></div>
+
+      <h3>Nodes</h3>
+      <div class="endpoint"><span class="badge badge-get">GET</span><span class="endpoint-path">/v1/nodes</span><span class="endpoint-desc">List nodes</span></div>
+      <div class="endpoint"><span class="badge badge-post">POST</span><span class="endpoint-path">/v1/nodes</span><span class="endpoint-desc">Register a node</span></div>
+      <div class="endpoint"><span class="badge badge-get">GET</span><span class="endpoint-path">/v1/nodes/{id}</span><span class="endpoint-desc">Get a node</span></div>
+      <div class="endpoint"><span class="badge badge-put">PUT</span><span class="endpoint-path">/v1/nodes/{id}</span><span class="endpoint-desc">Update a node</span></div>
+      <div class="endpoint"><span class="badge badge-delete">DELETE</span><span class="endpoint-path">/v1/nodes/{id}</span><span class="endpoint-desc">Deregister a node</span></div>
+      <div class="endpoint"><span class="badge badge-put">PUT</span><span class="endpoint-path">/v1/nodes/{id}/heartbeat</span><span class="endpoint-desc">Update last_heartbeat</span></div>
+
+      <h3>Services</h3>
+      <div class="endpoint"><span class="badge badge-get">GET</span><span class="endpoint-path">/v1/services</span><span class="endpoint-desc">List services</span></div>
+      <div class="endpoint"><span class="badge badge-post">POST</span><span class="endpoint-path">/v1/services</span><span class="endpoint-desc">Create a service</span></div>
+      <div class="endpoint"><span class="badge badge-get">GET</span><span class="endpoint-path">/v1/services/{id}</span><span class="endpoint-desc">Get a service</span></div>
+      <div class="endpoint"><span class="badge badge-put">PUT</span><span class="endpoint-path">/v1/services/{id}</span><span class="endpoint-desc">Update a service</span></div>
+      <div class="endpoint"><span class="badge badge-delete">DELETE</span><span class="endpoint-path">/v1/services/{id}</span><span class="endpoint-desc">Delete a service</span></div>
+
+      <h3>Instances</h3>
+      <div class="endpoint"><span class="badge badge-get">GET</span><span class="endpoint-path">/v1/instances</span><span class="endpoint-desc">List instances</span></div>
+      <div class="endpoint"><span class="badge badge-post">POST</span><span class="endpoint-path">/v1/instances</span><span class="endpoint-desc">Create an instance (manual)</span></div>
+      <div class="endpoint"><span class="badge badge-get">GET</span><span class="endpoint-path">/v1/instances/{id}</span><span class="endpoint-desc">Get an instance</span></div>
+      <div class="endpoint"><span class="badge badge-delete">DELETE</span><span class="endpoint-path">/v1/instances/{id}</span><span class="endpoint-desc">Delete an instance record</span></div>
+      <div class="endpoint"><span class="badge badge-post">POST</span><span class="endpoint-path">/v1/instances/{id}/stop</span><span class="endpoint-desc">Request graceful stop</span></div>
+
+      <h3>Volumes</h3>
+      <div class="endpoint"><span class="badge badge-get">GET</span><span class="endpoint-path">/v1/volumes</span><span class="endpoint-desc">List volumes</span></div>
+      <div class="endpoint"><span class="badge badge-post">POST</span><span class="endpoint-path">/v1/volumes</span><span class="endpoint-desc">Create a volume</span></div>
+      <div class="endpoint"><span class="badge badge-get">GET</span><span class="endpoint-path">/v1/volumes/{id}</span><span class="endpoint-desc">Get a volume</span></div>
+      <div class="endpoint"><span class="badge badge-delete">DELETE</span><span class="endpoint-path">/v1/volumes/{id}</span><span class="endpoint-desc">Delete a volume</span></div>
+      <div class="endpoint"><span class="badge badge-get">GET</span><span class="endpoint-path">/v1/volumes/{id}/snapshots</span><span class="endpoint-desc">List snapshots</span></div>
+      <div class="endpoint"><span class="badge badge-post">POST</span><span class="endpoint-path">/v1/volumes/{id}/snapshot</span><span class="endpoint-desc">Trigger snapshot (async)</span></div>
+      <div class="endpoint"><span class="badge badge-post">POST</span><span class="endpoint-path">/v1/volumes/{id}/restore/{snapshotID}</span><span class="endpoint-desc">Restore snapshot (async)</span></div>
+
+      <h3>Operations</h3>
+      <div class="endpoint"><span class="badge badge-get">GET</span><span class="endpoint-path">/v1/operations/{id}</span><span class="endpoint-desc">Poll an async operation</span></div>
+    </section>
+
+    <!-- metrics -->
+    <section id="metrics">
+      <h2>Prometheus Metrics</h2>
+      <p>All metrics use the namespace <code>ocelot_vs</code>. Registered via <code>promauto.With(reg)</code> against the configured registerer.</p>
+      <div class="metric-row">
+        <div class="metric-name">ocelot_vs_instances_total</div>
+        <div class="metric-type">counter</div>
+        <div class="metric-desc">Total instances created, labelled by <code>namespace</code> and <code>state</code>.</div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-name">ocelot_vs_instances_running</div>
+        <div class="metric-type">gauge</div>
+        <div class="metric-desc">Currently running instances, labelled by <code>namespace</code>.</div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-name">ocelot_vs_reconcile_duration_seconds</div>
+        <div class="metric-type">histogram</div>
+        <div class="metric-desc">Reconciler tick wall-clock time.</div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-name">ocelot_vs_schedule_attempts_total</div>
+        <div class="metric-type">counter</div>
+        <div class="metric-desc">Scheduler invocations, labelled <code>result={success,failure}</code>.</div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-name">ocelot_vs_api_requests_total</div>
+        <div class="metric-type">counter</div>
+        <div class="metric-desc">HTTP requests, labelled <code>method</code>, <code>path</code>, <code>status</code>.</div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-name">ocelot_vs_api_duration_seconds</div>
+        <div class="metric-type">histogram</div>
+        <div class="metric-desc">HTTP handler latency, labelled <code>method</code> and <code>route</code>.</div>
+      </div>
+    </section>
+
+    <!-- signals -->
+    <section id="signals">
+      <h2>Signals &amp; Lifecycle</h2>
+      <p>Pass a cancellable context to <code>Start</code>. When the context is cancelled, <code>Start</code> returns and the caller should invoke <code>Stop</code>:</p>
+<pre><code>ctx, cancel := context.WithCancel(context.Background())
+go func() {
+    sigCh := make(chan os.Signal, 1)
+    signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+    &lt;-sigCh
+    cancel()
+}()
+
+if err := vs.Start(ctx); err != nil {
+    log.Fatal(err)
+}
+shutdownCtx, done := context.WithTimeout(context.Background(), 30*time.Second)
+defer done()
+vs.Stop(shutdownCtx)
+</code></pre>
+      <p><code>Stop</code> gracefully shuts down the HTTP server (drains in-flight requests) and closes the SQLite connection. Allow at least the HTTP server's <code>WriteTimeout</code> (60 s) for graceful drain.</p>
+      <div class="callout callout-note">
+        <div class="callout-label">Note</div>
+        <p>The reconciler loop exits when its context is cancelled — it does not wait for in-flight adapter calls to finish. Use your adapter's own timeout logic for safe teardown.</p>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+// ── theme toggle ───────────────────────────────────────────────────────────
+function toggleTheme() {
+  const r = document.documentElement;
+  const cur = r.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  r.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+  try { localStorage.setItem('vs-theme', r.dataset.theme); } catch(e) {}
+}
+try {
+  const t = localStorage.getItem('vs-theme');
+  if (t) document.documentElement.dataset.theme = t;
+} catch(e) {}
+
+// ── mobile nav ─────────────────────────────────────────────────────────────
+function toggleNav() {
+  document.getElementById('sidebar').classList.toggle('open');
+}
+document.addEventListener('click', e => {
+  const sb = document.getElementById('sidebar');
+  if (sb.classList.contains('open') && !sb.contains(e.target) && !document.getElementById('hamburger').contains(e.target)) {
+    sb.classList.remove('open');
+  }
+});
+
+// ── active nav link on scroll ──────────────────────────────────────────────
+const sections = document.querySelectorAll('section[id]');
+const links    = document.querySelectorAll('nav a');
+const obs = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      links.forEach(l => {
+        l.classList.toggle('active', l.getAttribute('href') === '#' + e.target.id);
+      });
+    }
+  });
+}, { rootMargin: '-30% 0px -60% 0px' });
+sections.forEach(s => obs.observe(s));
+</script>
