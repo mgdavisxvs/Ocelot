@@ -175,12 +175,19 @@ td code{font-size:11.5px}
     <div class="nav-group">Data Models</div>
     <a href="#models">Peer / Torrent / User</a>
     <a href="#freetype">FreeType Values</a>
+    <a href="#token-lifecycle">Token Lifecycle</a>
 
     <div class="nav-group">Operations</div>
     <a href="#procedures">Procedures</a>
     <a href="#monitoring">Monitoring</a>
     <a href="#troubleshooting">Troubleshooting</a>
     <a href="#security">Security</a>
+    <a href="#compact-fallback">Compact Fallback</a>
+    <a href="#peer-churn">Peer Churn</a>
+    <a href="#deployment">Deployment</a>
+    <a href="#perf">Performance Tuning</a>
+    <a href="#backup">Backup &amp; Recovery</a>
+    <a href="#upgrade">Upgrade Procedure</a>
   </nav>
   <div class="sb-foot">
     <button class="theme-btn" onclick="toggleTheme()">
@@ -773,6 +780,220 @@ systemctl start ocelot
     <li>Proxy must pass raw binary <code>info_hash</code> values without re-encoding</li>
     <li><code>proxy_pass</code> should target the raw TCP port</li>
   </ul>
+</section>
+
+<!-- token-lifecycle -->
+<section id="token-lifecycle">
+  <h2>Token Lifecycle</h2>
+  <p>Freeleech tokens flow through four stages: Gazelle grants the token, the tracker ingests it on SIGUSR1, a peer announce consumes it, and Gazelle is notified via the SiteComm callback.</p>
+  <h3>Flow diagram</h3>
+  <div style="margin:20px 0;overflow-x:auto">
+    <svg viewBox="0 0 720 130" xmlns="http://www.w3.org/2000/svg" style="max-width:100%;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text)">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="var(--muted)"/>
+        </marker>
+      </defs>
+      <rect x="10" y="38" width="110" height="36" rx="6" fill="none" stroke="var(--border)" stroke-width="1.5"/>
+      <text x="65" y="60" text-anchor="middle" fill="var(--text)">Gazelle</text>
+      <rect x="170" y="38" width="130" height="36" rx="6" fill="none" stroke="var(--border)" stroke-width="1.5"/>
+      <text x="235" y="54" text-anchor="middle" fill="var(--text)">freeleech_tokens</text>
+      <text x="235" y="68" text-anchor="middle" fill="var(--muted)">(SQLite)</text>
+      <rect x="360" y="38" width="110" height="36" rx="6" fill="none" stroke="var(--border)" stroke-width="1.5"/>
+      <text x="415" y="54" text-anchor="middle" fill="var(--text)">In-memory</text>
+      <text x="415" y="68" text-anchor="middle" fill="var(--muted)">TokenList</text>
+      <rect x="530" y="38" width="110" height="36" rx="6" fill="none" stroke="var(--border)" stroke-width="1.5"/>
+      <text x="585" y="60" text-anchor="middle" fill="var(--text)">Announce</text>
+      <line x1="120" y1="56" x2="168" y2="56" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="144" y="50" text-anchor="middle" fill="var(--muted)">grant</text>
+      <line x1="300" y1="56" x2="358" y2="56" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="329" y="50" text-anchor="middle" fill="var(--muted)">SIGUSR1</text>
+      <line x1="470" y1="56" x2="528" y2="56" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="499" y="50" text-anchor="middle" fill="var(--muted)">lookup</text>
+      <path d="M585,74 Q585,112 415,112 Q235,112 235,74" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+      <text x="410" y="125" text-anchor="middle" fill="var(--accent)" font-size="10">ExpireToken callback → Gazelle</text>
+    </svg>
+  </div>
+  <h3>Stage details</h3>
+  <table class="tbl">
+    <thead><tr><th>Stage</th><th>Actor</th><th>Mechanism</th></tr></thead>
+    <tbody>
+      <tr><td>Grant</td><td>Gazelle</td><td>Inserts row into <code>freeleech_tokens</code> table</td></tr>
+      <tr><td>Ingest</td><td>Tracker</td><td>SIGUSR1 triggers <code>reload()</code> which reads new rows into <code>TokenList</code></td></tr>
+      <tr><td>Consume</td><td>Tracker</td><td>First matching announce removes token from <code>TokenList</code> and calls <code>SiteComm.ExpireToken</code></td></tr>
+      <tr><td>Expire callback</td><td>SiteComm</td><td>POST to Gazelle marking the token used; Gazelle deletes its DB row</td></tr>
+    </tbody>
+  </table>
+  <div class="warn"><div class="cl">Note</div><p>Tokens are consumed on <em>first announce</em> after grant, not on download completion. A peer that announces but never finishes the download still consumes the token.</p></div>
+</section>
+
+<!-- compact-fallback -->
+<section id="compact-fallback">
+  <h2>Compact Format Fallback</h2>
+  <p>The tracker defaults to BEP-23 compact peer format (6 bytes per IPv4 peer). Clients sending <code>compact=0</code> receive the non-compact bencoded dictionary format.</p>
+  <table class="tbl">
+    <thead><tr><th>Format</th><th>Condition</th><th>Peer encoding</th><th>Bytes / peer</th></tr></thead>
+    <tbody>
+      <tr><td>Compact (BEP-23)</td><td><code>compact=1</code> or absent</td><td>4-byte IP + 2-byte port, concatenated binary</td><td>6</td></tr>
+      <tr><td>Non-compact</td><td><code>compact=0</code></td><td>Bencoded list of dicts: <code>ip</code>, <code>port</code>, <code>peer id</code></td><td>~80–100</td></tr>
+    </tbody>
+  </table>
+  <div class="warn"><div class="cl">Warning</div><p>Non-compact responses are 10–15× larger. If your client population is known to be BEP-23 compliant, consider blocking <code>compact=0</code> at the reverse proxy level.</p></div>
+  <h3>IPv6</h3>
+  <p>The tracker is IPv4-only. IPv6 peers are not included in peer lists. Clients announcing from IPv6 addresses are tracked using their IPv4-mapped form (<code>::ffff:a.b.c.d</code>) where available; otherwise the announce is rejected with an error.</p>
+</section>
+
+<!-- peer-churn -->
+<section id="peer-churn">
+  <h2>Peer Churn Rate Analysis</h2>
+  <p>Peer churn is the rate at which peers enter and leave a swarm. Ocelot's Reaper goroutine evicts stale peers whose last announce exceeds <code>peer_inactivity_timer</code>.</p>
+  <h3>Key metrics</h3>
+  <table class="tbl">
+    <thead><tr><th>Metric</th><th>Source</th><th>Interpretation</th></tr></thead>
+    <tbody>
+      <tr><td>Active peers / torrent</td><td><code>/torrents</code> JSON</td><td>Seeders + leechers currently in memory</td></tr>
+      <tr><td>Reaper evictions / hour</td><td>Prometheus <code>ocelot_reaper_evictions_total</code></td><td>Peers who failed to re-announce within the inactivity window</td></tr>
+      <tr><td>Announce rate</td><td>Prometheus <code>ocelot_announces_total</code></td><td>Sustained req/s; spikes indicate mass client reconnection</td></tr>
+    </tbody>
+  </table>
+  <h3>Tuning announce interval</h3>
+  <table class="tbl">
+    <thead><tr><th>Config key</th><th>Default</th><th>Effect of lowering</th></tr></thead>
+    <tbody>
+      <tr><td><code>announce_interval</code></td><td>1800 s (30 min)</td><td>Fresher peer lists; higher CPU and DB write load</td></tr>
+      <tr><td><code>min_announce_interval</code></td><td>900 s (15 min)</td><td>Clients honour this floor; values below it are ignored</td></tr>
+      <tr><td><code>peer_inactivity_timer</code></td><td>3600 s (1 h)</td><td>Faster stale-peer eviction; must be ≥ 2× announce_interval</td></tr>
+    </tbody>
+  </table>
+  <div class="warn"><div class="cl">Rule of thumb</div><p>Set <code>peer_inactivity_timer</code> to at least 2× <code>announce_interval</code>. If a client misses a single announce due to NAT rebinding or brief downtime, it should not be evicted before its next attempt.</p></div>
+</section>
+
+<!-- deployment -->
+<section id="deployment">
+  <h2>Deployment</h2>
+  <h3>Recommended directory layout</h3>
+<pre><code>/opt/ocelot/
+├── bin/
+│   └── ocelot             # compiled tracker binary
+├── data/
+│   └── db/
+│       └── ocelot-YYYY-MM.db   # monthly SQLite shards
+├── config/
+│   └── ocelot.conf        # configuration (mode 640)
+└── logs/
+</code></pre>
+  <h3>File permissions</h3>
+  <table class="tbl">
+    <thead><tr><th>Path</th><th>Owner</th><th>Mode</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>bin/ocelot</code></td><td>root</td><td>755</td><td>Set-UID not required</td></tr>
+      <tr><td><code>data/db/</code></td><td>ocelot</td><td>750</td><td>WAL and SHM files created here</td></tr>
+      <tr><td><code>config/ocelot.conf</code></td><td>ocelot</td><td>640</td><td>Contains site_password and report_password</td></tr>
+    </tbody>
+  </table>
+  <h3>systemd unit</h3>
+<pre><code>[Unit]
+Description=Ocelot BitTorrent Tracker
+After=network.target
+
+[Service]
+Type=simple
+User=ocelot
+Group=ocelot
+WorkingDirectory=/opt/ocelot
+ExecStart=/opt/ocelot/bin/ocelot \
+    -conf /opt/ocelot/config/ocelot.conf
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/ocelot/data
+
+[Install]
+WantedBy=multi-user.target
+</code></pre>
+</section>
+
+<!-- perf -->
+<section id="perf">
+  <h2>Performance Tuning</h2>
+  <h3>SQLite settings</h3>
+  <table class="tbl">
+    <thead><tr><th>PRAGMA</th><th>Value</th><th>Rationale</th></tr></thead>
+    <tbody>
+      <tr><td><code>journal_mode</code></td><td>WAL</td><td>Concurrent readers without blocking writers</td></tr>
+      <tr><td><code>synchronous</code></td><td>NORMAL</td><td>Crash-safe; not power-loss-safe</td></tr>
+      <tr><td><code>foreign_keys</code></td><td>ON</td><td>Referential integrity enforced</td></tr>
+      <tr><td><code>busy_timeout</code></td><td>5 000 ms</td><td>Retry window on write lock contention</td></tr>
+    </tbody>
+  </table>
+  <h3>Shard rotation</h3>
+  <p>The Scheduler goroutine checks monthly shard rotation at each WAL checkpoint. When the active shard reaches 84 GB, it closes the shard, opens a new <code>ocelot-YYYY-MM.db</code>, and continues without restarting. Historical shards are opened read-only for scrape queries.</p>
+  <h3>Memory sizing</h3>
+  <p>All peer, torrent, and user state is held in RAM. Rough estimates:</p>
+  <ul>
+    <li>~200 bytes per active peer entry</li>
+    <li>~500 bytes per torrent entry</li>
+    <li>~300 bytes per user entry</li>
+  </ul>
+  <p>A tracker with 10 000 torrents, 100 000 peers, and 50 000 users requires approximately 50 MB for state, plus Go runtime overhead (~30–50 MB).</p>
+  <h3>Announce concurrency</h3>
+  <p>Each announce acquires a brief write lock on the relevant peer list. Keep announce handler latency below 5 ms to avoid goroutine accumulation under load.</p>
+</section>
+
+<!-- backup -->
+<section id="backup">
+  <h2>Backup &amp; Recovery</h2>
+  <h3>Online backup</h3>
+<pre><code># Backup the active shard
+sqlite3 data/db/ocelot-$(date +%Y-%m).db \
+  ".backup /backups/ocelot-$(date +%F).db"
+
+# Compress closed shards after rotation
+gzip -9 data/db/ocelot-2025-01.db
+</code></pre>
+  <div class="warn"><div class="cl">Note</div><p>The tracker does not open compressed shard files. Historical scrape queries for a compressed shard return zero — inform users before archiving.</p></div>
+  <h3>Schedule</h3>
+  <ul>
+    <li>Daily backup of the active shard via cron</li>
+    <li>Archive and compress closed shards immediately after rotation</li>
+    <li>Retain raw (uncompressed) backups for the last 7 days</li>
+  </ul>
+  <h3>Recovery</h3>
+<pre><code>systemctl stop ocelot
+cp /backups/ocelot-2026-09-24.db data/db/ocelot-2026-09.db
+rm -f data/db/ocelot-2026-09.db-wal \
+       data/db/ocelot-2026-09.db-shm
+# Peer state rebuilds within one announce interval (~30 min)
+systemctl start ocelot
+</code></pre>
+  <div class="warn"><div class="cl">Peer state loss</div><p>Peer state is RAM-only and is not captured in database backups. After any restore, swarms rebuild naturally as peers re-announce.</p></div>
+</section>
+
+<!-- upgrade -->
+<section id="upgrade">
+  <h2>Upgrade Procedure</h2>
+<pre><code># 1. Back up the active shard
+sqlite3 data/db/ocelot-$(date +%Y-%m).db \
+  ".backup /backups/pre-upgrade-$(date +%F).db"
+
+# 2. Replace binary atomically
+install -m 755 ocelot-new /opt/ocelot/bin/ocelot
+
+# 3. Graceful restart
+systemctl stop ocelot   # SIGTERM — drains in-flight announces
+systemctl start ocelot
+</code></pre>
+  <h3>Pre-upgrade checklist</h3>
+  <ol>
+    <li>Back up all active and recent shards</li>
+    <li>Read the release notes for schema changes to the 8 database tables</li>
+    <li>Confirm Gazelle integration compatibility (SiteComm API version)</li>
+    <li>Test the new binary in staging with a copy of the config and a recent shard</li>
+  </ol>
+  <h3>Rollback</h3>
+  <p>Restore the previous binary via the same <code>install</code> command. If schema changes prevent the old binary from starting, restore from the pre-upgrade backup and redeploy the previous binary.</p>
 </section>
 
 </main>

@@ -447,6 +447,15 @@ tr:hover td { background: var(--surface2); }
       <a href="#api">HTTP API</a>
       <a href="#metrics">Prometheus Metrics</a>
       <a href="#signals">Signals &amp; Lifecycle</a>
+
+      <div class="nav-group">Operations</div>
+      <a href="#noop">NoOp Dry-run</a>
+      <a href="#catalog-impl">CatalogProvider</a>
+      <a href="#pickgpus">pickGPUs</a>
+      <a href="#deployment">Deployment</a>
+      <a href="#perf">Performance Tuning</a>
+      <a href="#backup">Backup &amp; Recovery</a>
+      <a href="#upgrade">Upgrade Procedure</a>
     </nav>
     <div class="sidebar-footer">
       <button class="theme-btn" onclick="toggleTheme()">
@@ -907,6 +916,231 @@ vs.Stop(shutdownCtx)
       <div class="callout callout-note">
         <div class="callout-label">Note</div>
         <p>The reconciler loop exits when its context is cancelled — it does not wait for in-flight adapter calls to finish. Use your adapter's own timeout logic for safe teardown.</p>
+      </div>
+    </section>
+
+    <!-- noop -->
+    <section id="noop">
+      <h2>NoOp Adapter (Dry-run Mode)</h2>
+      <p>When <code>Start</code> is called with no registered adapter, <code>VirtualServer</code> automatically installs a <code>NoOpAdapter</code> and logs a warning. Every lifecycle call succeeds silently — instances transition through states without touching any real compute substrate.</p>
+      <div class="callout callout-warn">
+        <div class="callout-label">Dry-run only</div>
+        <p>Use dry-run for integration testing and CI where you want to exercise the scheduler, reconciler, and API without a live backend. Do not use in production — errors that a real adapter would surface are silently swallowed.</p>
+      </div>
+      <h3>Behaviour summary</h3>
+      <table class="tbl">
+        <thead><tr><th>Method</th><th>Returns</th><th>Side effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>Provision</code></td><td>nil</td><td>Sets ExternalID to <code>"noop-&lt;svc-id&gt;"</code></td></tr>
+          <tr><td><code>Deprovision</code></td><td>nil</td><td>None</td></tr>
+          <tr><td><code>Status</code></td><td>AdapterStatusRunning</td><td>None</td></tr>
+          <tr><td><code>Attach / Detach</code></td><td>nil</td><td>None</td></tr>
+        </tbody>
+      </table>
+      <h3>Detection in tests</h3>
+<pre><code>vs, _ := virtualserver.New(cfg, nil)
+// Do NOT call vs.RegisterAdapter — NoOp is installed automatically.
+// Startup log includes:
+//   "virtualserver: no backend adapter registered; running in dry-run mode"
+</code></pre>
+    </section>
+
+    <!-- catalog-impl -->
+    <section id="catalog-impl">
+      <h2>Implementing CatalogProvider</h2>
+      <p>The <code>CatalogProvider</code> interface gates provisioning on artifact swarm availability:</p>
+<pre><code>type CatalogProvider interface {
+    // ArtifactStatus returns the number of active seeders for artifactID.
+    // Return (0, nil) when the artifact is unknown.
+    ArtifactStatus(ctx context.Context, artifactID string) (int, error)
+}
+</code></pre>
+      <h3>Seeder threshold</h3>
+      <p>The reconciler calls <code>ArtifactStatus</code> for each pending instance whose service declares a <code>CatalogArtifactID</code>. Provisioning is deferred while seeders are below the configured threshold:</p>
+      <table class="tbl">
+        <thead><tr><th>Seeders</th><th>Outcome</th></tr></thead>
+        <tbody>
+          <tr><td>0</td><td>Deferred — instance stays <code>pending</code></td></tr>
+          <tr><td>1</td><td>Allowed when <code>MinSeeders ≤ 1</code> (default)</td></tr>
+          <tr><td>≥ threshold</td><td>Provisioning proceeds normally</td></tr>
+        </tbody>
+      </table>
+      <h3>OcelotCatalogAdapter</h3>
+      <p>The bundled adapter wraps a tracker stats endpoint and is the reference implementation:</p>
+<pre><code>import "github.com/mgdavisxvs/Ocelot/virtualserver"
+
+adapter := virtualserver.NewOcelotCatalogAdapter(
+    "http://tracker.internal:34000",
+    "site_password",
+)
+vs.SetCatalog(adapter)
+</code></pre>
+      <div class="callout callout-note">
+        <div class="callout-label">Nil catalog</div>
+        <p>When <code>SetCatalog</code> is never called, catalog gating is disabled and all instances proceed to provisioning immediately.</p>
+      </div>
+    </section>
+
+    <!-- pickgpus -->
+    <section id="pickgpus">
+      <h2>pickGPUs Algorithm</h2>
+      <p>After the scheduler places a service, the reconciler calls <code>pickGPUs</code> to produce the concrete GPU device IDs that will be attached to the instance.</p>
+      <h3>Selection steps</h3>
+      <ol>
+        <li>Fetch GPU device IDs already allocated on the target node (<code>nodeAllocatedGPUs</code>).</li>
+        <li>For each <code>GPURequirement</code>, filter the node's GPU list to devices that are free, meet the VRAM minimum, and match the model filter.</li>
+        <li>Select the first <code>Count</code> matching devices.</li>
+        <li>Add selected IDs to a deduplication set so subsequent requirements cannot claim the same physical device.</li>
+      </ol>
+      <div class="callout callout-warn">
+        <div class="callout-label">First-fit, not optimal</div>
+        <p>In heterogeneous GPU clusters, declare explicit <code>ModelFilter</code> values on each requirement to avoid cross-model allocation.</p>
+      </div>
+      <h3>Error conditions</h3>
+      <table class="tbl">
+        <thead><tr><th>Condition</th><th>Error</th></tr></thead>
+        <tbody>
+          <tr><td>Fewer free matching devices than <code>Count</code></td><td><code>"insufficient GPUs on node"</code></td></tr>
+          <tr><td>DB query failure</td><td>Error propagated; instance stays <code>pending</code></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- deployment -->
+    <section id="deployment">
+      <h2>Deployment</h2>
+      <h3>Recommended directory layout</h3>
+<pre><code>/opt/ocelot-vs/
+├── bin/
+│   └── ocelot-vs          # compiled binary
+├── data/
+│   └── vs.db              # SQLite WAL database
+├── config/
+│   └── token              # bearer token (mode 640)
+└── logs/
+</code></pre>
+      <h3>File permissions</h3>
+      <table class="tbl">
+        <thead><tr><th>Path</th><th>Owner</th><th>Mode</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>bin/ocelot-vs</code></td><td>root</td><td>755</td><td>Set-UID not required</td></tr>
+          <tr><td><code>data/</code></td><td>ocelot</td><td>750</td><td>WAL and SHM files created here</td></tr>
+          <tr><td><code>config/token</code></td><td>ocelot</td><td>640</td><td>Contains bearer token — keep out of <code>ps</code> output</td></tr>
+        </tbody>
+      </table>
+      <h3>systemd unit</h3>
+<pre><code>[Unit]
+Description=Ocelot VirtualServer
+After=network.target
+
+[Service]
+Type=simple
+User=ocelot
+Group=ocelot
+WorkingDirectory=/opt/ocelot-vs
+ExecStart=/opt/ocelot-vs/bin/ocelot-vs \
+    -db /opt/ocelot-vs/data/vs.db \
+    -listen :8080 \
+    -token-file /opt/ocelot-vs/config/token
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/ocelot-vs/data
+
+[Install]
+WantedBy=multi-user.target
+</code></pre>
+    </section>
+
+    <!-- perf -->
+    <section id="perf">
+      <h2>Performance Tuning</h2>
+      <h3>SQLite settings (applied at open time)</h3>
+      <table class="tbl">
+        <thead><tr><th>PRAGMA</th><th>Value</th><th>Rationale</th></tr></thead>
+        <tbody>
+          <tr><td><code>journal_mode</code></td><td>WAL</td><td>Concurrent readers without blocking writers</td></tr>
+          <tr><td><code>synchronous</code></td><td>NORMAL</td><td>Crash-safe; not power-loss-safe</td></tr>
+          <tr><td><code>foreign_keys</code></td><td>ON</td><td>Referential integrity enforced at DB level</td></tr>
+          <tr><td><code>busy_timeout</code></td><td>5 000 ms</td><td>Retry window on write lock contention</td></tr>
+        </tbody>
+      </table>
+      <h3>WAL checkpoint</h3>
+      <p>The reconciler runs a passive WAL checkpoint every reconcile interval. If the WAL grows beyond 1 000 pages between checkpoints, reduce <code>ReconcileInterval</code> or trigger a manual checkpoint via the snapshot API.</p>
+      <h3>Headroom index</h3>
+      <p>Keep instance counts per node below ~1 000 for sub-millisecond headroom queries. Beyond that, add:</p>
+<pre><code>CREATE INDEX IF NOT EXISTS idx_inst_node_state
+  ON instances(node_id, state);
+</code></pre>
+      <h3>Reconcile interval guidance</h3>
+      <table class="tbl">
+        <thead><tr><th>Workload</th><th>Recommended interval</th></tr></thead>
+        <tbody>
+          <tr><td>Development / dry-run</td><td>1 s</td></tr>
+          <tr><td>Small cluster (&lt; 100 instances)</td><td>5 s (default)</td></tr>
+          <tr><td>Large cluster (1 000+ instances)</td><td>15–30 s</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- backup -->
+    <section id="backup">
+      <h2>Backup &amp; Recovery</h2>
+      <h3>Online backup</h3>
+      <p>SQLite WAL mode supports hot backups without stopping the server. Use the snapshot API or the SQLite CLI:</p>
+<pre><code># Via snapshot API (recommended)
+curl -X POST http://localhost:8080/v1/snapshots \
+  -H "Authorization: Bearer $TOKEN"
+
+# Poll for completion
+curl http://localhost:8080/v1/snapshots/&lt;id&gt; \
+  -H "Authorization: Bearer $TOKEN"
+# {"status":"complete","path":"data/vs-20260924-153012.db"}
+
+# SQLite CLI (offline alternative)
+sqlite3 data/vs.db ".backup /backups/vs-$(date +%F).db"
+</code></pre>
+      <h3>Schedule</h3>
+      <ul>
+        <li>Take a snapshot before any major provisioning batch</li>
+        <li>Daily cron backup is sufficient for most deployments</li>
+        <li>Retain at least 7 daily + 4 weekly snapshots</li>
+      </ul>
+      <h3>Point-in-time restore</h3>
+<pre><code>systemctl stop ocelot-vs
+cp /backups/vs-2026-09-24.db data/vs.db
+rm -f data/vs.db-wal data/vs.db-shm
+systemctl start ocelot-vs
+</code></pre>
+      <div class="callout callout-warn">
+        <div class="callout-label">Instance state divergence</div>
+        <p>After a restore, the database may describe instances as <code>running</code> while the backend has no record of them. The reconciler reconciles divergence automatically during its first loop by calling <code>Status</code> on each instance.</p>
+      </div>
+    </section>
+
+    <!-- upgrade -->
+    <section id="upgrade">
+      <h2>Upgrade Procedure</h2>
+      <p>Schema migrations are applied automatically at startup via an embedded runner. No manual SQL is required — replace the binary and restart.</p>
+      <h3>Rolling restart</h3>
+<pre><code># Atomically replace the binary
+install -m 755 ocelot-vs-new /opt/ocelot-vs/bin/ocelot-vs
+
+# Graceful restart (in-flight requests drain within WriteTimeout = 60 s)
+systemctl restart ocelot-vs
+</code></pre>
+      <h3>Pre-upgrade checklist</h3>
+      <ol>
+        <li>Take a snapshot backup via the API</li>
+        <li>Read the release notes for schema or config-key changes</li>
+        <li>Validate the new binary against the current database in staging</li>
+        <li>Confirm adapter plugins are compatible with the new interface</li>
+      </ol>
+      <div class="callout callout-warn">
+        <div class="callout-label">Downgrade requires restore</div>
+        <p>Forward schema migrations cannot be reversed automatically. If a downgrade is needed, restore the pre-upgrade snapshot and redeploy the previous binary.</p>
       </div>
     </section>
 
