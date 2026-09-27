@@ -12,9 +12,12 @@ import (
 	"github.com/mgdavisxvs/Ocelot/commons"
 )
 
-// UpdateResponse represents the tracker's response to an update
+// UpdateResponse represents the tracker's response to an update.
+// Both Success (bool) and Status (string "ok"/"error") are included for
+// compatibility with callers that check either field.
 type UpdateResponse struct {
-	Status  string `json:"status,omitempty"`
+	Success bool   `json:"success"`
+	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
@@ -62,6 +65,9 @@ func (w *Worker) HandleUpdate(req *http.Request) ([]byte, error) {
 func (w *Worker) addTorrent(q url.Values) ([]byte, error) {
 	idStr := q.Get("id")
 	if idStr == "" {
+		idStr = q.Get("torrent_id")
+	}
+	if idStr == "" {
 		return w.updateError("Invalid torrent_id")
 	}
 	id, err := strconv.Atoi(idStr)
@@ -80,9 +86,11 @@ func (w *Worker) addTorrent(q url.Values) ([]byte, error) {
 
 	freeType := 0
 	if ft := q.Get("free_type"); ft != "" {
-		if n, err2 := strconv.Atoi(ft); err2 == nil {
-			freeType = n
+		n, err2 := strconv.Atoi(ft)
+		if err2 != nil || n < 0 || n > 2 {
+			return w.updateError(fmt.Sprintf("invalid free_type %q (must be 0, 1, or 2)", ft))
 		}
+		freeType = n
 	}
 
 	if err := w.DB.RecordTorrent(TorrentID(id), 0, 0, 0, 0); err != nil {
@@ -113,13 +121,15 @@ func (w *Worker) updateTorrent(q url.Values) ([]byte, error) {
 		return w.updateError("torrent not found")
 	}
 
-	torrent.mu.Lock()
 	if ft := q.Get("free_type"); ft != "" {
-		if n, err := strconv.Atoi(ft); err == nil && n >= 0 && n <= 2 {
-			torrent.FreeType = FreeType(n)
+		n, err := strconv.Atoi(ft)
+		if err != nil || n < 0 || n > 2 {
+			return w.updateError(fmt.Sprintf("invalid free_type %q (must be 0, 1, or 2)", ft))
 		}
+		torrent.mu.Lock()
+		torrent.FreeType = FreeType(n)
+		torrent.mu.Unlock()
 	}
-	torrent.mu.Unlock()
 
 	return w.updateSuccess(fmt.Sprintf("Updated torrent %s", infoHash))
 }
@@ -159,6 +169,9 @@ func (w *Worker) deleteTorrent(q url.Values) ([]byte, error) {
 		return w.updateSuccess(fmt.Sprintf("Deleted torrent %d", id))
 	}
 
+	if _, ok := w.Torrents.Get(infoHash); !ok {
+		return w.updateError("Torrent not found")
+	}
 	if err := w.DB.DeleteTorrentHash(infoHash); err != nil {
 		return w.updateError(fmt.Sprintf("DB error deleting torrent hash: %v", err))
 	}
@@ -194,6 +207,9 @@ func (w *Worker) changeFreeleech(q url.Values) ([]byte, error) {
 
 func (w *Worker) addUser(q url.Values) ([]byte, error) {
 	idStr := q.Get("id")
+	if idStr == "" {
+		idStr = q.Get("user_id")
+	}
 	if idStr == "" {
 		return w.updateError("Invalid user_id")
 	}
@@ -464,34 +480,36 @@ func (w *Worker) setBudget(q url.Values) ([]byte, error) {
 }
 
 func (w *Worker) updateSuccess(message string) ([]byte, error) {
-	resp := UpdateResponse{Status: "ok", Message: message}
+	resp := UpdateResponse{Success: true, Status: "ok", Message: message}
 	return json.Marshal(resp)
 }
 
 func (w *Worker) updateError(errMsg string) ([]byte, error) {
-	resp := UpdateResponse{Error: errMsg}
+	resp := UpdateResponse{Success: false, Status: "error", Error: errMsg}
 	data, _ := json.Marshal(resp)
 	return data, fmt.Errorf("%s", errMsg)
 }
 
 func (w *Worker) updateOK() ([]byte, error) {
-	return json.Marshal(map[string]string{"status": "ok"})
+	return json.Marshal(map[string]interface{}{"success": true, "status": "ok"})
 }
 
 // StatsResponse contains live tracker statistics for JSON API
 type StatsResponse struct {
-	Uptime        string `json:"uptime"`
-	UptimeSeconds int64  `json:"uptime_seconds"`
-	TorrentCount  int    `json:"torrent_count"`
-	UserCount     int    `json:"user_count"`
-	Seeders       uint32 `json:"seeders"`
-	Leechers      uint32 `json:"leechers"`
-	Connections   uint32 `json:"connections"`
-	Announcements uint64 `json:"announcements"`
-	SuccAnnounces uint64 `json:"successful_announces"`
-	Scrapes       uint64 `json:"scrapes"`
-	BytesRead     uint64 `json:"bytes_read"`
-	BytesWritten  uint64 `json:"bytes_written"`
+	Uptime            string `json:"uptime"`
+	UptimeSeconds     int64  `json:"uptime_seconds"`
+	TorrentCount      int    `json:"torrent_count"`
+	UserCount         int    `json:"user_count"`
+	Seeders           uint32 `json:"seeders"`
+	Leechers          uint32 `json:"leechers"`
+	Connections       uint32 `json:"connections"`
+	Announcements     uint64 `json:"announcements"`
+	SuccAnnounces     uint64 `json:"successful_announces"`
+	Scrapes           uint64 `json:"scrapes"`
+	BytesRead         uint64 `json:"bytes_read"`
+	BytesWritten      uint64 `json:"bytes_written"`
+	ClientRejections  uint64 `json:"client_rejections"`
+	AnomalyRejections uint64 `json:"anomaly_rejections"`
 }
 
 // GetStats returns current tracker statistics as JSON
@@ -499,18 +517,20 @@ func (w *Worker) GetStats() ([]byte, error) {
 	uptime := time.Since(w.Stats.StartTime)
 
 	stats := StatsResponse{
-		Uptime:        uptime.Round(time.Second).String(),
-		UptimeSeconds: int64(uptime.Seconds()),
-		TorrentCount:  w.Torrents.Size(),
-		UserCount:     w.Users.Size(),
-		Seeders:       w.Stats.Seeders.Load(),
-		Leechers:      w.Stats.Leechers.Load(),
-		Connections:   w.Stats.OpenConnections.Load(),
-		Announcements: w.Stats.Announcements.Load(),
-		SuccAnnounces: w.Stats.SuccAnnouncements.Load(),
-		Scrapes:       w.Stats.Scrapes.Load(),
-		BytesRead:     w.Stats.BytesRead.Load(),
-		BytesWritten:  w.Stats.BytesWritten.Load(),
+		Uptime:            uptime.Round(time.Second).String(),
+		UptimeSeconds:     int64(uptime.Seconds()),
+		TorrentCount:      w.Torrents.Size(),
+		UserCount:         w.Users.Size(),
+		Seeders:           w.Stats.Seeders.Load(),
+		Leechers:          w.Stats.Leechers.Load(),
+		Connections:       w.Stats.OpenConnections.Load(),
+		Announcements:     w.Stats.Announcements.Load(),
+		SuccAnnounces:     w.Stats.SuccAnnouncements.Load(),
+		Scrapes:           w.Stats.Scrapes.Load(),
+		BytesRead:         w.Stats.BytesRead.Load(),
+		BytesWritten:      w.Stats.BytesWritten.Load(),
+		ClientRejections:  w.Stats.ClientRejections.Load(),
+		AnomalyRejections: w.Stats.AnomalyRejections.Load(),
 	}
 
 	return json.Marshal(stats)

@@ -24,17 +24,18 @@ const (
 
 func newTestConfig() *Config {
 	return &Config{
-		ListenAddr:       ":0",
+		ListenAddr:      ":0",
 		AnnounceInterval: 1800,
-		PeersTimeout:     7200,
-		MaxMiddlemen:     20000,
-		NumWantLimit:     50,
+		PeersTimeout:    7200,
+		MaxMiddlemen:    20000,
+		NumWantLimit:    50,
 		KeepaliveTimeout: 0,
-		SitePassword:     sitePass,
-		ReportPassword:   "reportpass1234567890123456789012",
-		ReadTimeout:      10 * time.Second,
-		WriteTimeout:     10 * time.Second,
+		SitePassword:    sitePass,
+		ReportPassword:  "reportpass1234567890123456789012",
+		ReadTimeout:     10 * time.Second,
+		WriteTimeout:    10 * time.Second,
 		ScheduleInterval: 3,
+		AllowPrivateIPs: true,
 	}
 }
 

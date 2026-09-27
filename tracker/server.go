@@ -52,8 +52,12 @@ type Config struct {
 	MetricsPort       string
 	Readonly          bool
 
+	// AllowPrivateIPs disables bogon/private-IP filtering.  Set true only in
+	// test or LAN-only deployments.
+	AllowPrivateIPs bool
+
 	// Extended / merged-in fields
-	OTelEndpoint         string
+	OTelEndpoint string
 	BatchBufferCap       int
 	RateLimitRPS         int
 	RateLimitBurst       int
@@ -220,7 +224,12 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 		return s.handleScrape(req, passkey, httpClose), httpClose
 
 	case "update":
-		if passkey == s.config.SitePassword {
+		siteAuthed := passkey == s.config.SitePassword
+		if !siteAuthed {
+			bearer := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+			siteAuthed = bearer != "" && bearer == s.config.SitePassword
+		}
+		if siteAuthed {
 			return s.handleUpdate(req, httpClose), httpClose
 		}
 		return s.errorResponse("Authentication failure", httpClose), httpClose
@@ -315,12 +324,9 @@ func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool)
 }
 
 // handleUpdate processes admin update requests.
-// Fixed: original port had both branches returning jsonResponse.
+// Always returns JSON — errors are serialised by updateError(), never as bencode.
 func (s *Server) handleUpdate(req *http.Request, httpClose bool) []byte {
-	jsonData, err := s.worker.HandleUpdate(req)
-	if err != nil {
-		return s.errorResponse(err.Error(), httpClose)
-	}
+	jsonData, _ := s.worker.HandleUpdate(req)
 	return s.jsonResponse(jsonData, httpClose)
 }
 

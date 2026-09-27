@@ -124,34 +124,32 @@ func (b *EventBus) Unsubscribe(id string) {
 	}
 }
 
-// auditEventTypes lists the event kinds that must never be silently dropped
-// because they form the durability audit trail.
-// RULING-05 mitigation: audit events use a blocking send; all others are dropped
-// on a full subscriber buffer so the announce hot-path is never stalled.
+// auditEventTypes lists event kinds that form the audit trail.
+// RULING-05 mitigation: dropped audit events are logged as errors (not silently
+// discarded) so operators know to size subscriber buffers adequately.
+// Durable audit storage is guaranteed by AuditLog, not the EventBus.
 var auditEventTypes = map[BusEventType]bool{
-	EventSnatch:          true,
-	EventPasskeyChanged:  true,
-	EventWhitelistAdded:  true,
+	EventSnatch:           true,
+	EventPasskeyChanged:   true,
+	EventWhitelistAdded:   true,
 	EventWhitelistRemoved: true,
 }
 
-// Publish fans out e to every registered subscriber.
-//   - Audit events (snatch, passkey change, whitelist): blocking send — the
-//     event is too important to lose.  If a subscriber is terminally stuck
-//     the caller will block; size subscriber buffers adequately (≥ 1024).
-//   - All other events: non-blocking send — a slow subscriber is skipped so
-//     the high-frequency announce path is never stalled.
+// Publish fans out e to every registered subscriber using non-blocking sends.
+// Slow subscribers are skipped so the announce hot-path is never stalled.
+// Dropped audit events are logged at error level — durable delivery is the
+// responsibility of AuditLog, not the EventBus.
 func (b *EventBus) Publish(e BusEvent) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	isAudit := auditEventTypes[e.Type]
 	for id, ch := range b.subs {
-		if isAudit {
-			ch <- e // block — audit must not be lost
-		} else {
-			select {
-			case ch <- e:
-			default:
+		select {
+		case ch <- e:
+		default:
+			if isAudit {
+				log.Printf("event_bus: ERROR subscriber %q too slow, dropping audit event %s", id, e.Type)
+			} else {
 				log.Printf("event_bus: subscriber %q too slow, dropping %s event", id, e.Type)
 			}
 		}

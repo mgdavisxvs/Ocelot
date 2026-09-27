@@ -254,7 +254,7 @@ func (w *Worker) Announce(_ context.Context, req *AnnounceRequest, user *User, c
 		ip = clientIP
 	}
 
-	if !ValidateIPNotPrivate(ip) {
+	if !w.Config.AllowPrivateIPs && !ValidateIPNotPrivate(ip) {
 		invalidIP = true
 		peer.InvalidIP = true
 	} else if inserted || peer.Port != req.Port || !peer.IP.Equal(ip) {
