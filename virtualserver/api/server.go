@@ -165,6 +165,15 @@ func buildMux(h *Handlers) *http.ServeMux {
 			h.ListInstanceOperations(w, r)
 			return
 		}
+		// VS-F-T1: chronological state + health trace for an instance.
+		if hasSuffix(r.URL.Path, "/trace") {
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			h.GetInstanceTrace(w, r)
+			return
+		}
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return

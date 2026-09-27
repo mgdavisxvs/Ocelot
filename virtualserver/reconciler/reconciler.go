@@ -94,6 +94,10 @@ type StoreInterface interface {
 	UpdateMountState(ctx context.Context, id int64, to domain.VolumeMountState) error
 	ListMountsByInstance(ctx context.Context, instanceID string) ([]domain.VolumeMount, error)
 	ListActiveMountsByVolume(ctx context.Context, volumeID string) ([]domain.VolumeMount, error)
+
+	// Operation event methods (VS-D-S1: quota_exceeded events visible on instances API).
+	ListInstanceOperations(ctx context.Context, instanceID string) ([]domain.Operation, error)
+	AppendOperationEvent(ctx context.Context, operationID, eventType, message string, payload map[string]interface{}) error
 }
 
 // ArtifactCatalog is the narrow interface bridging the reconciler to artifact availability.
@@ -663,14 +667,43 @@ func (r *VSReconciler) reconcileQuotaCheck(ctx context.Context) {
 		case overQuota && vol.State == domain.VolumeBound:
 			if err := r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeQuotaExceeded); err == nil {
 				volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeBound, domain.VolumeQuotaExceeded)
-				r.store.WriteAuditLog(ctx, "volume_quota_exceeded", "volume", vol.ID, "", false, //nolint:errcheck
-					fmt.Sprintf("used=%dMiB capacity=%dMiB", stat.UsedMiB, vol.Manifest.Spec.CapacityMiB))
+				msg := fmt.Sprintf("used=%dMiB capacity=%dMiB", stat.UsedMiB, vol.Manifest.Spec.CapacityMiB)
+				r.store.WriteAuditLog(ctx, "volume_quota_exceeded", "volume", vol.ID, "", false, msg) //nolint:errcheck
+				// VS-D-S1: emit operation event on every instance with an active mount,
+				// making the quota breach visible through GET /v1/instances/{id}/operations.
+				r.emitQuotaExceededEvent(ctx, vol.ID, stat.UsedMiB, vol.Manifest.Spec.CapacityMiB)
 			}
 		case !overQuota && vol.State == domain.VolumeQuotaExceeded:
 			if err := r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeBound); err == nil {
 				volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeQuotaExceeded, domain.VolumeBound)
 			}
 		}
+	}
+}
+
+// emitQuotaExceededEvent appends a "quota_exceeded" operation event to the
+// most recent active operation of every instance that holds an active mount
+// on volumeID. This makes the breach visible at GET /v1/instances/{id}/operations
+// without requiring operators to query volume state separately (VS-D-S1).
+func (r *VSReconciler) emitQuotaExceededEvent(ctx context.Context, volumeID string, usedMiB, capacityMiB int64) {
+	mounts, err := r.store.ListActiveMountsByVolume(ctx, volumeID)
+	if err != nil {
+		return
+	}
+	payload := map[string]interface{}{
+		"volume_id":    volumeID,
+		"used_mib":     usedMiB,
+		"capacity_mib": capacityMiB,
+	}
+	for _, m := range mounts {
+		ops, err := r.store.ListInstanceOperations(ctx, m.InstanceID)
+		if err != nil || len(ops) == 0 {
+			continue
+		}
+		latest := ops[len(ops)-1]
+		r.store.AppendOperationEvent(ctx, latest.ID, "quota_exceeded", //nolint:errcheck
+			fmt.Sprintf("volume %s exceeded quota: used=%dMiB capacity=%dMiB", volumeID, usedMiB, capacityMiB),
+			payload)
 	}
 }
 

@@ -54,6 +54,9 @@ type HandlerStore interface {
 	// Operations
 	GetOperation(ctx context.Context, id string) (*domain.Operation, error)
 	ListInstanceOperations(ctx context.Context, instanceID string) ([]domain.Operation, error)
+
+	// Health observations (VS-F-T1: instance state trace)
+	ListHealthObservations(ctx context.Context, instanceID string) ([]domain.HealthObservation, error)
 }
 
 // VolumeHandlerDrivers gives the volume handlers access to storage drivers
@@ -613,6 +616,84 @@ func (h *Handlers) ListInstanceOperations(w http.ResponseWriter, r *http.Request
 		out[i] = operationToResponse(op)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"operations": out})
+}
+
+// GET /v1/instances/{id}/trace
+// Returns a chronological unified trace of all state transitions, operation events,
+// and health observations for an instance (VS-F-T1).
+func (h *Handlers) GetInstanceTrace(w http.ResponseWriter, r *http.Request) {
+	id := pathSegmentBefore(r.URL.Path, "trace")
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "missing instance id", "BAD_REQUEST")
+		return
+	}
+
+	ops, err := h.store.ListInstanceOperations(r.Context(), id)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, err.Error(), "INTERNAL")
+		return
+	}
+	health, err := h.store.ListHealthObservations(r.Context(), id)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, err.Error(), "INTERNAL")
+		return
+	}
+
+	var events []domain.InstanceTraceEvent
+
+	for _, op := range ops {
+		events = append(events, domain.InstanceTraceEvent{
+			At:      op.CreatedAt,
+			Kind:    "op_state",
+			Source:  op.ID,
+			Summary: string(op.Type) + " → " + string(op.State),
+			Detail:  map[string]interface{}{"adapter": op.Adapter},
+		})
+		for _, ev := range op.Events {
+			events = append(events, domain.InstanceTraceEvent{
+				At:      ev.CreatedAt,
+				Kind:    "op_event",
+				Source:  op.ID,
+				Summary: ev.EventType + ": " + ev.Message,
+				Detail:  ev.Payload,
+			})
+		}
+		if op.CompletedAt != nil {
+			events = append(events, domain.InstanceTraceEvent{
+				At:      *op.CompletedAt,
+				Kind:    "op_state",
+				Source:  op.ID,
+				Summary: string(op.Type) + " completed → " + string(op.State),
+			})
+		}
+	}
+
+	for _, h := range health {
+		events = append(events, domain.InstanceTraceEvent{
+			At:      h.ObservedAt,
+			Kind:    "health",
+			Source:  "health_probe",
+			Summary: h.Status + ": " + h.Message,
+			Detail:  map[string]interface{}{"node_id": h.NodeID},
+		})
+	}
+
+	// Sort by time ascending.
+	sortTraceEvents(events)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"instanceId": id,
+		"events":     events,
+	})
+}
+
+// sortTraceEvents sorts a slice of InstanceTraceEvent by time ascending in place.
+func sortTraceEvents(events []domain.InstanceTraceEvent) {
+	for i := 1; i < len(events); i++ {
+		for j := i; j > 0 && events[j].At.Before(events[j-1].At); j-- {
+			events[j], events[j-1] = events[j-1], events[j]
+		}
+	}
 }
 
 // POST /v1/volumes/{id}/restore

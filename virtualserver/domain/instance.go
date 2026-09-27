@@ -84,6 +84,27 @@ func IsTerminalInstanceState(s InstanceState) bool {
 	return s == InstanceTerminated
 }
 
+// HealthObservation is a point-in-time health check result for an instance.
+// Stored in virtualserver_health_observations.
+type HealthObservation struct {
+	ID         int64
+	InstanceID string
+	NodeID     string
+	Status     string // "healthy", "unhealthy", "unknown"
+	Message    string
+	ObservedAt time.Time
+}
+
+// InstanceTraceEvent is one entry in the chronological state trace for an instance.
+// It merges health observations and operation events into a unified timeline (VS-F-T1).
+type InstanceTraceEvent struct {
+	At      time.Time              `json:"at"`
+	Kind    string                 `json:"kind"`    // "health", "op_event", "op_state"
+	Source  string                 `json:"source"`  // operation_id, "health_probe", etc.
+	Summary string                 `json:"summary"`
+	Detail  map[string]interface{} `json:"detail,omitempty"`
+}
+
 // ServiceInstance is a running (or pending) instance of a declared service.
 type ServiceInstance struct {
 	ID            string

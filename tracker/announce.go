@@ -12,6 +12,28 @@ import (
 	"github.com/mgdavisxvs/Ocelot/ml"
 )
 
+// PeerRole is the explicit typed state of a peer within a swarm (F-T3).
+// It replaces the implicit boolean flags (Left>0, event=="stopped") with a
+// single discriminated enum, making state transitions verifiable at compile time.
+type PeerRole uint8
+
+const (
+	PeerRoleLeeching PeerRole = iota // Left > 0; peer has not yet completed download
+	PeerRoleSeeding                  // Left == 0; peer is a full seeder
+	PeerRoleStopped                  // event == "stopped"; peer is leaving the swarm
+)
+
+// peerRoleFromRequest derives the PeerRole from an incoming announce request.
+func peerRoleFromRequest(req *AnnounceRequest) PeerRole {
+	if req.Event == "stopped" {
+		return PeerRoleStopped
+	}
+	if req.Left == 0 {
+		return PeerRoleSeeding
+	}
+	return PeerRoleLeeching
+}
+
 // AnnounceRequest represents a parsed BitTorrent announce request.
 type AnnounceRequest struct {
 	InfoHash   string
@@ -87,12 +109,13 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 	}
 
 	peerKey := PeerKeyPrime(req.PeerID, user.ID, torrent.ID)
+	role := peerRoleFromRequest(req)
 
 	var (
 		inserted         = false
 		updateTorrent    = false
-		completedTorrent = false
-		stoppedTorrent   = false
+		completedTorrent = (role == PeerRoleSeeding && req.Event == "completed")
+		stoppedTorrent   = (role == PeerRoleStopped)
 		expireToken      = false
 		peerChanged      = false
 		invalidIP        = false
@@ -104,10 +127,7 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 		active           = 1
 	)
 
-	if req.Event == "completed" {
-		completedTorrent = (req.Left == 0)
-	} else if req.Event == "stopped" {
-		stoppedTorrent = true
+	if stoppedTorrent {
 		peerChanged = true
 		updateTorrent = true
 		active = 0
@@ -117,7 +137,7 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 
 	torrent.mu.Lock()
 
-	if req.Left > 0 {
+	if role == PeerRoleLeeching {
 		peer, inserted = w.findOrCreatePeer(torrent.Leechers, peerKey, user)
 		if inserted {
 			incLeechers = true
