@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -132,10 +133,55 @@ func main() {
 		Commons:      cc,
 	}
 
+	// ── Typed event bus (TorrentBus) ─────────────────────────────────────────
+	torrentBus := tracker.NewBus(8192)
+	defer torrentBus.Stop()
+	worker.TorrentBus = torrentBus
+
+	_ = tracker.NewAuditSubscriber(torrentBus, auditLog)
+	_ = tracker.NewMetricsSubscriber(torrentBus, metrics)
+	_ = tracker.NewCollusionDetector(torrentBus)
+	_ = tracker.NewFraudEnforcer(torrentBus, users)
+	_ = tracker.NewIntervalCache(torrentBus)
+	sseHub := tracker.NewSSEHub(torrentBus)
+
+	// ── Ops plane ─────────────────────────────────────────────────────────────
+	if config.OpsAddr == "" {
+		config.OpsAddr = ":34002"
+	}
+	opsServer, readyFlag := tracker.NewOpsServer(config, worker)
+	opsServer.AttachCircuitBreaker(circuitBreaker)
+	opsServer.AttachBatchWriter(batchWriter)
+	opsServer.AttachSSEHub(sseHub)
+	go func() {
+		if err := opsServer.ListenAndServe(); err != nil {
+			log.Printf("Ops server error: %v", err)
+		}
+	}()
+
+	// ── Markov engine pollers ─────────────────────────────────────────────────
+	pollerCtx, pollerCancel := context.WithCancel(context.Background())
+	defer pollerCancel()
+	if config.MarkovAPIURL != "" {
+		markovClient := tracker.NewMarkovClient(config.MarkovAPIURL)
+		pollSec := config.FreeleechPollSec
+		if pollSec <= 0 {
+			pollSec = 300
+		}
+		tracker.FreeleechPoller(pollerCtx, markovClient, siteComm, pollSec, config.FreeleechNotifyHours)
+		tracker.IntervalPoller(pollerCtx, markovClient, torrentBus, pollSec)
+		log.Printf("Markov pollers started: %s (interval %ds)", config.MarkovAPIURL, pollSec)
+	}
+
 	// ── Background subsystems ─────────────────────────────────────────────────
 	reaper := tracker.NewReaper(torrents, stats, fc.ReapPeersInterval, config.PeersTimeout)
+	if config.MaxSwarmSize > 0 {
+		reaper = reaper.WithMaxSwarmSize(config.MaxSwarmSize)
+	}
 	reaper.Start()
 	defer reaper.Stop()
+
+	readyFlag.SetReady()
 
 	dbMaintainer := tracker.NewDBMaintainer(db, config.ScheduleInterval)
 	dbMaintainer.Start()
@@ -163,8 +209,8 @@ func main() {
 				log.Println("SIGHUP: configuration reloaded")
 
 			case syscall.SIGUSR1:
-				log.Println("SIGUSR1: reloading torrent/user/whitelist state...")
-				if err := loader.Reload(); err != nil {
+				log.Println("SIGUSR1: reloading torrent/user/whitelist state (with eviction)...")
+				if err := loader.ReloadWithEviction(); err != nil {
 					log.Printf("SIGUSR1: reload failed: %v", err)
 				} else {
 					log.Printf("SIGUSR1: reload complete — %d torrents, %d users",
@@ -228,6 +274,11 @@ func main() {
 	log.Println("Shutdown signal received — draining connections...")
 	if err := server.Shutdown(); err != nil {
 		log.Printf("Shutdown error: %v", err)
+	}
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := opsServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Ops server shutdown error: %v", err)
 	}
 
 	if err := tracker.SaveSnapshot(snapshotPath, torrents); err != nil {

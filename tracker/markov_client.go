@@ -101,6 +101,54 @@ func (c *MarkovClient) Metrics(ctx context.Context) (*markovMetrics, error) {
 	return &out, json.NewDecoder(resp.Body).Decode(&out)
 }
 
+// markovIntervalRow mirrors the JSON shape returned by GET /intervals.
+type markovIntervalRow struct {
+	TorrentID          int64 `json:"torrent_id"`
+	RecommendedInterval int   `json:"recommended_interval"`
+}
+
+// Intervals calls GET /intervals and returns the per-torrent interval recommendations.
+func (c *MarkovClient) Intervals(ctx context.Context) ([]markovIntervalRow, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/intervals", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("markov /intervals: HTTP %d", resp.StatusCode)
+	}
+	var out []markovIntervalRow
+	return out, json.NewDecoder(resp.Body).Decode(&out)
+}
+
+// IntervalPoller runs a background goroutine that periodically fetches
+// per-torrent interval recommendations from the Markov engine and publishes
+// an IntervalUpdateEvent on the bus for each one.  Cancel the context to stop.
+func IntervalPoller(ctx context.Context, client *MarkovClient, bus EventPublisher, intervalSec int) {
+	go func() {
+		ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				rows, err := client.Intervals(ctx)
+				if err != nil {
+					continue
+				}
+				for _, r := range rows {
+					bus.Publish(NewIntervalUpdateEvent("", TorrentID(r.TorrentID), r.RecommendedInterval))
+				}
+			}
+		}
+	}()
+}
+
 // FreeleechPoller runs a background goroutine that periodically fetches
 // freeleech candidates from the Markov engine and calls siteComm.NotifyFreeleech
 // for each one.  It returns immediately; cancel the context to stop it.

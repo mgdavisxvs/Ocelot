@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,6 +35,7 @@ type BatchWriter struct {
 	stopChan      chan struct{}
 	logger        *Logger
 	metrics       *MetricsRecorder
+	dropped       atomic.Uint64
 }
 
 // NewBatchWriter creates a new batch writer backed by a DatabaseInterface.
@@ -73,6 +75,7 @@ func (bw *BatchWriter) QueuePeerAnnounce(
 	select {
 	case bw.buffer <- r:
 	default:
+		bw.dropped.Add(1)
 		bw.logger.Warn("batch writer buffer full, dropping operation",
 			"type", "peer_announce",
 		)
@@ -153,6 +156,10 @@ func (bw *BatchWriter) Stop() {
 func (bw *BatchWriter) Size() int {
 	return len(bw.buffer)
 }
+
+// Dropped returns the cumulative count of peer announce records dropped due to
+// a full buffer since this BatchWriter was created.
+func (bw *BatchWriter) Dropped() uint64 { return bw.dropped.Load() }
 
 // BatchWriterDB adapts BatchWriter + a DatabaseInterface to satisfy
 // DatabaseInterface.  Announce-path writes (RecordPeer) are routed through

@@ -367,6 +367,13 @@ func (w *Worker) Announce(_ context.Context, req *AnnounceRequest, user *User, c
 		user.Seeding.Add(1)
 		w.Stats.Seeders.Add(1)
 	}
+
+	// Publish to typed event bus so CollusionDetector / FraudEnforcer / SSEHub receive the event.
+	if w.TorrentBus != nil {
+		w.TorrentBus.Publish(NewAnnounceEvent("", user.ID, torrent.ID, req.Event,
+			req.Uploaded, req.Downloaded, req.Left,
+			torrent.Seeders.Size(), torrent.Leechers.Size()))
+	}
 	if decLeechers {
 		user.Leeching.Add(^uint32(0))
 		w.Stats.Leechers.Add(^uint32(0))

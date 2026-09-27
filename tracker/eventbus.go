@@ -1,10 +1,18 @@
 package tracker
 
 import (
+	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
 )
+
+// EventPublisher is the minimal interface for publishing to either Bus type.
+// Both *Bus (eventbus.go) and stub test types satisfy it.
+type EventPublisher interface {
+	Publish(Event)
+}
 
 const defaultBusBuffer = 8192
 
@@ -102,10 +110,24 @@ func (b *Bus) deliver(e Event) {
 	topic := e.Topic()
 	for _, s := range subs {
 		if topicMatches(s.pattern, topic) {
-			s.handler(e)
+			safeCall(s.handler, e)
 		}
 	}
 }
+
+// safeCall invokes h(e) and recovers from any panic, logging the failure.
+// This prevents a misbehaving subscriber from killing the dispatch goroutine.
+func safeCall(h Handler, e Event) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("eventbus: subscriber panic on topic %q: %v", e.Topic(), r)
+		}
+	}()
+	h(e)
+}
+
+// suppress "declared and not used" on the fmt import used only in safeCall tests
+var _ = fmt.Sprintf
 
 // topicMatches returns true when pattern matches topic.
 // Supports exact match and trailing-wildcard "prefix.*".

@@ -1,106 +1,148 @@
 package tracker
 
 import (
+	"container/heap"
 	"sync"
 	"time"
 )
 
-// Cache provides an in-memory cache with TTL
+// cacheHeapEntry is an element in the expiry min-heap.
+type cacheHeapEntry struct {
+	key       string
+	expiresAt time.Time
+	index     int // maintained by heap.Interface
+}
+
+// cacheHeap implements heap.Interface ordered by earliest expiry.
+type cacheHeap []*cacheHeapEntry
+
+func (h cacheHeap) Len() int            { return len(h) }
+func (h cacheHeap) Less(i, j int) bool  { return h[i].expiresAt.Before(h[j].expiresAt) }
+func (h cacheHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].index = i
+	h[j].index = j
+}
+func (h *cacheHeap) Push(x interface{}) {
+	e := x.(*cacheHeapEntry)
+	e.index = len(*h)
+	*h = append(*h, e)
+}
+func (h *cacheHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	e := old[n-1]
+	old[n-1] = nil
+	*h = old[:n-1]
+	return e
+}
+
+// Cache provides an in-memory TTL cache with O(log n) expiry eviction.
 type Cache struct {
-	items map[string]*cacheItem
-	mu    sync.RWMutex
-	ttl   time.Duration
+	items   map[string]*cacheItem
+	expHeap cacheHeap
+	mu      sync.Mutex
+	ttl     time.Duration
 }
 
 type cacheItem struct {
 	value      interface{}
 	expiration time.Time
+	heapEntry  *cacheHeapEntry
 }
 
-// NewCache creates a new cache with the given TTL
+// NewCache creates a new cache with the given TTL.
 func NewCache(ttl time.Duration) *Cache {
 	c := &Cache{
 		items: make(map[string]*cacheItem),
 		ttl:   ttl,
 	}
-
-	// Start cleanup goroutine
+	heap.Init(&c.expHeap)
 	go c.cleanup()
-
 	return c
 }
 
-// Get retrieves a value from the cache
+// Get retrieves a value from the cache.
 func (c *Cache) Get(key string) (interface{}, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	item, found := c.items[key]
 	if !found {
 		return nil, false
 	}
-
-	// Check if expired
 	if time.Now().After(item.expiration) {
 		return nil, false
 	}
-
 	return item.value, true
 }
 
-// Set stores a value in the cache
+// Set stores a value in the cache with the default TTL.
 func (c *Cache) Set(key string, value interface{}) {
 	c.SetWithTTL(key, value, c.ttl)
 }
 
-// SetWithTTL stores a value with custom TTL
+// SetWithTTL stores a value with a custom TTL.
 func (c *Cache) SetWithTTL(key string, value interface{}, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.items[key] = &cacheItem{
-		value:      value,
-		expiration: time.Now().Add(ttl),
+	exp := time.Now().Add(ttl)
+	if existing, ok := c.items[key]; ok {
+		existing.value = value
+		existing.expiration = exp
+		existing.heapEntry.expiresAt = exp
+		heap.Fix(&c.expHeap, existing.heapEntry.index)
+		return
 	}
+	entry := &cacheHeapEntry{key: key, expiresAt: exp}
+	c.items[key] = &cacheItem{value: value, expiration: exp, heapEntry: entry}
+	heap.Push(&c.expHeap, entry)
 }
 
-// Delete removes a value from the cache
+// Delete removes a value from the cache.
 func (c *Cache) Delete(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	delete(c.items, key)
+	c.deleteLocked(key)
 }
 
-// Clear removes all items from the cache
+func (c *Cache) deleteLocked(key string) {
+	if item, ok := c.items[key]; ok {
+		heap.Remove(&c.expHeap, item.heapEntry.index)
+		delete(c.items, key)
+	}
+}
+
+// Clear removes all items from the cache.
 func (c *Cache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
 	c.items = make(map[string]*cacheItem)
+	c.expHeap = c.expHeap[:0]
+	heap.Init(&c.expHeap)
 }
 
-// cleanup periodically removes expired items
+// cleanup pops expired entries from the min-heap — O(k log n) where k is the
+// number of expired items, rather than the O(n) full-scan of the prior design.
 func (c *Cache) cleanup() {
 	ticker := time.NewTicker(c.ttl / 2)
 	defer ticker.Stop()
-
 	for range ticker.C {
-		c.mu.Lock()
 		now := time.Now()
-		for key, item := range c.items {
-			if now.After(item.expiration) {
-				delete(c.items, key)
-			}
+		c.mu.Lock()
+		for c.expHeap.Len() > 0 && c.expHeap[0].expiresAt.Before(now) {
+			entry := heap.Pop(&c.expHeap).(*cacheHeapEntry)
+			delete(c.items, entry.key)
 		}
 		c.mu.Unlock()
 	}
 }
 
-// Size returns the number of items in the cache
+// Size returns the number of items in the cache.
 func (c *Cache) Size() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return len(c.items)
 }
 

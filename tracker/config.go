@@ -56,6 +56,10 @@ type FileConfig struct {
 	TLSAutoTLS  bool
 	TLSDomain   string
 	TLSCacheDir string
+
+	// Swarm size cap — reaper evicts peers from torrents exceeding this count.
+	// 0 means no cap (default).
+	MaxSwarmSize int
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -177,6 +181,8 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.VSDBPath = val
 		case "vs_reconcile_every":
 			cfg.VSReconcileEvery = parseIntVal(val, cfg.VSReconcileEvery)
+		case "max_swarm_size":
+			cfg.MaxSwarmSize = parseIntVal(val, cfg.MaxSwarmSize)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -224,6 +230,7 @@ func (fc *FileConfig) ToTrackerConfig() *Config {
 			Domain:   fc.TLSDomain,
 			CacheDir: fc.TLSCacheDir,
 		},
+		MaxSwarmSize: fc.MaxSwarmSize,
 	}
 }
 

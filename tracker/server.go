@@ -70,6 +70,9 @@ type Config struct {
 	TLSCertFile   string // PEM certificate file for TLS listeners
 	TLSKeyFile    string // PEM key file for TLS listeners
 	OpsAddr       string // address for the operations/metrics server
+
+	// MaxSwarmSize caps the number of peers per torrent; 0 = no cap.
+	MaxSwarmSize int
 }
 
 func NewServer(config *Config, worker *Worker) *Server {
@@ -560,6 +563,7 @@ type Worker struct {
 	UserCache      *UserCache
 	Redis          *RedisBackend
 	Bus            *EventBus // internal event pub/sub; nil disables publishing
+	TorrentBus     *Bus      // new typed-event bus; nil disables Bus-based subsystems
 	Admission      *SwarmAdmissionPolicy // nil = all peers admitted
 
 	reaper *Reaper // started/stopped by Start/Stop

@@ -5,14 +5,18 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
 
 // sseClient represents a connected SSE consumer.
+// topics is the list of patterns the client subscribed to via ?topics=; nil or
+// empty means "all topics" (no filtering).
 type sseClient struct {
 	ch     chan string
 	closed chan struct{}
+	topics []string
 }
 
 // SSEHub broadcasts events to connected admin SSE clients over HTTP.
@@ -56,9 +60,19 @@ func (h *SSEHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
+	var clientTopics []string
+	if raw := r.URL.Query().Get("topics"); raw != "" {
+		for _, t := range strings.Split(raw, ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				clientTopics = append(clientTopics, t)
+			}
+		}
+	}
+
 	client := &sseClient{
 		ch:     make(chan string, 64),
 		closed: make(chan struct{}),
+		topics: clientTopics,
 	}
 	h.addClient(client)
 	defer h.removeClient(client)
@@ -102,9 +116,13 @@ func (h *SSEHub) forward(e Event) {
 	}
 	msg := string(payload)
 
+	topic := e.Topic()
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for c := range h.clients {
+		if !clientWantsTopic(c.topics, topic) {
+			continue
+		}
 		select {
 		case c.ch <- msg:
 		default:
@@ -130,4 +148,18 @@ func (h *SSEHub) ClientCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.clients)
+}
+
+// clientWantsTopic returns true when the client's topic filter list is empty
+// (subscribe to all) or when at least one of its patterns matches topic.
+func clientWantsTopic(patterns []string, topic string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	for _, p := range patterns {
+		if topicMatches(p, topic) {
+			return true
+		}
+	}
+	return false
 }

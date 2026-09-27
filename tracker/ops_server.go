@@ -25,6 +25,7 @@ type OpsServer struct {
 	worker  *Worker
 	config  *Config
 	httpSrv *http.Server
+	mux     *http.ServeMux
 	ready   *readyFlag
 
 	// Swarm-plane deps — attached after construction via AttachSwarmDeps.
@@ -37,6 +38,9 @@ type OpsServer struct {
 
 	// Circuit breaker — attached via AttachCircuitBreaker (Solution #9).
 	cb *CircuitBreaker
+
+	// BatchWriter — attached via AttachBatchWriter for drop-counter reporting.
+	bw *BatchWriter
 
 	// PageRank convergence delta from the Markov sidecar (Solution #10).
 	pagerankMu  sync.Mutex
@@ -87,6 +91,17 @@ func (os *OpsServer) AttachCircuitBreaker(cb *CircuitBreaker) {
 	os.cb = cb
 }
 
+// AttachBatchWriter wires in the batch writer for drop-counter reporting.
+func (os *OpsServer) AttachBatchWriter(bw *BatchWriter) {
+	os.bw = bw
+}
+
+// AttachSSEHub registers the SSEHub as the GET /events handler on the ops mux.
+// Must be called before ListenAndServe.
+func (os *OpsServer) AttachSSEHub(hub *SSEHub) {
+	os.mux.HandleFunc("/events", hub.ServeHTTP)
+}
+
 // UpdatePageRankDelta records the latest PageRank convergence delta from the Markov
 // sidecar. Thread-safe; call from any goroutine.
 func (os *OpsServer) UpdatePageRankDelta(delta float64) {
@@ -97,9 +112,8 @@ func (os *OpsServer) UpdatePageRankDelta(delta float64) {
 
 func NewOpsServer(config *Config, worker *Worker) (*OpsServer, *readyFlag) {
 	rf := newReadyFlag()
-	os := &OpsServer{worker: worker, config: config, ready: rf}
-
 	mux := http.NewServeMux()
+	os := &OpsServer{worker: worker, config: config, ready: rf, mux: mux}
 	mux.HandleFunc("/health/live", os.handleLive)
 	mux.HandleFunc("/health/ready", os.handleReady)
 	mux.HandleFunc("/metrics", os.handleMetrics)
@@ -225,6 +239,11 @@ func (os *OpsServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	pagerankDelta := os.pagerankVal
 	os.pagerankMu.Unlock()
 
+	var bwDrops uint64
+	if os.bw != nil {
+		bwDrops = os.bw.Dropped()
+	}
+
 	m := map[string]interface{}{
 		"uptime_seconds":             uptime,
 		"open_connections":           stats.OpenConnections.Load(),
@@ -247,6 +266,7 @@ func (os *OpsServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		"swarm_replicas_verified":    replicaVerified,
 		"swarm_artifacts_total":      artifactCount,
 		"pagerank_convergence_delta": pagerankDelta,
+		"batch_writer_drops":         bwDrops,
 	}
 
 	b, err := json.Marshal(m)
@@ -297,6 +317,15 @@ func (os *OpsServer) handleMetricsPrometheus(w http.ResponseWriter, r *http.Requ
 	writeLine("ocelot_swarm_replicas_verified", "Managed replicas in VERIFIED state", "gauge", replicaVerified)
 	writeLine("ocelot_swarm_artifacts_total", "Number of registered artifacts", "gauge", artifactCount)
 	writeLine("ocelot_pagerank_convergence_delta", "Latest PageRank convergence delta from Markov sidecar", "gauge", pagerankDelta)
+
+	if os.bw != nil {
+		writeLine("ocelot_batch_writer_drops_total", "Cumulative peer-announce records dropped due to full batch writer buffer", "counter", os.bw.Dropped())
+	}
+
+	if os.cb != nil {
+		// 0=closed, 1=open, 2=half_open (mirrors CircuitState iota order)
+		writeLine("ocelot_circuit_breaker_state", "Circuit breaker state: 0=closed 1=open 2=half_open", "gauge", int(os.cb.GetState()))
+	}
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	w.WriteHeader(http.StatusOK)
