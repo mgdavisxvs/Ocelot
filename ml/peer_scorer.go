@@ -124,6 +124,14 @@ func (ps *PeerScorer) SelectBest(peers []*PeerInfo, requesterIP net.IP, numWant 
 		score float64
 	}
 
+	// Pre-seed the P95 estimator with every peer's upload speed so that all
+	// peers in this batch are normalised against a consistent ceiling rather
+	// than each peer updating the ceiling just before it is scored.
+	for _, p := range peers {
+		spd := float64(p.Uploaded) / math.Max(float64(time.Since(p.FirstSeen).Seconds()), 1.0)
+		ps.p95Speed.observe(spd)
+	}
+
 	scored := make([]scoredPeer, len(peers))
 	for i, p := range peers {
 		scored[i] = scoredPeer{

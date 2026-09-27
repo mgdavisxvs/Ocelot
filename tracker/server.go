@@ -220,7 +220,13 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 		return s.handleScrape(req, passkey, httpClose), httpClose
 
 	case "update":
-		if passkey == s.config.SitePassword {
+		authed := passkey == s.config.SitePassword
+		if !authed {
+			if bearer := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "); bearer != "" && bearer == s.config.SitePassword {
+				authed = true
+			}
+		}
+		if authed {
 			return s.handleUpdate(req, httpClose), httpClose
 		}
 		return s.errorResponse("Authentication failure", httpClose), httpClose
@@ -315,12 +321,9 @@ func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool)
 }
 
 // handleUpdate processes admin update requests.
-// Fixed: original port had both branches returning jsonResponse.
+// Always returns JSON; updateError already encodes the error as JSON.
 func (s *Server) handleUpdate(req *http.Request, httpClose bool) []byte {
-	jsonData, err := s.worker.HandleUpdate(req)
-	if err != nil {
-		return s.errorResponse(err.Error(), httpClose)
-	}
+	jsonData, _ := s.worker.HandleUpdate(req)
 	return s.jsonResponse(jsonData, httpClose)
 }
 

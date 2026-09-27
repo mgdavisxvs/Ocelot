@@ -135,16 +135,18 @@ func TestRoundTrip_Announce_Completed_Snatch(t *testing.T) {
 func TestRoundTrip_Announce_LeecherReceivesSeeder(t *testing.T) {
 	f := newTestFixture()
 
-	// Seeder uses testPasskey2 so it is a different user (UserID=2)
+	// Seeder uses testPasskey2 so it is a different user (UserID=2).
+	// Use a public (non-private) IP so ValidateIPNotPrivate passes and the
+	// peer is marked visible. 203.0.113.x is RFC 5737 documentation space.
 	seederReq := buildAnnounceURL(testPasskey2, testInfoHash, testPeerID2, "started", 100, 0, 0)
-	f.server.handleRequest(seederReq, net.ParseIP("192.168.1.1"))
+	f.server.handleRequest(seederReq, net.ParseIP("203.0.113.1"))
 
 	// Leecher announces
 	leecherReq := buildAnnounceURL(testPasskey, testInfoHash, testPeerID, "started", 0, 0, 1024)
 	raw, _ := f.server.handleRequest(leecherReq, net.ParseIP(testIP))
 	body := httpBody(raw)
 
-	// The seeder is at 192.168.1.1:6881 → 6 compact bytes → "6:" in response
+	// The seeder is at 203.0.113.1:6881 → 6 compact bytes → "6:" in response
 	if !strings.Contains(body, "6:") {
 		t.Errorf("leecher should receive seeder peer bytes (6:), got: %s", body)
 	}
