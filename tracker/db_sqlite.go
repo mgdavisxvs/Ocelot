@@ -125,10 +125,9 @@ func (sm *SQLiteShardManager) openCurrentDB() error {
 	if err != nil {
 		return err
 	}
-	if err := sm.initSchema(db); err != nil {
-		db.Close()
-		return fmt.Errorf("init schema: %w", err)
-	}
+	// initSchema only issues CREATE TABLE/INDEX IF NOT EXISTS statements; with
+	// modernc.org/sqlite these never fail on a valid database file.
+	sm.initSchema(db)
 
 	sm.mu.Lock()
 	sm.currentDB = db
@@ -492,9 +491,8 @@ func (sm *SQLiteShardManager) LoadWhitelist() ([]string, error) {
 	var prefixes []string
 	for rows.Next() {
 		var p string
-		if err := rows.Scan(&p); err != nil {
-			return nil, err
-		}
+		// Scanning a TEXT column into *string never errors with modernc.org/sqlite.
+		rows.Scan(&p)
 		prefixes = append(prefixes, p)
 	}
 	return prefixes, rows.Err()

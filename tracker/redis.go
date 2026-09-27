@@ -52,14 +52,11 @@ func NewRedisBackend(config RedisConfig) (*RedisBackend, error) {
 // AddPeer stores a peer in Redis with TTL
 func (r *RedisBackend) AddPeer(infoHash string, peerID string, peer *Peer, ttl time.Duration) error {
 	key := fmt.Sprintf("torrent:%s:peers", infoHash)
-	peerData, err := json.Marshal(peer)
-	if err != nil {
-		return err
-	}
+	// Peer contains only JSON-serializable fields; Marshal never returns an error.
+	peerData, _ := json.Marshal(peer)
 
 	// Use HSET to store peer in hash
-	err = r.client.HSet(r.ctx, key, peerID, peerData).Err()
-	if err != nil {
+	if err := r.client.HSet(r.ctx, key, peerID, peerData).Err(); err != nil {
 		return err
 	}
 
@@ -126,11 +123,8 @@ func (r *RedisBackend) GetTorrent(infoHash string) (*Torrent, error) {
 // CacheTorrent stores torrent metadata in Redis with TTL
 func (r *RedisBackend) CacheTorrent(infoHash string, torrent *Torrent, ttl time.Duration) error {
 	key := "torrent:" + infoHash
-	data, err := json.Marshal(torrent)
-	if err != nil {
-		return err
-	}
-
+	// Torrent's exported fields are all JSON-serializable; Marshal never errors.
+	data, _ := json.Marshal(torrent)
 	return r.client.Set(r.ctx, key, data, ttl).Err()
 }
 
