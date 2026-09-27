@@ -50,6 +50,16 @@ func (w *Worker) Announce(_ context.Context, req *AnnounceRequest, user *User, c
 		return nil, fmt.Errorf("not admitted to swarm")
 	}
 
+	// C-01 Adaptive Swarm Admission Gate: score leechers via Beta+PageRank bandit.
+	// Soft-gate only (deferred peers still get a response, just no peer list).
+	var admitStrategy StrategyID
+	var admitDeferred bool
+	if w.AdmissionGate != nil && req.Left > 0 && req.Event != "stopped" {
+		var ok bool
+		ok, admitStrategy = w.AdmissionGate.Admit(user.ID)
+		admitDeferred = !ok
+	}
+
 	if !req.Compact {
 		return nil, fmt.Errorf("your client does not support compact announces")
 	}
@@ -176,6 +186,10 @@ func (w *Worker) Announce(_ context.Context, req *AnnounceRequest, user *User, c
 
 		if uploadedChange > 0 {
 			peer.Uploaded = req.Uploaded
+			// C-04: feed upload delta into credit weight map.
+			if w.CreditPipeline != nil {
+				w.CreditPipeline.UpdateCreditFromAnnounce(user.ID, uploadedChange)
+			}
 		}
 		if downloadedChange > 0 {
 			peer.Downloaded = req.Downloaded
@@ -347,6 +361,10 @@ func (w *Worker) Announce(_ context.Context, req *AnnounceRequest, user *User, c
 			delete(torrent.TokenedUsers, user.ID)
 			torrent.mu.Unlock()
 		}
+		// C-01: reward the admission strategy that led to this completion.
+		if w.AdmissionGate != nil {
+			w.AdmissionGate.Reward(user.ID, admitStrategy, true)
+		}
 	} else if !user.CanLeech.Load() && req.Left > 0 {
 		numwant = 0
 	}
@@ -409,6 +427,20 @@ func (w *Worker) Announce(_ context.Context, req *AnnounceRequest, user *User, c
 	adaptive := AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval)
 	if adaptive < minInterval {
 		adaptive = minInterval
+	}
+
+	// C-04: credit-aware interval override.
+	if w.CreditPipeline != nil {
+		creditInterval := int32(w.CreditPipeline.AnnounceInterval(torrent.ID, user.ID, int(adaptive)))
+		if creditInterval > minInterval {
+			adaptive = creditInterval
+		}
+	}
+
+	// C-01: deferred peers receive an empty peer list and a longer retry interval.
+	if admitDeferred {
+		peers = nil
+		adaptive = int32(w.Config.AnnounceInterval) * 2
 	}
 
 	response := &AnnounceResponse{

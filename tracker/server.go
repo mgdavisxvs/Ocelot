@@ -570,6 +570,14 @@ type Worker struct {
 	Admission      *SwarmAdmissionPolicy // nil = all peers admitted
 
 	reaper *Reaper // started/stopped by Start/Stop
+
+	// Shannon composite intelligence subsystems (C-01 to C-05)
+	ShannBus        *Bus                // event bus for composite features
+	AdmissionGate   *AdmissionGate     // C-01: blended PageRank+Beta swarm admission
+	CausalLog       *CausalLog         // C-02: Lamport-ordered replay log
+	FreeleechEngine *FreeleechEngine   // C-03: demand-driven freeleech engine
+	CreditPipeline  *CreditPeerPipeline // C-04: credit-aware peer selection
+	NodeHealthMesh  *NodeHealthMesh    // C-05: federated node health mesh
 }
 
 // publish emits e to the internal EventBus if one is wired.

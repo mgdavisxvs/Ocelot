@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -131,6 +133,66 @@ func main() {
 		BatchWriter:  batchWriter,
 		Commons:      cc,
 	}
+
+	// ── Shannon composite intelligence subsystems (C-01 to C-05) ────────────
+	shannBus := tracker.NewBus(0)
+	defer shannBus.Stop()
+
+	shannCtx, shannCancel := context.WithCancel(context.Background())
+	defer shannCancel()
+
+	// Demand heatmap for C-03.
+	heatmap := tracker.NewDemandHeatmap(65536)
+
+	// Markov shadow cache — populated if MarkovAPIURL is configured.
+	shadowCache := tracker.NewMarkovShadowCache(5 * time.Minute)
+	if config.MarkovAPIURL != "" {
+		markovClient := tracker.NewMarkovClient(config.MarkovAPIURL)
+		shadowCache.StartRefresh(shannCtx, markovClient, fc.FreeleechPollSec)
+		log.Printf("Markov shadow cache refresh started: %s", config.MarkovAPIURL)
+	}
+
+	// C-01 Adaptive Swarm Admission Gate.
+	bandit := tracker.NewPeerStrategyBandit()
+	admissionGate := tracker.NewAdmissionGate(bandit, shadowCache)
+
+	// C-02 Causal Replay Log (ring buffer of 4096 events).
+	causalLog := tracker.NewCausalLog(4096)
+	shannBus.Subscribe("*", causalLog.BusSubscriber())
+
+	// C-03 Demand-Driven Freeleech Engine.
+	freeleechEngine := tracker.NewFreeleechEngine(
+		heatmap, shadowCache, siteComm, shannBus,
+		config.DemandHeatmapDPEpsilon,
+	)
+	freeleechEngine.Start(shannCtx, fc.FreeleechPollSec)
+
+	// C-04 Credit-Aware Peer Selection Pipeline.
+	intervalCache := tracker.NewIntervalCache(shannBus)
+	creditPipeline := tracker.NewCreditPeerPipeline(shadowCache, intervalCache)
+
+	// C-05 Federated Node Health Mesh.
+	nodeRegistry := tracker.NewNodeRegistry()
+	nodeHealthMesh := tracker.NewNodeHealthMesh(nodeRegistry, shadowCache)
+
+	// Wire gossip anti-entropy for the node registry (Feature #07).
+	if config.GossipPeerAddrs != "" {
+		peerAddrs := strings.Split(config.GossipPeerAddrs, ",")
+		gossip := tracker.NewNodeGossip(nodeRegistry, peerAddrs, config.GossipIntervalSec)
+		gossip.Start(shannCtx)
+		log.Printf("Node gossip anti-entropy started: %d peers", len(peerAddrs))
+	}
+
+	// Assign composite subsystems to the worker.
+	worker.ShannBus = shannBus
+	worker.AdmissionGate = admissionGate
+	worker.CausalLog = causalLog
+	worker.FreeleechEngine = freeleechEngine
+	worker.CreditPipeline = creditPipeline
+	worker.NodeHealthMesh = nodeHealthMesh
+
+	_ = heatmap     // referenced by FreeleechEngine; suppress unused-var lint
+	_ = nodeHealthMesh // exposed via worker; future control-plane endpoint
 
 	// ── Background subsystems ─────────────────────────────────────────────────
 	reaper := tracker.NewReaper(torrents, stats, fc.ReapPeersInterval, config.PeersTimeout)
