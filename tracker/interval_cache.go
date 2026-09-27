@@ -35,7 +35,9 @@ func NewIntervalCache(bus *Bus) *IntervalCache {
 		byPeer:    make(map[peerIntervalKey]int),
 		bus:       bus,
 	}
-	bus.Subscribe("interval.update", ic.onUpdate)
+	if bus != nil {
+		bus.Subscribe("interval.update", ic.onUpdate)
+	}
 	return ic
 }
 
