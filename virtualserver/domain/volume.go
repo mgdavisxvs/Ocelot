@@ -182,6 +182,9 @@ type VolumeSnapshot struct {
 	State       SnapshotState
 	DriverRef   string
 	SizeMiB     int64
+	// ChainHash is SHA256(DriverRef || prev.ChainHash) forming an append-only
+	// Merkle chain. Empty string for snapshots predating VS-F-K3.
+	ChainHash   string
 	CreatedAt   time.Time
 	CompletedAt *time.Time
 }

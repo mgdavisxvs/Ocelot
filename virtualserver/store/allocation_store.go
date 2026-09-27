@@ -165,6 +165,36 @@ func (s *VSStore) ReleaseAllocation(ctx context.Context, instanceID string) erro
 	return tx.Commit()
 }
 
+// ListActiveAllocations returns all unreleased allocations for a node,
+// ordered by ram_mib ascending (mirrors the AllocationHeap ordering).
+func (s *VSStore) ListActiveAllocations(ctx context.Context, nodeID string) ([]Allocation, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id,instance_id,node_id,cpu_threads,ram_mib,gpu_device_index,allocated_at
+		FROM virtualserver_allocations
+		WHERE node_id=? AND released_at IS NULL
+		ORDER BY ram_mib ASC`, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("list active allocations: %w", err)
+	}
+	defer rows.Close()
+	var allocs []Allocation
+	for rows.Next() {
+		var a Allocation
+		var gpuIdx sql.NullInt64
+		var allocatedAt int64
+		if err := rows.Scan(&a.ID, &a.InstanceID, &a.NodeID, &a.CPUThreads, &a.RAMMiB, &gpuIdx, &allocatedAt); err != nil {
+			return nil, err
+		}
+		if gpuIdx.Valid {
+			idx := int(gpuIdx.Int64)
+			a.GPUDeviceIndex = &idx
+		}
+		a.AllocatedAt = time.Unix(allocatedAt, 0)
+		allocs = append(allocs, a)
+	}
+	return allocs, rows.Err()
+}
+
 // GetActiveAllocation returns the active allocation for an instance.
 func (s *VSStore) GetActiveAllocation(ctx context.Context, instanceID string) (*Allocation, error) {
 	row := s.db.QueryRowContext(ctx, `

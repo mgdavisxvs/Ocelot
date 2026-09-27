@@ -353,7 +353,7 @@ func (s *VSStore) CreateSnapshot(ctx context.Context, snap domain.VolumeSnapshot
 // GetSnapshot retrieves a snapshot by ID.
 func (s *VSStore) GetSnapshot(ctx context.Context, id string) (*domain.VolumeSnapshot, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, volume_id, label, state, driver_ref, size_mib, created_at, completed_at
+		`SELECT id, volume_id, label, state, driver_ref, size_mib, chain_hash, created_at, completed_at
 		 FROM virtualserver_volume_snapshots WHERE id = ?`, id)
 	return scanSnapshot(row)
 }
@@ -361,7 +361,7 @@ func (s *VSStore) GetSnapshot(ctx context.Context, id string) (*domain.VolumeSna
 // ListSnapshots returns all snapshots for a volume.
 func (s *VSStore) ListSnapshots(ctx context.Context, volumeID string) ([]domain.VolumeSnapshot, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, volume_id, label, state, driver_ref, size_mib, created_at, completed_at
+		`SELECT id, volume_id, label, state, driver_ref, size_mib, chain_hash, created_at, completed_at
 		 FROM virtualserver_volume_snapshots WHERE volume_id = ? ORDER BY created_at DESC`, volumeID)
 	if err != nil {
 		return nil, fmt.Errorf("list snapshots: %w", err)
@@ -371,19 +371,39 @@ func (s *VSStore) ListSnapshots(ctx context.Context, volumeID string) ([]domain.
 }
 
 // UpdateSnapshotState finalizes a snapshot with its driver reference and size.
+// When transitioning to SnapshotReady, it appends the snapshot to the Merkle
+// chain by computing chain_hash = SHA256(driverRef || prev_chain_hash).
 func (s *VSStore) UpdateSnapshotState(ctx context.Context, id string, state domain.SnapshotState, driverRef string, sizeMiB int64) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
 	now := time.Now().Unix()
 	if state == domain.SnapshotReady {
+		// Fetch the volume_id for this snapshot so we can find the previous hash.
+		var volumeID string
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT volume_id FROM virtualserver_volume_snapshots WHERE id=?`, id,
+		).Scan(&volumeID); err != nil {
+			return fmt.Errorf("fetch snapshot volume: %w", err)
+		}
+		var prevHash string
+		s.db.QueryRowContext(ctx, //nolint:errcheck
+			`SELECT chain_hash FROM virtualserver_volume_snapshots
+			 WHERE volume_id=? AND state=? AND id != ?
+			 ORDER BY completed_at DESC LIMIT 1`,
+			volumeID, string(domain.SnapshotReady), id,
+		).Scan(&prevHash)
+
+		chainHash := computeChainHash(driverRef, prevHash)
 		_, err := s.db.ExecContext(ctx,
-			`UPDATE virtualserver_volume_snapshots SET state = ?, driver_ref = ?, size_mib = ?, completed_at = ? WHERE id = ?`,
-			string(state), driverRef, sizeMiB, now, id)
+			`UPDATE virtualserver_volume_snapshots
+			 SET state=?, driver_ref=?, size_mib=?, chain_hash=?, completed_at=?
+			 WHERE id=?`,
+			string(state), driverRef, sizeMiB, chainHash, now, id)
 		return err
 	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE virtualserver_volume_snapshots SET state = ? WHERE id = ?`,
+		`UPDATE virtualserver_volume_snapshots SET state=? WHERE id=?`,
 		string(state), id)
 	return err
 }
@@ -489,7 +509,7 @@ func scanSnapshot(row *sql.Row) (*domain.VolumeSnapshot, error) {
 	var snap domain.VolumeSnapshot
 	var createdAt int64
 	var completedAt sql.NullInt64
-	if err := row.Scan(&snap.ID, &snap.VolumeID, &snap.Label, &snap.State, &snap.DriverRef, &snap.SizeMiB, &createdAt, &completedAt); err != nil {
+	if err := row.Scan(&snap.ID, &snap.VolumeID, &snap.Label, &snap.State, &snap.DriverRef, &snap.SizeMiB, &snap.ChainHash, &createdAt, &completedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
 		}
@@ -509,7 +529,7 @@ func scanSnapshots(rows *sql.Rows) ([]domain.VolumeSnapshot, error) {
 		var snap domain.VolumeSnapshot
 		var createdAt int64
 		var completedAt sql.NullInt64
-		if err := rows.Scan(&snap.ID, &snap.VolumeID, &snap.Label, &snap.State, &snap.DriverRef, &snap.SizeMiB, &createdAt, &completedAt); err != nil {
+		if err := rows.Scan(&snap.ID, &snap.VolumeID, &snap.Label, &snap.State, &snap.DriverRef, &snap.SizeMiB, &snap.ChainHash, &createdAt, &completedAt); err != nil {
 			return nil, fmt.Errorf("scan snapshot row: %w", err)
 		}
 		snap.CreatedAt = time.Unix(createdAt, 0)

@@ -418,4 +418,12 @@ var migrations = []migration{
 		up: `ALTER TABLE virtualserver_nodes ADD COLUMN heartbeat_seq INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE virtualserver_nodes ADD COLUMN heartbeat_gaps INTEGER NOT NULL DEFAULT 0`,
 	},
+	{
+		// VS-F-K3: chain_hash extends the snapshot table with an append-only
+		// Merkle chain. Each snapshot's hash is SHA256(driver_ref || prev_hash),
+		// binding content identity to ordering; empty for pre-migration rows.
+		version:     21,
+		description: "snapshot_chain_hash",
+		up:          `ALTER TABLE virtualserver_volume_snapshots ADD COLUMN chain_hash TEXT NOT NULL DEFAULT ''`,
+	},
 }
