@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"math"
 
 	"github.com/mgdavisxvs/Ocelot/virtualserver/domain"
 )
@@ -33,12 +34,13 @@ func DefaultWeights() Weights {
 }
 
 // computeScore returns a placement score in [0,1] for a candidate node.
-func computeScore(n domain.Node, spec domain.ServiceSpec, catalog ArtifactCatalog, w Weights) float64 {
+// totalNodes is the full candidate pool size — used by the artifact entropy scorer.
+func computeScore(n domain.Node, spec domain.ServiceSpec, catalog ArtifactCatalog, w Weights, totalNodes int) float64 {
 	health := healthScore(n)
 	capacity := capacityFitScore(n, spec)
 	accel := acceleratorFitScore(n, spec)
 	locality := dataLocalityScore(n, spec)
-	artifact := artifactTransferScore(n, spec, catalog)
+	artifact := artifactTransferScore(n, spec, catalog, totalNodes)
 	preferred := preferredNodeScore(n, spec)
 
 	load := existingLoadPenaltyScore(n)
@@ -127,7 +129,17 @@ func dataLocalityScore(n domain.Node, spec domain.ServiceSpec) float64 {
 	return 0.0
 }
 
-func artifactTransferScore(n domain.Node, spec domain.ServiceSpec, catalog ArtifactCatalog) float64 {
+// artifactTransferScore returns a transfer cost penalty in [0, 1].
+// VS-F-S2: the penalty is scaled by H(p) — the Shannon binary entropy of the
+// availability fraction p = SeederCount/totalNodes — so rare artifacts impose
+// a higher penalty (entropy is low, p → 0, cost is high) and widely-available
+// artifacts impose a low penalty regardless of node selection.
+//
+//	penalty = H(p) * (1 - p)
+//
+// where H(p) = -p·log₂(p) - (1-p)·log₂(1-p).  H(p) ∈ [0,1]; the product
+// ensures penalty→0 as p→1 (artifact on every node, no transfer needed).
+func artifactTransferScore(n domain.Node, spec domain.ServiceSpec, catalog ArtifactCatalog, totalNodes int) float64 {
 	if catalog == nil {
 		return 0
 	}
@@ -135,10 +147,32 @@ func artifactTransferScore(n domain.Node, spec domain.ServiceSpec, catalog Artif
 		return 0
 	}
 	status, err := catalog.Lookup(context.Background(), spec.Artifact.InfoHash)
-	if err != nil || !status.Exists || !status.Available {
-		return 1.0 // penalty: artifact not available
+	if err != nil || !status.Exists {
+		return 1.0 // artifact unknown: maximum transfer cost
 	}
-	return 0.0 // no penalty: artifact available
+	if totalNodes <= 0 {
+		if !status.Available {
+			return 1.0
+		}
+		return 0.0
+	}
+	p := float64(status.SeederCount) / float64(totalNodes)
+	if p > 1.0 {
+		p = 1.0
+	}
+	return binaryEntropyPenalty(p)
+}
+
+// binaryEntropyPenalty returns H(p)·(1-p) where H(p) is Shannon binary entropy.
+// At p=0 → 0 (no seeders, unavoidable — max transfer cost signalled by caller).
+// At p=0.5 → 0.5 (moderate availability, moderate penalty).
+// At p=1.0 → 0 (fully available, no penalty).
+func binaryEntropyPenalty(p float64) float64 {
+	if p <= 0 || p >= 1 {
+		return 1 - p // 0→1 (max cost), 1→0 (no cost)
+	}
+	h := -p*math.Log2(p) - (1-p)*math.Log2(1-p) // ∈ (0,1]
+	return h * (1 - p)
 }
 
 func preferredNodeScore(n domain.Node, spec domain.ServiceSpec) float64 {

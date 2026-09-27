@@ -47,7 +47,7 @@ func (s *Scheduler) Schedule(ctx context.Context, m domain.ServiceManifest, node
 			continue
 		}
 		// Pass all hard constraints — score this node
-		score := computeScore(n, spec, catalog, s.weights)
+		score := computeScore(n, spec, catalog, s.weights, len(nodes))
 		candidates = append(candidates, scoredNode{node: n, score: score})
 	}
 

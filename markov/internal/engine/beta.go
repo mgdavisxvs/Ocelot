@@ -9,6 +9,49 @@ import (
 	"github.com/mgdavisxvs/ocelot/markov/internal/db"
 )
 
+// BetaUpdateFn is a pure prior-update function for the Beta-Binomial model.
+// F-C4: elevating the update rule to a first-class function makes it injectable,
+// testable in isolation, and replaceable (e.g., with a decay-weighted variant)
+// without touching BetaEngine internals.
+//
+// Given the current (alpha, beta) prior and whether the observation is a
+// success, it returns the updated (alpha, beta) posterior.
+type BetaUpdateFn func(alpha, beta float64, success bool) (newAlpha, newBeta float64)
+
+// StandardBetaUpdate returns α+1 on success, β+1 on failure — the canonical
+// Beta-Binomial conjugate update with a Beta(1,1) uniform prior.
+func StandardBetaUpdate(alpha, beta float64, success bool) (float64, float64) {
+	if success {
+		return alpha + 1, beta
+	}
+	return alpha, beta + 1
+}
+
+// DecayBetaUpdate returns a BetaUpdateFn that applies an exponential decay
+// factor d ∈ (0,1] to (α, β) before adding the new observation. This reduces
+// the influence of stale data while preserving the prior shape. d = 1.0 is
+// equivalent to StandardBetaUpdate.
+func DecayBetaUpdate(d float64) BetaUpdateFn {
+	if d <= 0 || d > 1 {
+		d = 1.0
+	}
+	return func(alpha, beta float64, success bool) (float64, float64) {
+		a := alpha * d
+		b := beta * d
+		// Maintain the Beta(1,1) floor so the prior never collapses to (0,0).
+		if a < 1 {
+			a = 1
+		}
+		if b < 1 {
+			b = 1
+		}
+		if success {
+			return a + 1, b
+		}
+		return a, b + 1
+	}
+}
+
 // BetaEngine tracks per-(user, torrent) upload reliability using a Beta-Binomial model.
 // Success event: seeder peer has leechers present AND uploaded > threshold.
 // E[p] = α/(α+β); global reliability = Σα / Σ(α+β) across all user torrents.
@@ -17,6 +60,7 @@ type BetaEngine struct {
 	alpha    map[peerKey]float64
 	betaVal  map[peerKey]float64
 	obsCount map[peerKey]int
+	updateFn BetaUpdateFn // injectable pure update function
 }
 
 func newBetaEngine() *BetaEngine {
@@ -24,7 +68,17 @@ func newBetaEngine() *BetaEngine {
 		alpha:    make(map[peerKey]float64),
 		betaVal:  make(map[peerKey]float64),
 		obsCount: make(map[peerKey]int),
+		updateFn: StandardBetaUpdate,
 	}
+}
+
+// WithUpdateFn replaces the prior-update function. Must be called before any
+// observations are recorded (not safe to call concurrently with observe).
+func (b *BetaEngine) WithUpdateFn(fn BetaUpdateFn) *BetaEngine {
+	if fn != nil {
+		b.updateFn = fn
+	}
+	return b
 }
 
 // loadFromDB restores Beta state from peer_quality table on startup.
@@ -56,11 +110,8 @@ func (b *BetaEngine) observe(peers []db.PeerRow, leechersByTorrent map[int64]int
 			b.alpha[k] = 1.0 // Beta(1,1) uniform prior
 			b.betaVal[k] = 1.0
 		}
-		if p.Uploaded > thresholdBytes {
-			b.alpha[k]++
-		} else {
-			b.betaVal[k]++
-		}
+		success := p.Uploaded > thresholdBytes
+		b.alpha[k], b.betaVal[k] = b.updateFn(b.alpha[k], b.betaVal[k], success)
 		b.obsCount[k]++
 	}
 }
