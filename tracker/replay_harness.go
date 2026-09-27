@@ -132,51 +132,67 @@ func (h *ReplayHarness) Len() int { return len(h.records) }
 
 // WriteTo serializes all records to w in a length-prefixed JSON binary format.
 // Each frame: 4-byte magic | 4-byte big-endian JSON length | JSON payload.
-func (h *ReplayHarness) WriteTo(w io.Writer) error {
+// Implements io.WriterTo.
+func (h *ReplayHarness) WriteTo(w io.Writer) (int64, error) {
+	var total int64
 	for i := range h.records {
 		payload, err := json.Marshal(&h.records[i])
 		if err != nil {
-			return fmt.Errorf("marshal record %d: %w", i, err)
+			return total, fmt.Errorf("marshal record %d: %w", i, err)
 		}
-		if _, err := w.Write(recordMagic[:]); err != nil {
-			return err
+		n, err := w.Write(recordMagic[:])
+		total += int64(n)
+		if err != nil {
+			return total, err
 		}
 		var lenBuf [4]byte
 		binary.BigEndian.PutUint32(lenBuf[:], uint32(len(payload)))
-		if _, err := w.Write(lenBuf[:]); err != nil {
-			return err
+		n, err = w.Write(lenBuf[:])
+		total += int64(n)
+		if err != nil {
+			return total, err
 		}
-		if _, err := w.Write(payload); err != nil {
-			return err
+		n, err = w.Write(payload)
+		total += int64(n)
+		if err != nil {
+			return total, err
 		}
 	}
-	return nil
+	return total, nil
 }
 
 // ReadFrom deserializes records written by WriteTo into h (appends to existing).
-func (h *ReplayHarness) ReadFrom(r io.Reader) error {
+// Implements io.ReaderFrom.
+func (h *ReplayHarness) ReadFrom(r io.Reader) (int64, error) {
+	var total int64
 	var magic [4]byte
 	var lenBuf [4]byte
 	for {
-		if _, err := io.ReadFull(r, magic[:]); err == io.EOF {
-			return nil
+		n, err := io.ReadFull(r, magic[:])
+		total += int64(n)
+		if err == io.EOF || err == io.ErrUnexpectedEOF && n == 0 {
+			return total, nil
 		} else if err != nil {
-			return fmt.Errorf("read magic: %w", err)
+			return total, fmt.Errorf("read magic: %w", err)
 		}
 		if magic != recordMagic {
-			return fmt.Errorf("invalid record magic: %x", magic)
+			return total, fmt.Errorf("invalid record magic: %x", magic)
 		}
-		if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
-			return fmt.Errorf("read length: %w", err)
+		n, err = io.ReadFull(r, lenBuf[:])
+		total += int64(n)
+		if err != nil {
+			return total, fmt.Errorf("read length: %w", err)
 		}
-		n := binary.BigEndian.Uint32(lenBuf[:])
-		buf := make([]byte, n)
-		if _, err := io.ReadFull(r, buf); err != nil {
-			return fmt.Errorf("read payload: %w", err)
+		payloadLen := binary.BigEndian.Uint32(lenBuf[:])
+		buf := make([]byte, payloadLen)
+		n, err = io.ReadFull(r, buf)
+		total += int64(n)
+		if err != nil {
+			return total, fmt.Errorf("read payload: %w", err)
 		}
 		var rec AnnounceRecord
 		if err := json.Unmarshal(buf, &rec); err != nil {
-			return fmt.Errorf("unmarshal record: %w", err)
+			return total, fmt.Errorf("unmarshal record: %w", err)
 		}
 		h.records = append(h.records, rec)
 	}
@@ -268,11 +284,11 @@ func marshalRequestForLog(req *AnnounceRequest) []byte {
 // harness through a bytes.Buffer, verifying the binary codec is symmetric.
 func roundTripBytes(h *ReplayHarness) (*ReplayHarness, error) {
 	var buf bytes.Buffer
-	if err := h.WriteTo(&buf); err != nil {
+	if _, err := h.WriteTo(&buf); err != nil {
 		return nil, err
 	}
 	h2 := NewReplayHarness(nil)
-	if err := h2.ReadFrom(&buf); err != nil {
+	if _, err := h2.ReadFrom(&buf); err != nil {
 		return nil, err
 	}
 	return h2, nil

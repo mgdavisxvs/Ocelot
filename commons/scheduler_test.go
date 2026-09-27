@@ -175,7 +175,8 @@ func TestEstimatedCostPositive(t *testing.T) {
 }
 
 func TestWhyDidWorkloadRunHere(t *testing.T) {
-	cc := &ComputeCommons{prices: DefaultPriceTable(), metrics: DefaultMetrics}
+	cc := &ComputeCommons{metrics: DefaultMetrics}
+	cc.prices.Store(DefaultPriceTable())
 	dec := &AllocationDecision{
 		Accepted:         true,
 		AllocationReason: "priority:P2_STANDARD budget_ok",

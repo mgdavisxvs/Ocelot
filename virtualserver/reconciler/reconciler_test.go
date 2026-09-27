@@ -225,6 +225,18 @@ func (m *mockStore) ListInstancesByService(_ context.Context, serviceID int64) (
 
 func (m *mockStore) DeleteVolume(_ context.Context, _ string) error { return nil }
 
+func (m *mockStore) AppendOperationEvent(_ context.Context, _, _, _ string, _ map[string]interface{}) error {
+	return nil
+}
+
+func (m *mockStore) IncrementVolumeRetryCount(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+
+func (m *mockStore) ListInstanceOperations(_ context.Context, _ string) ([]domain.Operation, error) {
+	return nil, nil
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newTestService(runtime string) *domain.Service {

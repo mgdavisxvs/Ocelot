@@ -229,6 +229,10 @@ func (s *testStore) ListInstanceOperations(_ context.Context, _ string) ([]domai
 	return nil, nil
 }
 
+func (s *testStore) ListHealthObservations(_ context.Context, _ string) ([]domain.HealthObservation, error) {
+	return nil, nil
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 const testAdminKey = "test-secret-key"

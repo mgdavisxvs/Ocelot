@@ -169,7 +169,8 @@ func TestEndToEndAnnounceLifecycle(t *testing.T) {
 	}
 
 	// ── 10. WhyDidWorkloadRunHere explanation ─────────────────────────────────
-	cc := &ComputeCommons{prices: pt, metrics: DefaultMetrics}
+	cc := &ComputeCommons{metrics: DefaultMetrics}
+	cc.prices.Store(pt)
 	why := cc.WhyDidWorkloadRunHere(leecherID, seederID, torrentID, dec)
 	if why == "" {
 		t.Fatal("why explanation must not be empty")
