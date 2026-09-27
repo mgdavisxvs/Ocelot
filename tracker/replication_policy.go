@@ -8,11 +8,14 @@ import (
 // ReplicationConfig holds all tunable parameters for the replication policy.
 // All fields are configurable at runtime; none are hardcoded.
 type ReplicationConfig struct {
-	// EMA smoothing factor for popularity-based replica scaling.
-	// α = 1/(1 + τ/Δt) where τ is the characteristic demand decay time
-	// and Δt is the evaluation period. Default 0.3 is reasonable to start;
-	// calibrate from the autocorrelation of D_24h over 30 days of real data.
+	// EMAAlpha (α) is the level smoothing factor for Holt double-exponential smoothing.
+	// α = 1/(1 + τ/Δt). Default 0.3; calibrate from 30 days of D_24h autocorrelation.
 	EMAAlpha float64 `yaml:"ema_alpha"`
+
+	// HoltTrendAlpha (β) is the trend smoothing factor. A positive β (0.1–0.3)
+	// allows the forecaster to react to sustained demand spikes faster than a
+	// pure EMA. Set to 0 to disable trend tracking (degenerates to simple EMA).
+	HoltTrendAlpha float64 `yaml:"holt_trend_alpha"`
 
 	// ScaleDownThreshold is the number of consecutive evaluation periods
 	// where desired < current before a scale-down is applied.
@@ -32,6 +35,7 @@ type ReplicationConfig struct {
 // DefaultReplicationConfig is the baseline configuration.
 var DefaultReplicationConfig = ReplicationConfig{
 	EMAAlpha:             0.3,
+	HoltTrendAlpha:       0.1,
 	ScaleDownThreshold:   3,
 	PartitionPolicy:      "replicate_in_majority",
 	HeartbeatIntervalSec: 30,
@@ -50,7 +54,8 @@ var DefaultReplicationConfig = ReplicationConfig{
 // replica deletion.
 type PopularityReplicaCounter struct {
 	mu             sync.Mutex
-	smoothed       float64
+	level          float64 // Holt level (smoothed demand)
+	trend          float64 // Holt trend (smoothed rate of change)
 	currentDesired int
 	belowCount     int
 	cfg            ReplicationConfig
@@ -66,11 +71,20 @@ func (p *PopularityReplicaCounter) Evaluate(d24h float64, minReplicas, maxReplic
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// EMA smoothing
-	p.smoothed = p.cfg.EMAAlpha*d24h + (1-p.cfg.EMAAlpha)*p.smoothed
+	// Holt double-exponential smoothing: separates level and trend so sustained
+	// demand ramps are tracked faster than a simple EMA allows.
+	α := p.cfg.EMAAlpha
+	β := p.cfg.HoltTrendAlpha
+	prevLevel := p.level
+	p.level = α*d24h + (1-α)*(p.level+p.trend)
+	p.trend = β*(p.level-prevLevel) + (1-β)*p.trend
+	forecast := p.level + p.trend
+	if forecast < 0 {
+		forecast = 0
+	}
 
-	// Log-scaled desired count
-	desired := minReplicas + int(math.Ceil(math.Log2(1+p.smoothed)))
+	// Log-scaled desired count from the one-step-ahead forecast.
+	desired := minReplicas + int(math.Ceil(math.Log2(1+forecast)))
 	if desired > maxReplicas {
 		desired = maxReplicas
 	}

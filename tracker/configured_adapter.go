@@ -105,6 +105,7 @@ func (a *ConfiguredAdapter) parseBencodeEvent(req *http.Request, opts ClientOpts
 
 	numwant := int32(parseInt64(params.Get("numwant")))
 	compact := params.Get("compact") == "1"
+	noPeerID := params.Get("no_peer_id") == "1"
 
 	var ip net.IP
 	if ipParam := params.Get("ip"); ipParam != "" {
@@ -131,6 +132,7 @@ func (a *ConfiguredAdapter) parseBencodeEvent(req *http.Request, opts ClientOpts
 		NumWant:   numwant,
 		Compact:   compact,
 		UserAgent: opts.UserAgent,
+		NoPeerID:  noPeerID,
 	}, nil
 }
 
@@ -320,6 +322,7 @@ func EventToAnnounceRequest(e *DomainEvent, v *VocabularyConfig) *AnnounceReques
 		Event:      eventStr,
 		IP:         e.IP,
 		NumWant:    e.NumWant,
+		NoPeerID:   e.NoPeerID,
 	}
 }
 

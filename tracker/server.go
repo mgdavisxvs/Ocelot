@@ -639,6 +639,7 @@ type SiteCommInterface interface {
 	ExpireToken(torrentID TorrentID, userID UserID)
 	NotifyFreeleech(torrentID int64, hours int) error
 	GrantFreeleech(torrentID TorrentID)
+	RevokeFreeleech(torrentID TorrentID)
 	ReportAnomaly(userID int64, score float64) error
 	UpdateStats(seeders, leechers, completed int64) error
 	BanUser(userID int64) error

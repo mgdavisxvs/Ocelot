@@ -218,6 +218,11 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
+// Emit Content-Security-Policy and companion security headers on every request.
+// Must run after session_start() (nonce is bound to the request, not the session)
+// and before any output (headers must precede body bytes).
+send_csp_headers();
+
 // ---------------------------------------------------------------------------
 // CSRF protection (FV-06)
 //
@@ -304,4 +309,50 @@ function requireAuth() {
 
 function isAuthenticated() {
     return isset($_SESSION['authenticated']) && $_SESSION['authenticated'] === true;
+}
+
+// ---------------------------------------------------------------------------
+// Content Security Policy (Solution #8)
+//
+// A per-request nonce is generated once and embedded in both the CSP header
+// and every inline <script nonce="..."> tag.  'strict-dynamic' propagates the
+// nonce to scripts loaded by trusted inline code, so the allow-list does not
+// need to name every CDN origin explicitly.
+//
+// Calling send_csp_headers() is idempotent within one request; the nonce is
+// minted once via a static variable.
+// ---------------------------------------------------------------------------
+
+/** Per-request CSP nonce, minted once and reused for the lifetime of the request. */
+function csp_nonce(): string
+{
+    static $nonce = null;
+    if ($nonce === null) {
+        $nonce = base64_encode(random_bytes(16));
+    }
+    return $nonce;
+}
+
+/**
+ * Emit security headers including Content-Security-Policy.
+ * Call once per request, after session_start() and before any output.
+ */
+function send_csp_headers(): void
+{
+    $nonce = csp_nonce();
+    $csp = implode('; ', [
+        "default-src 'self'",
+        "script-src 'self' 'nonce-{$nonce}' 'strict-dynamic'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data:",
+        "connect-src 'self'",
+        "font-src 'self'",
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+    ]);
+    header("Content-Security-Policy: {$csp}");
+    header("X-Frame-Options: DENY");
+    header("X-Content-Type-Options: nosniff");
+    header("Referrer-Policy: same-origin");
 }

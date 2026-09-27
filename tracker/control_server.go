@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,6 +21,9 @@ type ControlServer struct {
 	config  *Config
 	httpSrv *http.Server
 	ext     *ControlServerExt // optional swarm-coordination layer; nil when unused
+
+	paused   atomic.Bool // true while new announces are refused
+	draining atomic.Bool // true while the tracker drains existing connections
 }
 
 func NewControlServer(config *Config, worker *Worker) *ControlServer {
@@ -38,6 +42,11 @@ func NewControlServer(config *Config, worker *Worker) *ControlServer {
 	mux.HandleFunc("/api/v1/stats", cs.authMiddleware(cs.handleAPIStats))
 	// Peers (GET only)
 	mux.HandleFunc("/api/v1/peers", cs.authMiddleware(cs.handleAPIPeers))
+	// Tracker lifecycle control
+	mux.HandleFunc("/api/v1/tracker/pause",  cs.authMiddleware(cs.handleTrackerPause))
+	mux.HandleFunc("/api/v1/tracker/resume", cs.authMiddleware(cs.handleTrackerResume))
+	mux.HandleFunc("/api/v1/tracker/drain",  cs.authMiddleware(cs.handleTrackerDrain))
+	mux.HandleFunc("/api/v1/tracker/status", cs.authMiddleware(cs.handleTrackerStatus))
 
 	cs.httpSrv = &http.Server{
 		Addr:         config.ControlAddr,
@@ -400,6 +409,58 @@ func (cs *ControlServer) handleAPIPeers(w http.ResponseWriter, r *http.Request) 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(data)
+}
+
+// ── /api/v1/tracker lifecycle ─────────────────────────────────────────────────
+
+// IsPaused returns true when the tracker has been administratively paused.
+func (cs *ControlServer) IsPaused() bool { return cs.paused.Load() }
+
+// IsDraining returns true when the tracker is in drain mode.
+func (cs *ControlServer) IsDraining() bool { return cs.draining.Load() }
+
+func (cs *ControlServer) handleTrackerPause(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	cs.paused.Store(true)
+	cs.draining.Store(false)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "paused"})
+}
+
+func (cs *ControlServer) handleTrackerResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	cs.paused.Store(false)
+	cs.draining.Store(false)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "running"})
+}
+
+func (cs *ControlServer) handleTrackerDrain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	cs.draining.Store(true)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "draining"})
+}
+
+func (cs *ControlServer) handleTrackerStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	state := "running"
+	if cs.draining.Load() {
+		state = "draining"
+	}
+	if cs.paused.Load() {
+		state = "paused"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": state})
 }
 
 func queryIntHTTP(r *http.Request, key string, defaultVal int) int {

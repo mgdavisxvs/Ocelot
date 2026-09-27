@@ -9,7 +9,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// RedisBackend provides Redis-based shared state for multi-instance deployment
+// RedisBackend provides Redis-based shared state for multi-instance deployment.
+// CAP tradeoff: AP semantics (availability + partition tolerance). Under a network
+// partition, peer counts across instances may diverge by up to one flush interval
+// (~30 s). Use a Raft-backed store if CP semantics are required.
 type RedisBackend struct {
 	client  *redis.Client
 	ctx     context.Context

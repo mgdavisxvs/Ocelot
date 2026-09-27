@@ -480,18 +480,20 @@ func (w *Worker) updateOK() ([]byte, error) {
 
 // StatsResponse contains live tracker statistics for JSON API
 type StatsResponse struct {
-	Uptime        string `json:"uptime"`
-	UptimeSeconds int64  `json:"uptime_seconds"`
-	TorrentCount  int    `json:"torrent_count"`
-	UserCount     int    `json:"user_count"`
-	Seeders       uint32 `json:"seeders"`
-	Leechers      uint32 `json:"leechers"`
-	Connections   uint32 `json:"connections"`
-	Announcements uint64 `json:"announcements"`
-	SuccAnnounces uint64 `json:"successful_announces"`
-	Scrapes       uint64 `json:"scrapes"`
-	BytesRead     uint64 `json:"bytes_read"`
-	BytesWritten  uint64 `json:"bytes_written"`
+	Uptime            string `json:"uptime"`
+	UptimeSeconds     int64  `json:"uptime_seconds"`
+	TorrentCount      int    `json:"torrent_count"`
+	UserCount         int    `json:"user_count"`
+	Seeders           uint32 `json:"seeders"`
+	Leechers          uint32 `json:"leechers"`
+	Connections       uint32 `json:"connections"`
+	Announcements     uint64 `json:"announcements"`
+	SuccAnnounces     uint64 `json:"successful_announces"`
+	Scrapes           uint64 `json:"scrapes"`
+	BytesRead         uint64 `json:"bytes_read"`
+	BytesWritten      uint64 `json:"bytes_written"`
+	ClientRejections  uint64 `json:"client_rejections"`
+	AnomalyRejections uint64 `json:"anomaly_rejections"`
 }
 
 // GetStats returns current tracker statistics as JSON
@@ -499,18 +501,20 @@ func (w *Worker) GetStats() ([]byte, error) {
 	uptime := time.Since(w.Stats.StartTime)
 
 	stats := StatsResponse{
-		Uptime:        uptime.Round(time.Second).String(),
-		UptimeSeconds: int64(uptime.Seconds()),
-		TorrentCount:  w.Torrents.Size(),
-		UserCount:     w.Users.Size(),
-		Seeders:       w.Stats.Seeders.Load(),
-		Leechers:      w.Stats.Leechers.Load(),
-		Connections:   w.Stats.OpenConnections.Load(),
-		Announcements: w.Stats.Announcements.Load(),
-		SuccAnnounces: w.Stats.SuccAnnouncements.Load(),
-		Scrapes:       w.Stats.Scrapes.Load(),
-		BytesRead:     w.Stats.BytesRead.Load(),
-		BytesWritten:  w.Stats.BytesWritten.Load(),
+		Uptime:            uptime.Round(time.Second).String(),
+		UptimeSeconds:     int64(uptime.Seconds()),
+		TorrentCount:      w.Torrents.Size(),
+		UserCount:         w.Users.Size(),
+		Seeders:           w.Stats.Seeders.Load(),
+		Leechers:          w.Stats.Leechers.Load(),
+		Connections:       w.Stats.OpenConnections.Load(),
+		Announcements:     w.Stats.Announcements.Load(),
+		SuccAnnounces:     w.Stats.SuccAnnouncements.Load(),
+		Scrapes:           w.Stats.Scrapes.Load(),
+		BytesRead:         w.Stats.BytesRead.Load(),
+		BytesWritten:      w.Stats.BytesWritten.Load(),
+		ClientRejections:  w.Stats.ClientRejections.Load(),
+		AnomalyRejections: w.Stats.AnomalyRejections.Load(),
 	}
 
 	return json.Marshal(stats)

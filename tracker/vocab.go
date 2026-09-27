@@ -188,6 +188,9 @@ func (v *VocabularyConfig) Validate() error {
 	if v.WireFormat.Format == "" {
 		v.WireFormat.Format = "json"
 	}
+	if v.WireFormat.Format != "bencode" && v.WireFormat.Format != "json" {
+		return fmt.Errorf("vocab: wire_format must be \"bencode\" or \"json\", got %q", v.WireFormat.Format)
+	}
 	if v.Metrics.DomainLabel == "" {
 		v.Metrics.DomainLabel = v.Domain
 	}

@@ -31,7 +31,15 @@ typedef struct {
 	std::string ip;
 } peer;
 
-typedef std::map<std::string, peer> peer_list;
+// FNV-1a hash for 20-byte peer_id strings; O(1) average vs O(log n) std::map.
+struct PeerHash {
+	size_t operator()(const std::string& s) const noexcept {
+		size_t h = 14695981039346656037ULL;
+		for (unsigned char c : s) h = (h ^ c) * 1099511628211ULL;
+		return h;
+	}
+};
+typedef std::unordered_map<std::string, peer, PeerHash> peer_list;
 
 enum freetype { NORMAL, FREE, NEUTRAL };
 

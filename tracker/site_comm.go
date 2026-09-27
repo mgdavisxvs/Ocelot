@@ -107,6 +107,14 @@ func (g *GazelleSiteComm) GrantFreeleech(torrentID TorrentID) {
 	_ = g.post(params)
 }
 
+func (g *GazelleSiteComm) RevokeFreeleech(torrentID TorrentID) {
+	params := url.Values{
+		"action":    {"revoke_freeleech"},
+		"torrentid": {fmt.Sprintf("%d", torrentID)},
+	}
+	_ = g.post(params)
+}
+
 func (g *GazelleSiteComm) post(params url.Values) error {
 	params.Set("password", g.password)
 	var lastErr error
@@ -167,4 +175,8 @@ func (n *NoOpSiteComm) UnbanUser(userID int64) error {
 
 func (n *NoOpSiteComm) GrantFreeleech(torrentID TorrentID) {
 	log.Printf("site_comm (noop): grant_freeleech torrent=%d", torrentID)
+}
+
+func (n *NoOpSiteComm) RevokeFreeleech(torrentID TorrentID) {
+	log.Printf("site_comm (noop): revoke_freeleech torrent=%d", torrentID)
 }

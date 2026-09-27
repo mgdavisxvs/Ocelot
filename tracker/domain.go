@@ -56,6 +56,7 @@ type DomainEvent struct {
 	NumWant     int32     // how many peers to return
 	Compact     bool      // BEP-23 compact flag; ignored for JSON domains
 	UserAgent   string    // HTTP User-Agent header
+	NoPeerID    bool      // BEP-31: suppress peer_id in response peer list
 }
 
 // Participant is the generic equivalent of Peer.

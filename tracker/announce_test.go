@@ -82,6 +82,7 @@ func (m *mockSiteComm) BanUser(_ int64) error                       { return nil
 func (m *mockSiteComm) UnbanUser(_ int64) error                     { return nil }
 func (m *mockSiteComm) NotifyFreeleech(_ int64, _ int) error        { return nil }
 func (m *mockSiteComm) GrantFreeleech(_ TorrentID)                  {}
+func (m *mockSiteComm) RevokeFreeleech(_ TorrentID)                 {}
 func (m *mockSiteComm) ReportAnomaly(_ int64, _ float64) error      { return nil }
 func (m *mockSiteComm) UpdateStats(_ int64, _ int64, _ int64) error { return nil }
 

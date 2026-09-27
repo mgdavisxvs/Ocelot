@@ -10,15 +10,19 @@ import (
 
 // FreeleechActuator listens for freeleech.recommended events and calls
 // SiteComm.GrantFreeleech() when the priority score exceeds the threshold.
+// It also revokes freeleech when the 72-hour death probability drops below
+// revokeThreshold, indicating the torrent has become dormant.
 type FreeleechActuator struct {
 	siteComm SiteCommInterface
 	bus      *Bus
 
-	mu        sync.Mutex
-	lastGrant map[TorrentID]time.Time // prevent re-granting within cooldown
+	mu              sync.Mutex
+	lastGrant       map[TorrentID]time.Time // prevent re-granting within cooldown
+	activeGrants    map[TorrentID]bool       // tracks which torrents have active grants
 
-	scoreThreshold float64
-	cooldown       time.Duration
+	scoreThreshold  float64
+	revokeThreshold float64
+	cooldown        time.Duration
 }
 
 // defaultFreeleechThreshold is used when FREELEECH_THRESHOLD env var is not set.
@@ -34,11 +38,13 @@ func NewFreeleechActuator(bus *Bus, siteComm SiteCommInterface) *FreeleechActuat
 	}
 
 	fa := &FreeleechActuator{
-		siteComm:       siteComm,
-		bus:            bus,
-		lastGrant:      make(map[TorrentID]time.Time),
-		scoreThreshold: threshold,
-		cooldown:       6 * time.Hour,
+		siteComm:        siteComm,
+		bus:             bus,
+		lastGrant:       make(map[TorrentID]time.Time),
+		activeGrants:    make(map[TorrentID]bool),
+		scoreThreshold:  threshold,
+		revokeThreshold: 0.25,
+		cooldown:        6 * time.Hour,
 	}
 	bus.Subscribe("freeleech.recommended", fa.onRecommended)
 	return fa
@@ -50,19 +56,31 @@ func (fa *FreeleechActuator) onRecommended(e Event) {
 		return
 	}
 
+	fa.mu.Lock()
+	defer fa.mu.Unlock()
+
+	// Revoke if the torrent has become dormant and we hold an active grant.
+	if fa.activeGrants[ev.TorrentID] && ev.DeadProb72h <= fa.revokeThreshold {
+		fa.siteComm.RevokeFreeleech(ev.TorrentID)
+		delete(fa.activeGrants, ev.TorrentID)
+		delete(fa.lastGrant, ev.TorrentID)
+		fa.bus.Publish(NewFreeleechRevokedEvent(ev.TraceID(), ev.TorrentID))
+		log.Printf("freeleech_actuator: revoked freeleech torrent=%d dead72h=%.3f",
+			ev.TorrentID, ev.DeadProb72h)
+		return
+	}
+
 	if ev.PriorityScore < fa.scoreThreshold {
 		return
 	}
 
 	// Check cooldown to avoid redundant grants.
-	fa.mu.Lock()
 	last, exists := fa.lastGrant[ev.TorrentID]
 	if exists && time.Since(last) < fa.cooldown {
-		fa.mu.Unlock()
 		return
 	}
 	fa.lastGrant[ev.TorrentID] = time.Now()
-	fa.mu.Unlock()
+	fa.activeGrants[ev.TorrentID] = true
 
 	fa.siteComm.GrantFreeleech(ev.TorrentID)
 	fa.bus.Publish(NewFreeleechGrantedEvent(ev.TraceID(), ev.TorrentID))

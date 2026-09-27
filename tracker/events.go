@@ -213,6 +213,19 @@ func NewFreeleechGrantedEvent(traceID string, torrentID TorrentID) *FreeleechGra
 	}
 }
 
+// FreeleechRevokedEvent is published when the actuator revokes an active freeleech grant.
+type FreeleechRevokedEvent struct {
+	baseEvent
+	TorrentID TorrentID
+}
+
+func NewFreeleechRevokedEvent(traceID string, torrentID TorrentID) *FreeleechRevokedEvent {
+	return &FreeleechRevokedEvent{
+		baseEvent: newBase("freeleech.revoked", traceID),
+		TorrentID: torrentID,
+	}
+}
+
 // ── interval.* ───────────────────────────────────────────────────────────────
 
 // IntervalUpdateEvent is published when Markov computes a recommended interval for a torrent.

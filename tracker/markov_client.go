@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+
 // markovCandidate mirrors the JSON shape returned by the Markov engine's
 // GET /freeleech endpoint.
 type markovCandidate struct {
@@ -24,6 +25,16 @@ type markovMetrics struct {
 	PollCount       int64 `json:"poll_count"`
 }
 
+// MarkovConfig holds configuration for the Markov engine client.
+type MarkovConfig struct {
+	// BaseURL is the HTTP base URL for the Markov sidecar (e.g. "http://127.0.0.1:9090").
+	BaseURL string
+	// PageRankDamping is the damping factor d used in the seeder PageRank formula:
+	// PR(v) = (1-d) + d * Σ PR(u)/L(u). Must be in (0, 1); values ≥ 1.0 cause
+	// divergence on zero-out-degree (dead torrent) nodes.
+	PageRankDamping float64
+}
+
 // MarkovClient is a thin HTTP client for the Markov engine API.
 type MarkovClient struct {
 	baseURL string
@@ -38,6 +49,20 @@ func NewMarkovClient(baseURL string) *MarkovClient {
 			Timeout: 5 * time.Second,
 		},
 	}
+}
+
+// NewMarkovClientWithConfig creates a client from a MarkovConfig, validating the
+// PageRankDamping factor. Returns an error if damping >= 1.0.
+func NewMarkovClientWithConfig(cfg MarkovConfig) (*MarkovClient, error) {
+	if cfg.PageRankDamping != 0 && cfg.PageRankDamping >= 1.0 {
+		return nil, fmt.Errorf("markov: PageRankDamping must be < 1.0, got %.4f", cfg.PageRankDamping)
+	}
+	return &MarkovClient{
+		baseURL: cfg.BaseURL,
+		http: &http.Client{
+			Timeout: 5 * time.Second,
+		},
+	}, nil
 }
 
 // FreeleechCandidates calls GET /freeleech and returns the candidate list.
