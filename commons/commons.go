@@ -64,6 +64,14 @@ func (c *ComputeCommons) SettleAnnounce(stats *AnnounceStats) error {
 	pt := c.prices
 	c.mu.RUnlock()
 
+	// D-G4: FreeType contract — a freeleech torrent must never incur a download
+	// charge regardless of what EffectiveDownloaded was set to by the caller.
+	// Zero it here as a defensive invariant so callers cannot accidentally charge
+	// leechers on freeleech torrents even if they forget to clear the field.
+	if stats.FreeType {
+		stats.EffectiveDownloaded = 0
+	}
+
 	// ── Upload credit (seeder earns CC) ───────────────────────────────────────
 	if stats.EffectiveUploaded > 0 {
 		credit := pt.CreditForUpload(stats.EffectiveUploaded, stats.Seeders, stats.Leechers)

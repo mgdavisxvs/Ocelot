@@ -18,10 +18,14 @@ type markovCandidate struct {
 
 // markovMetrics mirrors the JSON shape returned by GET /metrics.
 type markovMetrics struct {
-	TrackedPeers    int64 `json:"tracked_peers"`
-	TrackedTorrents int64 `json:"tracked_torrents"`
-	TrackedUsers    int64 `json:"tracked_users"`
-	PollCount       int64 `json:"poll_count"`
+	TrackedPeers    int64   `json:"tracked_peers"`
+	TrackedTorrents int64   `json:"tracked_torrents"`
+	TrackedUsers    int64   `json:"tracked_users"`
+	PollCount       int64   `json:"poll_count"`
+	// Convergence distances from StationaryDistance() — near-zero means converged (F-G2).
+	ConvergencePeer     float64 `json:"convergence_peer"`
+	ConvergenceUser     float64 `json:"convergence_user"`
+	ConvergenceTorrent  float64 `json:"convergence_torrent"`
 }
 
 // MarkovClient is a thin HTTP client for the Markov engine API.

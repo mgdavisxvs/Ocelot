@@ -155,6 +155,9 @@ type Volume struct {
 	BoundNodeID   string
 	DriverHandle  map[string]string
 	FailureReason string
+	// RetryCount tracks how many times provisioning has been re-attempted
+	// after a failure. The reconciler stops retrying at maxVolumeRetries (VS-D-T3).
+	RetryCount    int
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }

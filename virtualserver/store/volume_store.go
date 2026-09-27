@@ -59,7 +59,7 @@ func (s *VSStore) CreateVolume(ctx context.Context, v domain.Volume) (string, er
 // GetVolume retrieves a volume by its UUID.
 func (s *VSStore) GetVolume(ctx context.Context, id string) (*domain.Volume, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, manifest_json, state, bound_node_id, driver_handle, failure_reason, created_at, updated_at
+		`SELECT id, manifest_json, state, bound_node_id, driver_handle, failure_reason, retry_count, created_at, updated_at
 		 FROM virtualserver_volumes WHERE id = ?`, id)
 	return scanVolume(row)
 }
@@ -67,7 +67,7 @@ func (s *VSStore) GetVolume(ctx context.Context, id string) (*domain.Volume, err
 // GetVolumeByName retrieves a volume by namespace+name.
 func (s *VSStore) GetVolumeByName(ctx context.Context, namespace, name string) (*domain.Volume, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, manifest_json, state, bound_node_id, driver_handle, failure_reason, created_at, updated_at
+		`SELECT id, manifest_json, state, bound_node_id, driver_handle, failure_reason, retry_count, created_at, updated_at
 		 FROM virtualserver_volumes WHERE namespace = ? AND name = ?`, namespace, name)
 	return scanVolume(row)
 }
@@ -78,11 +78,11 @@ func (s *VSStore) ListVolumes(ctx context.Context, namespace string) ([]domain.V
 	var err error
 	if namespace == "" {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, manifest_json, state, bound_node_id, driver_handle, failure_reason, created_at, updated_at
+			`SELECT id, manifest_json, state, bound_node_id, driver_handle, failure_reason, retry_count, created_at, updated_at
 			 FROM virtualserver_volumes ORDER BY created_at DESC`)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, manifest_json, state, bound_node_id, driver_handle, failure_reason, created_at, updated_at
+			`SELECT id, manifest_json, state, bound_node_id, driver_handle, failure_reason, retry_count, created_at, updated_at
 			 FROM virtualserver_volumes WHERE namespace = ? ORDER BY created_at DESC`, namespace)
 	}
 	if err != nil {
@@ -95,13 +95,39 @@ func (s *VSStore) ListVolumes(ctx context.Context, namespace string) ([]domain.V
 // ListVolumesByState returns all volumes in a given state.
 func (s *VSStore) ListVolumesByState(ctx context.Context, state domain.VolumeState) ([]domain.Volume, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, manifest_json, state, bound_node_id, driver_handle, failure_reason, created_at, updated_at
+		`SELECT id, manifest_json, state, bound_node_id, driver_handle, failure_reason, retry_count, created_at, updated_at
 		 FROM virtualserver_volumes WHERE state = ? ORDER BY created_at ASC`, string(state))
 	if err != nil {
 		return nil, fmt.Errorf("list volumes by state: %w", err)
 	}
 	defer rows.Close()
 	return scanVolumes(rows)
+}
+
+// IncrementVolumeRetryCount increments the retry_count and transitions the
+// volume from failed back to declared for re-provisioning (VS-D-T3).
+// Returns the new retry count. The caller must check against maxVolumeRetries.
+func (s *VSStore) IncrementVolumeRetryCount(ctx context.Context, id string) (int, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	now := time.Now().Unix()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE virtualserver_volumes
+		 SET retry_count = retry_count + 1, state = ?, failure_reason = '', updated_at = ?
+		 WHERE id = ? AND state = ?`,
+		string(domain.VolumeDeclared), now, id, string(domain.VolumeFailed))
+	if err != nil {
+		return 0, fmt.Errorf("increment volume retry count: %w", err)
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT retry_count FROM virtualserver_volumes WHERE id = ?`, id,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("read retry count: %w", err)
+	}
+	return count, nil
 }
 
 // UpdateVolumeState transitions a volume to the given state, validating the transition first.
@@ -369,7 +395,7 @@ func scanVolume(row *sql.Row) (*domain.Volume, error) {
 	var manifestJSON, handleJSON string
 	var createdAt, updatedAt int64
 
-	err := row.Scan(&v.ID, &manifestJSON, &v.State, &v.BoundNodeID, &handleJSON, &v.FailureReason, &createdAt, &updatedAt)
+	err := row.Scan(&v.ID, &manifestJSON, &v.State, &v.BoundNodeID, &handleJSON, &v.FailureReason, &v.RetryCount, &createdAt, &updatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
@@ -396,7 +422,7 @@ func scanVolumes(rows *sql.Rows) ([]domain.Volume, error) {
 		var manifestJSON, handleJSON string
 		var createdAt, updatedAt int64
 
-		if err := rows.Scan(&v.ID, &manifestJSON, &v.State, &v.BoundNodeID, &handleJSON, &v.FailureReason, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &manifestJSON, &v.State, &v.BoundNodeID, &handleJSON, &v.FailureReason, &v.RetryCount, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan volume row: %w", err)
 		}
 		if err := json.Unmarshal([]byte(manifestJSON), &v.Manifest); err != nil {

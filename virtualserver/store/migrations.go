@@ -392,4 +392,19 @@ var migrations = []migration{
 		description: "nodes_avail_cpu_threads",
 		up:          `ALTER TABLE virtualserver_nodes ADD COLUMN avail_cpu_threads INTEGER NOT NULL DEFAULT 0`,
 	},
+	{
+		// VS-D-K1: partial UNIQUE index on vs_path prevents two instances from
+		// claiming the same VirtualFS mount point. Empty strings are excluded
+		// (SQLite partial index) so instances without a path do not conflict.
+		version:     18,
+		description: "inst_vspath_unique_partial",
+		up:          `CREATE UNIQUE INDEX IF NOT EXISTS idx_inst_vspath ON virtualserver_instances(vs_path) WHERE vs_path != ''`,
+	},
+	{
+		// VS-D-T3: retry_count on volumes tracks re-provisioning attempts;
+		// the reconciler transitions failed → declared only while count < maxRetries.
+		version:     19,
+		description: "volumes_retry_count",
+		up:          `ALTER TABLE virtualserver_volumes ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0`,
+	},
 }

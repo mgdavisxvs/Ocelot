@@ -42,6 +42,12 @@ func AdaptiveThresholdPoller(ctx context.Context, client *MarkovClient, adapter 
 				if err != nil {
 					continue
 				}
+				// F-G2: publish convergence distances as Prometheus gauges so operators
+				// can observe chain learning progress without querying the Markov API.
+				markovConvergencePeer.Set(m.ConvergencePeer)
+				markovConvergenceUser.Set(m.ConvergenceUser)
+				markovConvergenceTorrent.Set(m.ConvergenceTorrent)
+
 				// Stability gate: require at least minPollsForStability new polls.
 				last := lastAppliedPollCount.Load()
 				if m.PollCount-last < minPollsForStability {

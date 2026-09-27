@@ -329,15 +329,26 @@ type Stats struct {
 	TrackedUsers     int
 	PollCount        int
 	SnatchWatermark  int64
+
+	// Convergence distances (L∞ norm from StationaryDistance) for each chain.
+	// A value near zero indicates the chain has converged; values > 1e-4 suggest
+	// the chain is still in early learning and threshold adaptations should be
+	// gated until convergence. (F-G2)
+	ConvergencePeer     float64
+	ConvergenceUser     float64
+	ConvergenceTorrent  float64
 }
 
 func (e *Engine) Stats() Stats {
 	return Stats{
-		TrackedPeers:    e.peers.peerCount(),
-		TrackedTorrents: e.torrents.torrentCount(),
-		TrackedUsers:    e.users.userCount(),
-		PollCount:       int(e.pollCount.Load()),
-		SnatchWatermark: e.snatchWatermark,
+		TrackedPeers:       e.peers.peerCount(),
+		TrackedTorrents:    e.torrents.torrentCount(),
+		TrackedUsers:       e.users.userCount(),
+		PollCount:          int(e.pollCount.Load()),
+		SnatchWatermark:    e.snatchWatermark,
+		ConvergencePeer:    e.peers.globalChain.StationaryDistance(),
+		ConvergenceUser:    e.users.globalChain.StationaryDistance(),
+		ConvergenceTorrent: e.torrents.globalChain.StationaryDistance(),
 	}
 }
 

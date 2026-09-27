@@ -22,6 +22,7 @@ const (
 	restartCBThreshold     = 5               // consecutive rapid failures before circuit opens (VS-D-T1)
 	restartCBRapidWindow   = 2 * time.Minute // window within which failures count as "rapid"
 	restartCBOpenDuration  = 10 * time.Minute // how long to suppress retries when circuit is open
+	maxVolumeRetries       = 5               // failed → declared re-provisioning limit (VS-D-T3)
 )
 
 // restartBreaker is a per-instance circuit breaker that prevents infinite
@@ -86,6 +87,9 @@ type StoreInterface interface {
 	UpdateVolumeBoundNode(ctx context.Context, id, nodeID string) error
 	UpdateVolumeFailure(ctx context.Context, id, reason string) error
 	DeleteVolume(ctx context.Context, id string) error
+	// IncrementVolumeRetryCount transitions a failed volume back to declared and
+	// increments its retry counter. Returns the new count (VS-D-T3).
+	IncrementVolumeRetryCount(ctx context.Context, id string) (int, error)
 	BindMount(ctx context.Context, m domain.VolumeMount) (int64, error)
 	UpdateMountState(ctx context.Context, id int64, to domain.VolumeMountState) error
 	ListMountsByInstance(ctx context.Context, instanceID string) ([]domain.VolumeMount, error)
@@ -550,10 +554,14 @@ func volumeStateTransition(class string, from, to domain.VolumeState) {
 }
 
 // reconcileVolumes drives all volume lifecycle passes in order:
-//  1. declared  → provisioning → ready
-//  2. releasing → (driver.Delete) → released
-//  3. bound     → quota check   → quota_exceeded (or back to bound)
+//  1. failed    → declared    (retry if RetryCount < maxVolumeRetries) (VS-D-T3)
+//  2. declared  → provisioning → ready
+//  3. releasing → (driver.Delete) → released
+//  4. bound     → quota check → quota_exceeded (or back to bound)
 func (r *VSReconciler) reconcileVolumes(ctx context.Context) error {
+	// Pass 1: retry failed volumes that haven't hit the retry cap (VS-D-T3).
+	r.reconcileFailedVolumes(ctx)
+
 	declared, err := r.store.ListVolumesByState(ctx, domain.VolumeDeclared)
 	if err != nil {
 		return fmt.Errorf("list declared volumes: %w", err)
@@ -570,6 +578,30 @@ func (r *VSReconciler) reconcileVolumes(ctx context.Context) error {
 
 	r.reconcileQuotaCheck(ctx)
 	return nil
+}
+
+// reconcileFailedVolumes re-queues failed volumes for provisioning if their
+// retry count is below maxVolumeRetries. Volumes that have exhausted retries
+// are left in the failed state permanently (VS-D-T3).
+func (r *VSReconciler) reconcileFailedVolumes(ctx context.Context) {
+	failed, err := r.store.ListVolumesByState(ctx, domain.VolumeFailed)
+	if err != nil {
+		return
+	}
+	for i := range failed {
+		vol := &failed[i]
+		if vol.RetryCount >= maxVolumeRetries {
+			continue // retry cap reached — do not re-queue
+		}
+		newCount, err := r.store.IncrementVolumeRetryCount(ctx, vol.ID)
+		if err != nil {
+			r.store.WriteAuditLog(ctx, "volume_retry_error", "volume", vol.ID, "", false, err.Error()) //nolint:errcheck
+			continue
+		}
+		volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeFailed, domain.VolumeDeclared)
+		r.store.WriteAuditLog(ctx, "volume_retry_queued", "volume", vol.ID, "", true, //nolint:errcheck
+			fmt.Sprintf("retry=%d/%d", newCount, maxVolumeRetries))
+	}
 }
 
 // reconcileReleasingVolumes calls the storage driver to delete the backing storage for

@@ -131,5 +131,10 @@ type AnnounceStats struct {
 	// IsStopped indicates the peer sent event=stopped.
 	IsStopped bool
 
+	// FreeType indicates the torrent is marked freeleech. When true,
+	// SettleAnnounce must not apply a download charge regardless of
+	// EffectiveDownloaded (D-G4 contract guard).
+	FreeType bool
+
 	Timestamp time.Time
 }

@@ -145,6 +145,29 @@ var (
 		},
 		[]string{"op"},
 	)
+
+	// Markov chain convergence gauges (F-G2).
+	// Each gauge tracks the L∞ stationary-distance of the corresponding chain.
+	// Values near zero indicate convergence; elevated values indicate the chain
+	// is still in early learning and adaptive thresholds should remain gated.
+	markovConvergencePeer = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "ocelot_markov_convergence_peer",
+			Help: "L-inf stationary distance for the peer Markov chain (0 = converged)",
+		},
+	)
+	markovConvergenceUser = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "ocelot_markov_convergence_user",
+			Help: "L-inf stationary distance for the user Markov chain (0 = converged)",
+		},
+	)
+	markovConvergenceTorrent = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "ocelot_markov_convergence_torrent",
+			Help: "L-inf stationary distance for the torrent Markov chain (0 = converged)",
+		},
+	)
 )
 
 // MetricsRecorder provides convenience methods for recording metrics

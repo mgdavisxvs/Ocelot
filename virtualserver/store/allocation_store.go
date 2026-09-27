@@ -32,24 +32,6 @@ func (s *VSStore) AllocateResources(ctx context.Context, instanceID, nodeID stri
 	}
 	defer tx.Rollback()
 
-	// Re-verify available resources inside the transaction
-	var availRAM int64
-	var availCPU int
-	row := tx.QueryRowContext(ctx,
-		"SELECT avail_ram_mib, avail_cpu_threads FROM virtualserver_nodes WHERE id=?", nodeID)
-	if err := row.Scan(&availRAM, &availCPU); err == sql.ErrNoRows {
-		return ErrNotFound
-	} else if err != nil {
-		return fmt.Errorf("read node resources: %w", err)
-	}
-
-	if availRAM < ramMiB {
-		return fmt.Errorf("%w: node %s has %d MiB RAM available, need %d", ErrAllocationConflict, nodeID, availRAM, ramMiB)
-	}
-	if cpuThreads > 0 && availCPU < cpuThreads {
-		return fmt.Errorf("%w: node %s has %d CPU threads available, need %d", ErrAllocationConflict, nodeID, availCPU, cpuThreads)
-	}
-
 	// Check GPU device availability if required
 	if gpuDeviceIndex != nil {
 		var allocated int
@@ -63,8 +45,47 @@ func (s *VSStore) AllocateResources(ctx context.Context, instanceID, nodeID stri
 		}
 	}
 
-	// Write allocation record
 	now := time.Now().Unix()
+
+	// VS-D-K2: atomically verify and deduct available resources in a single
+	// UPDATE WHERE clause — eliminates the TOCTOU window between the prior
+	// SELECT and UPDATE. RowsAffected == 0 means the node does not exist or
+	// cannot satisfy the request.
+	cpuCond := cpuThreads
+	if cpuThreads == 0 {
+		cpuCond = 0 // zero CPU request always satisfies
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE virtualserver_nodes
+		SET avail_ram_mib = avail_ram_mib - ?,
+		    avail_cpu_threads = avail_cpu_threads - ?,
+		    updated_at = ?
+		WHERE id = ?
+		  AND avail_ram_mib >= ?
+		  AND (? = 0 OR avail_cpu_threads >= ?)`,
+		ramMiB, cpuThreads, now,
+		nodeID,
+		ramMiB,
+		cpuCond, cpuThreads,
+	)
+	if err != nil {
+		return fmt.Errorf("atomic allocate node resources: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check alloc rows affected: %w", err)
+	}
+	if affected == 0 {
+		// Distinguish not-found from insufficient-resources by checking existence.
+		var exists int
+		tx.QueryRowContext(ctx, `SELECT 1 FROM virtualserver_nodes WHERE id=?`, nodeID).Scan(&exists)
+		if exists == 0 {
+			return ErrNotFound
+		}
+		return fmt.Errorf("%w: node %s cannot satisfy ram=%d cpu=%d", ErrAllocationConflict, nodeID, ramMiB, cpuThreads)
+	}
+
+	// Write allocation record
 	var gpuIdx interface{}
 	if gpuDeviceIndex != nil {
 		gpuIdx = *gpuDeviceIndex
@@ -77,17 +98,6 @@ func (s *VSStore) AllocateResources(ctx context.Context, instanceID, nodeID stri
 	)
 	if err != nil {
 		return fmt.Errorf("insert allocation: %w", err)
-	}
-
-	// Update node available RAM and CPU
-	_, err = tx.ExecContext(ctx, `
-		UPDATE virtualserver_nodes
-		SET avail_ram_mib=avail_ram_mib-?, avail_cpu_threads=avail_cpu_threads-?, updated_at=?
-		WHERE id=?`,
-		ramMiB, cpuThreads, now, nodeID,
-	)
-	if err != nil {
-		return fmt.Errorf("update node ram: %w", err)
 	}
 
 	// Mark GPU device allocated

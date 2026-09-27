@@ -60,12 +60,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	stats := s.eng.Stats()
 	jsonOK(w, map[string]any{
-		"tracked_peers":    stats.TrackedPeers,
-		"tracked_torrents": stats.TrackedTorrents,
-		"tracked_users":    stats.TrackedUsers,
-		"poll_count":       stats.PollCount,
-		"snatch_watermark": stats.SnatchWatermark,
-		"time":             time.Now().Unix(),
+		"tracked_peers":        stats.TrackedPeers,
+		"tracked_torrents":     stats.TrackedTorrents,
+		"tracked_users":        stats.TrackedUsers,
+		"poll_count":           stats.PollCount,
+		"snatch_watermark":     stats.SnatchWatermark,
+		"convergence_peer":     stats.ConvergencePeer,
+		"convergence_user":     stats.ConvergenceUser,
+		"convergence_torrent":  stats.ConvergenceTorrent,
+		"time":                 time.Now().Unix(),
 	})
 }
 

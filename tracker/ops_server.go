@@ -71,6 +71,7 @@ func NewOpsServer(config *Config, worker *Worker) (*OpsServer, *readyFlag) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health/live", os.handleLive)
 	mux.HandleFunc("/health/ready", os.handleReady)
+	mux.HandleFunc("/health/deep", os.handleDeepHealth)
 	mux.HandleFunc("/metrics", os.handleMetrics)
 	mux.HandleFunc("/metrics/prometheus", os.handleMetricsPrometheus)
 
@@ -224,4 +225,82 @@ func (os *OpsServer) handleMetricsPrometheus(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(sb.String()))
+}
+
+// deepInvariant holds the result of one formal health invariant check (F-G4).
+type deepInvariant struct {
+	Name   string `json:"name"`
+	Pass   bool   `json:"pass"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// handleDeepHealth evaluates four formal invariants and returns 200 only when
+// all pass. A partial failure returns 503 with the failing invariant names so
+// operators can diagnose the specific violated property.
+//
+// Invariants:
+//
+//	I-1 (Ready): tracker has completed initial state load from DB.
+//	I-2 (Census): at least one torrent AND one user are loaded — state is non-empty.
+//	I-3 (Announce ratio): successful announces ÷ total announces ≥ 0.50, or
+//	     announce count < 100 (system just started, ratio not yet meaningful).
+//	I-4 (Swarm reachability): if any swarm nodes are registered, at least one
+//	     is in REACHABLE state (swarm is not fully partitioned from the tracker).
+func (os *OpsServer) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
+	stats := os.worker.Stats
+
+	// I-1: Ready
+	i1 := deepInvariant{Name: "I-1:ready", Pass: os.ready.IsReady()}
+	if !i1.Pass {
+		i1.Detail = "tracker has not completed startup state load"
+	}
+
+	// I-2: Census — torrent and user tables populated
+	torrents := os.worker.Torrents.Size()
+	users := os.worker.Users.Size()
+	i2 := deepInvariant{Name: "I-2:census", Pass: torrents > 0 && users > 0}
+	if !i2.Pass {
+		i2.Detail = fmt.Sprintf("torrents=%d users=%d; expected both > 0", torrents, users)
+	}
+
+	// I-3: Announce success ratio
+	total := stats.Announcements.Load()
+	succ := stats.SuccAnnouncements.Load()
+	const announceRatioFloor = 0.50
+	const announceWarmupThreshold = 100
+	var i3pass bool
+	if total < announceWarmupThreshold {
+		i3pass = true // too few samples; skip ratio check during warmup
+	} else {
+		i3pass = float64(succ)/float64(total) >= announceRatioFloor
+	}
+	i3 := deepInvariant{Name: "I-3:announce-ratio", Pass: i3pass}
+	if !i3.Pass {
+		i3.Detail = fmt.Sprintf("succ=%d total=%d ratio=%.2f < %.2f", succ, total, float64(succ)/float64(total), announceRatioFloor)
+	}
+
+	// I-4: Swarm reachability
+	nodeTotal, nodeReachable, _, _, _, _, _ := os.swarmGauges()
+	i4pass := nodeTotal == 0 || nodeReachable > 0
+	i4 := deepInvariant{Name: "I-4:swarm-reachable", Pass: i4pass}
+	if !i4.Pass {
+		i4.Detail = fmt.Sprintf("nodes=%d reachable=%d; swarm fully unreachable", nodeTotal, nodeReachable)
+	}
+
+	invariants := []deepInvariant{i1, i2, i3, i4}
+	allPass := i1.Pass && i2.Pass && i3.Pass && i4.Pass
+
+	resp := map[string]interface{}{
+		"pass":       allPass,
+		"invariants": invariants,
+		"time":       time.Now().UTC().Format(time.RFC3339),
+	}
+	b, _ := json.Marshal(resp)
+	w.Header().Set("Content-Type", "application/json")
+	if allPass {
+		w.WriteHeader(http.StatusOK)
+	} else {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	w.Write(b)
 }
