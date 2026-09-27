@@ -68,8 +68,7 @@ func (ue *UserEngine) observe(users []db.UserRow, freeleechUIDs db.FreeleechUID)
 	seenUIDs := make(map[int64]struct{}, len(users))
 	for _, u := range users {
 		seenUIDs[u.ID] = struct{}{}
-		_, hasFreeleech := freeleechUIDs[u.ID]
-		newState := chain.UserRatioState(u.Uploaded, u.Downloaded, u.CanLeech, hasFreeleech)
+		newState := chain.UserRatioState(u.Uploaded, u.Downloaded)
 
 		if prev, ok := ue.lastState[u.ID]; ok && prev != newState {
 			ue.globalChain.Observe(prev, newState)

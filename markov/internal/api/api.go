@@ -119,9 +119,9 @@ func (s *Server) handleTorrent(w http.ResponseWriter, r *http.Request) {
 		"pi_current":           pred.Pi,
 		"pi_24h":               pred.Pi24h,
 		"pi_72h":               pred.Pi72h,
-		"dead_prob_24h":        pred.DeadProb24h,
-		"dead_prob_72h":        pred.DeadProb72h,
-		"expected_dead_hours":  pred.ExpectedDeadHours,
+		"dead_prob_24h":        pred.UnavailableProb24h,
+		"dead_prob_72h":        pred.UnavailableProb72h,
+		"expected_dead_hours":  pred.ExpectedUnavailableHours,
 		"entropy_bits":         pred.Entropy,
 		"recommended_interval": pred.RecommendedInterval,
 	})

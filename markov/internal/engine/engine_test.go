@@ -99,7 +99,7 @@ func TestPercentile(t *testing.T) {
 }
 
 func TestComputeAnomaliesMedianMAD(t *testing.T) {
-	ue := newUserEngine(0.99, 1.0, 20)
+	ue := newUserEngine(0.99, 20)
 	// Populate chain with many observations so NLL is finite.
 	for range 100 {
 		ue.globalChain.Observe(0, 0)
@@ -141,7 +141,7 @@ func TestComputeAnomaliesMedianMAD(t *testing.T) {
 
 func TestAnomalyScoreIsRobust(t *testing.T) {
 	// With one extreme outlier, median/MAD should not be skewed.
-	ue := newUserEngine(0.99, 1.0, 20)
+	ue := newUserEngine(0.99, 20)
 	for range 200 {
 		ue.globalChain.Observe(0, 0)
 		ue.globalChain.Observe(1, 1)
@@ -193,7 +193,7 @@ func TestBetaCI95(t *testing.T) {
 func TestAnomalyFlaggedIsAdvisory(t *testing.T) {
 	// Flagged should not exceed the number of users above threshold.
 	// The model must never produce a "ban" action directly.
-	ue := newUserEngine(0.99, 1.0, 20)
+	ue := newUserEngine(0.99, 20)
 	for range 100 {
 		ue.globalChain.Observe(0, 0)
 		ue.globalChain.Observe(0, 1)

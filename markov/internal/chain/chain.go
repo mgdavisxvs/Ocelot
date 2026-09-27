@@ -8,10 +8,11 @@ import (
 // Chain is a discrete-time Markov chain with online Bayesian learning
 // and exponential temporal decay. Thread-safe.
 type Chain struct {
-	mu     sync.RWMutex
-	n      int
-	counts [][]float64
-	decay  float64 // multiplied into counts on each Decay() call
+	mu        sync.RWMutex
+	n         int
+	counts    [][]float64
+	decay     float64 // multiplied into counts on each Decay() call
+	smoothing float64 // Bayesian prior α; 1.0 for standard Laplace prior
 }
 
 // chainEpsilon is added to every cell in P() to guarantee ergodicity, preventing
@@ -28,8 +29,28 @@ func New(n int, decay float64) *Chain {
 			counts[i][j] = 1.0 // uniform Laplace prior
 		}
 	}
-	return &Chain{n: n, counts: counts, decay: decay}
+	return &Chain{n: n, counts: counts, decay: decay, smoothing: 1.0}
 }
+
+// NewWithSmoothing creates a Chain with n states, a custom Bayesian prior α,
+// and the given per-epoch decay factor.  Use when sub-chain engines need a
+// prior different from the standard Laplace 1.0.
+func NewWithSmoothing(n int, decay, alpha float64) *Chain {
+	if alpha <= 0 {
+		alpha = 1.0
+	}
+	counts := make([][]float64, n)
+	for i := range counts {
+		counts[i] = make([]float64, n)
+		for j := range counts[i] {
+			counts[i][j] = alpha
+		}
+	}
+	return &Chain{n: n, counts: counts, decay: decay, smoothing: alpha}
+}
+
+// Smoothing returns the Bayesian prior α used when this Chain was constructed.
+func (c *Chain) Smoothing() float64 { return c.smoothing }
 
 func (c *Chain) N() int { return c.n }
 
@@ -259,6 +280,53 @@ func ones(m int) []float64 {
 		v[i] = 1
 	}
 	return v
+}
+
+// EffectiveSampleCount returns the number of observed transitions out of
+// state (total count minus the prior contribution).  Used by evidence-gated
+// adaptive interval logic (UMM-05).
+func (c *Chain) EffectiveSampleCount(state int) float64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if state < 0 || state >= c.n {
+		return 0
+	}
+	var sum float64
+	for _, v := range c.counts[state] {
+		sum += v
+	}
+	observed := sum - float64(c.n)*c.smoothing
+	if observed < 0 {
+		observed = 0
+	}
+	return observed
+}
+
+// DominantTransitionP returns the probability of the most likely transition
+// from state under the current matrix P.
+func (c *Chain) DominantTransitionP(state int) float64 {
+	p := c.P()
+	if state < 0 || state >= len(p) {
+		return 0
+	}
+	var maxP float64
+	for _, v := range p[state] {
+		if v > maxP {
+			maxP = v
+		}
+	}
+	return maxP
+}
+
+// Forecast returns the distribution π evolved by each step count in steps.
+// steps need not be sorted; each element is passed independently to Step.
+// The returned slice has one entry per element of steps in the same order.
+func (c *Chain) Forecast(pi []float64, steps []int) [][]float64 {
+	out := make([][]float64, len(steps))
+	for i, k := range steps {
+		out[i] = c.Step(pi, k)
+	}
+	return out
 }
 
 // solveLinear solves A·x = b via Gaussian elimination with partial pivoting.

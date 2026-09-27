@@ -23,6 +23,13 @@ type Engine struct {
 
 	pollCount int // incremented on each poll; used for decay scheduling
 
+	// Cached rows from the last poll, used by assignments and fulfillment checks.
+	lastTorrents []db.TorrentRow
+	lastPeers    []db.PeerRow
+
+	// Beta-Binomial upload reliability scorer.
+	beta *BetaEngine
+
 	// EventBus publishing — both optional; nil disables Redis event publishing.
 	eventPub        *EventPublisher
 	baseIntervalSec int
@@ -33,9 +40,10 @@ func New(cfg *config.Config, database *db.DB) (*Engine, error) {
 	e := &Engine{
 		cfg:      cfg,
 		db:       database,
-		peers:    newPeerEngine(cfg.DecayFactor),
+		peers:    newPeerEngine(cfg.DecayFactor, cfg.SmoothingAlpha),
 		users:    newUserEngine(cfg.DecayFactor, cfg.PathHistoryLen),
-		torrents: newTorrentEngine(cfg.DecayFactor),
+		torrents: newTorrentEngine(cfg.DecayFactor, cfg.SmoothingAlpha),
+		beta:     newBetaEngine(),
 	}
 	if err := e.loadPersistedState(context.Background()); err != nil {
 		return nil, err
@@ -170,6 +178,17 @@ func (e *Engine) poll(ctx context.Context) {
 	e.torrents.observe(torrentRows)
 	e.users.observe(userRows, freeleechUIDs)
 
+	// Cache latest rows for assignment and fulfillment checks.
+	e.lastPeers = peers
+	e.lastTorrents = torrentRows
+
+	// Update Beta upload reliability scores.
+	leechersByTorrent := make(map[int64]int, len(torrentRows))
+	for _, t := range torrentRows {
+		leechersByTorrent[t.ID] = int(t.Leechers)
+	}
+	e.beta.observe(peers, leechersByTorrent, int64(e.cfg.SuccessThresholdBytes))
+
 	e.pollCount++
 	if e.pollCount%e.cfg.DecayEveryNPolls == 0 {
 		e.peers.decay()
@@ -213,10 +232,15 @@ func (e *Engine) persist(ctx context.Context) {
 
 	// Torrent predictions
 	predictions := e.torrents.buildPredictions(
+		e.cfg.ForecastSteps1h,
+		e.cfg.ForecastSteps6h,
 		e.cfg.ForecastSteps24h,
 		e.cfg.ForecastSteps72h,
-		e.cfg.PollIntervalSec,
-		e.cfg.AnnounceIntervalSec,
+		e.cfg.ModelClockSec,
+		e.cfg.MinAnnounceIntervalSec,
+		e.cfg.MaxAnnounceIntervalSec,
+		e.cfg.HysteresisFactor,
+		e.cfg.MinEvidenceForAdaptiveInterval,
 	)
 	predRecs := make([]db.TorrentPredictionRecord, len(predictions))
 	for i, p := range predictions {
@@ -285,10 +309,15 @@ func countFlagged(a []AnomalyResult) int {
 func (e *Engine) TorrentPredictionForID(torrentID int64) *TorrentPrediction {
 	return e.torrents.getPrediction(
 		torrentID,
+		e.cfg.ForecastSteps1h,
+		e.cfg.ForecastSteps6h,
 		e.cfg.ForecastSteps24h,
 		e.cfg.ForecastSteps72h,
-		e.cfg.PollIntervalSec,
-		e.cfg.AnnounceIntervalSec,
+		e.cfg.ModelClockSec,
+		e.cfg.MinAnnounceIntervalSec,
+		e.cfg.MaxAnnounceIntervalSec,
+		e.cfg.HysteresisFactor,
+		e.cfg.MinEvidenceForAdaptiveInterval,
 	)
 }
 
