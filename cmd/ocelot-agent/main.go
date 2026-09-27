@@ -438,8 +438,68 @@ func (c *qbittorrentClient) Version() string { return "qbittorrent/unknown" }
 
 type transmissionClient struct{ baseURL string }
 
+// txRPC executes a Transmission RPC call, handling the 409/X-Transmission-Session-Id
+// handshake Transmission requires on first contact.
+func (c *transmissionClient) txRPC(method string, args interface{}, result interface{}) error {
+	body, _ := json.Marshal(map[string]interface{}{"method": method, "arguments": args})
+
+	newReq := func(sid string) (*http.Request, error) {
+		req, err := http.NewRequest(http.MethodPost, c.baseURL+"/transmission/rpc", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if sid != "" {
+			req.Header.Set("X-Transmission-Session-Id", sid)
+		}
+		return req, nil
+	}
+
+	req, err := newReq("")
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode == http.StatusConflict {
+		sid := resp.Header.Get("X-Transmission-Session-Id")
+		resp.Body.Close()
+		req, err = newReq(sid)
+		if err != nil {
+			return err
+		}
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+	}
+	defer resp.Body.Close()
+	if result != nil {
+		return json.NewDecoder(resp.Body).Decode(result)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
+// txStateString maps a Transmission status integer to a normalised state string.
+func txStateString(status int) string {
+	switch status {
+	case 0:
+		return "paused"
+	case 1, 2:
+		return "checking"
+	case 3, 4:
+		return "downloading"
+	case 5, 6:
+		return "seeding"
+	default:
+		return "error"
+	}
+}
+
 func (c *transmissionClient) AddTorrent(infoHash, magnetOrURL string) error {
-	// Transmission RPC: POST /transmission/rpc with JSON-RPC body.
 	payload := map[string]interface{}{
 		"method":    "torrent-add",
 		"arguments": map[string]string{"filename": magnetOrURL},
@@ -454,15 +514,81 @@ func (c *transmissionClient) AddTorrent(infoHash, magnetOrURL string) error {
 }
 
 func (c *transmissionClient) RemoveTorrent(infoHash string, deleteData bool) error {
-	return nil // stub: full impl would call torrent-remove RPC
+	return c.txRPC("torrent-remove", map[string]interface{}{
+		"ids":               []string{infoHash},
+		"delete-local-data": deleteData,
+	}, nil)
 }
 
 func (c *transmissionClient) Status(infoHash string) (tracker.TorrentStatus, error) {
-	return tracker.TorrentStatus{}, nil // stub
+	var reply struct {
+		Arguments struct {
+			Torrents []struct {
+				Hash        string  `json:"hashString"`
+				Status      int     `json:"status"`
+				PercentDone float64 `json:"percentDone"`
+				Uploaded    int64   `json:"uploadedEver"`
+				Downloaded  int64   `json:"downloadedEver"`
+				Error       int     `json:"error"`
+			} `json:"torrents"`
+		} `json:"arguments"`
+	}
+	if err := c.txRPC("torrent-get", map[string]interface{}{
+		"ids":    []string{infoHash},
+		"fields": []string{"hashString", "status", "percentDone", "uploadedEver", "downloadedEver", "error"},
+	}, &reply); err != nil {
+		return tracker.TorrentStatus{}, err
+	}
+	if len(reply.Arguments.Torrents) == 0 {
+		return tracker.TorrentStatus{}, tracker.ErrTorrentNotFound
+	}
+	t := reply.Arguments.Torrents[0]
+	state := txStateString(t.Status)
+	if t.Error != 0 {
+		state = "error"
+	}
+	return tracker.TorrentStatus{
+		InfoHash:        t.Hash,
+		State:           state,
+		Progress:        t.PercentDone,
+		UploadedBytes:   t.Uploaded,
+		DownloadedBytes: t.Downloaded,
+	}, nil
 }
 
 func (c *transmissionClient) ListAll() ([]tracker.TorrentStatus, error) {
-	return nil, nil // stub
+	var reply struct {
+		Arguments struct {
+			Torrents []struct {
+				Hash        string  `json:"hashString"`
+				Status      int     `json:"status"`
+				PercentDone float64 `json:"percentDone"`
+				Uploaded    int64   `json:"uploadedEver"`
+				Downloaded  int64   `json:"downloadedEver"`
+				Error       int     `json:"error"`
+			} `json:"torrents"`
+		} `json:"arguments"`
+	}
+	if err := c.txRPC("torrent-get", map[string]interface{}{
+		"fields": []string{"hashString", "status", "percentDone", "uploadedEver", "downloadedEver", "error"},
+	}, &reply); err != nil {
+		return nil, err
+	}
+	out := make([]tracker.TorrentStatus, len(reply.Arguments.Torrents))
+	for i, t := range reply.Arguments.Torrents {
+		state := txStateString(t.Status)
+		if t.Error != 0 {
+			state = "error"
+		}
+		out[i] = tracker.TorrentStatus{
+			InfoHash:        t.Hash,
+			State:           state,
+			Progress:        t.PercentDone,
+			UploadedBytes:   t.Uploaded,
+			DownloadedBytes: t.Downloaded,
+		}
+	}
+	return out, nil
 }
 
 func (c *transmissionClient) Version() string { return "transmission/unknown" }
@@ -471,13 +597,114 @@ func (c *transmissionClient) Version() string { return "transmission/unknown" }
 
 type delugeClient struct{ baseURL string }
 
-func (c *delugeClient) AddTorrent(infoHash, magnetOrURL string) error  { return nil }
-func (c *delugeClient) RemoveTorrent(infoHash string, del bool) error  { return nil }
-func (c *delugeClient) Status(infoHash string) (tracker.TorrentStatus, error) {
-	return tracker.TorrentStatus{}, nil
+// delugeRPC executes a Deluge JSON-RPC 2.0 call against /json.
+func (c *delugeClient) delugeRPC(method string, params []interface{}, result interface{}) error {
+	body, _ := json.Marshal(map[string]interface{}{
+		"id": 1, "method": method, "params": params,
+	})
+	resp, err := http.Post(c.baseURL+"/json", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var env struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return err
+	}
+	if env.Error != nil {
+		return fmt.Errorf("deluge rpc: %s", env.Error.Message)
+	}
+	if result != nil {
+		return json.Unmarshal(env.Result, result)
+	}
+	return nil
 }
-func (c *delugeClient) ListAll() ([]tracker.TorrentStatus, error) { return nil, nil }
-func (c *delugeClient) Version() string                           { return "deluge/unknown" }
+
+// delugeStateString normalises Deluge's capitalised state strings to tracker conventions.
+func delugeStateString(s string) string {
+	switch s {
+	case "Downloading":
+		return "downloading"
+	case "Seeding":
+		return "seeding"
+	case "Paused":
+		return "paused"
+	case "Error":
+		return "error"
+	case "Checking", "Queued":
+		return "checking"
+	default:
+		return "paused"
+	}
+}
+
+func (c *delugeClient) AddTorrent(infoHash, magnetOrURL string) error {
+	return c.delugeRPC("core.add_torrent_magnet", []interface{}{magnetOrURL, map[string]interface{}{}}, nil)
+}
+
+func (c *delugeClient) RemoveTorrent(infoHash string, del bool) error {
+	return c.delugeRPC("core.remove_torrent", []interface{}{infoHash, del}, nil)
+}
+
+func (c *delugeClient) Status(infoHash string) (tracker.TorrentStatus, error) {
+	fields := []string{"state", "progress", "total_uploaded", "total_done", "num_seeds", "num_peers"}
+	var raw map[string]interface{}
+	if err := c.delugeRPC("core.get_torrent_status", []interface{}{infoHash, fields}, &raw); err != nil {
+		return tracker.TorrentStatus{}, err
+	}
+	if len(raw) == 0 {
+		return tracker.TorrentStatus{}, tracker.ErrTorrentNotFound
+	}
+	state, _ := raw["state"].(string)
+	progress, _ := raw["progress"].(float64)
+	uploaded, _ := raw["total_uploaded"].(float64)
+	downloaded, _ := raw["total_done"].(float64)
+	seeds, _ := raw["num_seeds"].(float64)
+	peers, _ := raw["num_peers"].(float64)
+	return tracker.TorrentStatus{
+		InfoHash:        infoHash,
+		State:           delugeStateString(state),
+		Progress:        progress / 100.0, // Deluge reports 0–100
+		UploadedBytes:   int64(uploaded),
+		DownloadedBytes: int64(downloaded),
+		Seeds:           int(seeds),
+		Leechers:        int(peers),
+	}, nil
+}
+
+func (c *delugeClient) ListAll() ([]tracker.TorrentStatus, error) {
+	fields := []string{"state", "progress", "total_uploaded", "total_done", "num_seeds", "num_peers"}
+	var rawMap map[string]map[string]interface{}
+	if err := c.delugeRPC("core.get_torrents_status", []interface{}{map[string]interface{}{}, fields}, &rawMap); err != nil {
+		return nil, err
+	}
+	out := make([]tracker.TorrentStatus, 0, len(rawMap))
+	for hash, raw := range rawMap {
+		state, _ := raw["state"].(string)
+		progress, _ := raw["progress"].(float64)
+		uploaded, _ := raw["total_uploaded"].(float64)
+		downloaded, _ := raw["total_done"].(float64)
+		seeds, _ := raw["num_seeds"].(float64)
+		peers, _ := raw["num_peers"].(float64)
+		out = append(out, tracker.TorrentStatus{
+			InfoHash:        hash,
+			State:           delugeStateString(state),
+			Progress:        progress / 100.0,
+			UploadedBytes:   int64(uploaded),
+			DownloadedBytes: int64(downloaded),
+			Seeds:           int(seeds),
+			Leechers:        int(peers),
+		})
+	}
+	return out, nil
+}
+
+func (c *delugeClient) Version() string { return "deluge/unknown" }
 
 // ── Embedded client ───────────────────────────────────────────────────────────
 // Placeholder for a future embedded go-torrent implementation.
@@ -507,13 +734,20 @@ func (c *embeddedClient) Version() string { return "embedded/0.1.0" }
 // ── System helpers ────────────────────────────────────────────────────────────
 
 func diskFreeBytes() int64 {
-	// On a real implementation this would call syscall.Statfs on Linux
-	// or GetDiskFreeSpaceEx on Windows. Returning 0 is safe — the controller
-	// treats 0 as "unknown" and will still schedule the node if no better options exist.
-	return 0
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs("/", &stat); err != nil {
+		return 0
+	}
+	return int64(stat.Bavail) * stat.Bsize
 }
 
-func diskTotalBytes() int64 { return 0 }
+func diskTotalBytes() int64 {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs("/", &stat); err != nil {
+		return 0
+	}
+	return int64(stat.Blocks) * stat.Bsize
+}
 
 // localIP returns the first non-loopback IPv4 address of the machine.
 func localIP() string {
