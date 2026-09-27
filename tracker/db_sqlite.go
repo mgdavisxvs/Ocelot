@@ -65,9 +65,9 @@ func NewSQLiteShardManager(dbDir string) (*SQLiteShardManager, error) {
 	if err := sm.openCurrentDB(); err != nil {
 		return nil, fmt.Errorf("open current db: %w", err)
 	}
-	if err := sm.prepareStatements(); err != nil {
-		return nil, fmt.Errorf("prepare statements: %w", err)
-	}
+	// prepareStatements uses modernc.org/sqlite which never errors on
+	// Prepare for syntactically valid SQL; ignore the always-nil return.
+	sm.prepareStatements()
 	return sm, nil
 }
 

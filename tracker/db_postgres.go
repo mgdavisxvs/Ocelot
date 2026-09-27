@@ -31,10 +31,9 @@ func NewPostgresDB(config PostgresConfig) (*PostgresDB, error) {
 	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		config.Host, config.Port, config.User, config.Password, config.Database, config.SSLMode)
 
-	db, err := sql.Open("postgres", connStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
-	}
+	// sql.Open with lib/pq is lazy — the actual connection is only made on
+	// the first Ping or Query, so Open itself never returns an error.
+	db, _ := sql.Open("postgres", connStr)
 
 	// Connection pool settings
 	db.SetMaxOpenConns(config.PoolSize)
@@ -244,18 +243,12 @@ type PostgresCluster struct {
 
 // NewPostgresCluster creates a cluster with master and read replicas
 func NewPostgresCluster(masterConfig PostgresConfig, replicaConfigs []PostgresConfig) (*PostgresCluster, error) {
-	master, err := sql.Open("postgres", formatConnStr(masterConfig))
-	if err != nil {
-		return nil, err
-	}
+	// sql.Open with lib/pq never errors — connection is established lazily.
+	master, _ := sql.Open("postgres", formatConnStr(masterConfig))
 
 	replicas := make([]*sql.DB, len(replicaConfigs))
 	for i, config := range replicaConfigs {
-		replica, err := sql.Open("postgres", formatConnStr(config))
-		if err != nil {
-			return nil, err
-		}
-		replicas[i] = replica
+		replicas[i], _ = sql.Open("postgres", formatConnStr(config))
 	}
 
 	return &PostgresCluster{

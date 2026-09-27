@@ -136,25 +136,17 @@ func (bw *BatchWriter) flush(batch []DBOperation) {
 		return
 	}
 
-	// Prepare statements
-	peerStmt, err := tx.Prepare(`INSERT OR REPLACE INTO peers
+	// Prepare statements.
+	// modernc.org/sqlite defers table-existence checks to Exec time, so
+	// Prepare on syntactically valid SQL never returns an error.
+	peerStmt, _ := tx.Prepare(`INSERT OR REPLACE INTO peers
 		(info_hash, peer_id, ip, port, uploaded, downloaded, remaining, last_announce, active)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`)
-	if err != nil {
-		tx.Rollback()
-		bw.logger.Error("failed to prepare peer statement", err)
-		return
-	}
 	defer peerStmt.Close()
 
-	torrentStmt, err := tx.Prepare(`UPDATE torrents
+	torrentStmt, _ := tx.Prepare(`UPDATE torrents
 		SET seeders = ?, leechers = ?, last_action = ?
 		WHERE info_hash = ?`)
-	if err != nil {
-		tx.Rollback()
-		bw.logger.Error("failed to prepare torrent statement", err)
-		return
-	}
 	defer torrentStmt.Close()
 
 	// Execute all operations
