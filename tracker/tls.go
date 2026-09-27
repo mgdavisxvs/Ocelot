@@ -36,6 +36,12 @@ func (s *Server) StartTLS(config TLSConfig) error {
 	return s.startManualTLS(config.CertFile, config.KeyFile)
 }
 
+// stubAnnounceHandler is a placeholder /announce handler used by TLS servers
+// until the tracker's raw-TCP pipeline is integrated with the HTTP layer.
+func stubAnnounceHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+}
+
 // startManualTLS starts with manual certificate files
 func (s *Server) startManualTLS(certFile, keyFile string) error {
 	tlsConfig := &tls.Config{
@@ -50,10 +56,7 @@ func (s *Server) startManualTLS(certFile, keyFile string) error {
 
 	// Create HTTP handler (stub - would need integration)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/announce", func(w http.ResponseWriter, r *http.Request) {
-		// Stub handler
-		w.WriteHeader(http.StatusOK)
-	})
+	mux.HandleFunc("/announce", stubAnnounceHandler)
 
 	server := &http.Server{
 		Addr:         ":34443",
@@ -86,10 +89,7 @@ func (s *Server) startAutoTLS(domain string) error {
 
 	// Create HTTP handler (stub - would need integration)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/announce", func(w http.ResponseWriter, r *http.Request) {
-		// Stub handler
-		w.WriteHeader(http.StatusOK)
-	})
+	mux.HandleFunc("/announce", stubAnnounceHandler)
 
 	server := &http.Server{
 		Addr:         ":443",

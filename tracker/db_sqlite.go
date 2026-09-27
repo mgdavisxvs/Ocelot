@@ -246,9 +246,14 @@ func (sm *SQLiteShardManager) prepareStatements() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	var err error
+	type stmtDef struct {
+		dest  **sql.Stmt
+		label string
+		query string
+	}
 
-	sm.stmtPeer, err = sm.currentDB.Prepare(`
+	defs := []stmtDef{
+		{&sm.stmtPeer, "peer", `
 	INSERT INTO peers (user_id,torrent_id,active,uploaded,downloaded,upspeed,downspeed,remaining,corrupt,timespent,announces,ip,peer_id,useragent,last_announce)
 	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 	ON CONFLICT(user_id,torrent_id) DO UPDATE SET
@@ -256,42 +261,32 @@ func (sm *SQLiteShardManager) prepareStatements() error {
 		upspeed=excluded.upspeed, downspeed=excluded.downspeed, remaining=excluded.remaining,
 		corrupt=excluded.corrupt, timespent=excluded.timespent, announces=excluded.announces,
 		ip=excluded.ip, peer_id=excluded.peer_id, useragent=excluded.useragent,
-		last_announce=excluded.last_announce`)
-	if err != nil {
-		return fmt.Errorf("prepare peer stmt: %w", err)
-	}
-
-	sm.stmtUser, err = sm.currentDB.Prepare(`
+		last_announce=excluded.last_announce`},
+		{&sm.stmtUser, "user", `
 	INSERT INTO users (id,uploaded,downloaded) VALUES (?,?,?)
 	ON CONFLICT(id) DO UPDATE SET
 		uploaded=users.uploaded+excluded.uploaded,
-		downloaded=users.downloaded+excluded.downloaded`)
-	if err != nil {
-		return fmt.Errorf("prepare user stmt: %w", err)
-	}
-
-	sm.stmtTorrent, err = sm.currentDB.Prepare(`
+		downloaded=users.downloaded+excluded.downloaded`},
+		{&sm.stmtTorrent, "torrent", `
 	INSERT INTO torrents (id,seeders,leechers,snatched,balance,last_action)
 	VALUES (?,?,?,?,?,?)
 	ON CONFLICT(id) DO UPDATE SET
 		seeders=excluded.seeders, leechers=excluded.leechers,
 		snatched=torrents.snatched+excluded.snatched,
-		balance=excluded.balance, last_action=excluded.last_action`)
-	if err != nil {
-		return fmt.Errorf("prepare torrent stmt: %w", err)
-	}
-
-	sm.stmtSnatch, err = sm.currentDB.Prepare(
-		`INSERT OR IGNORE INTO snatches (user_id,torrent_id,snatched_time,ip) VALUES (?,?,?,?)`)
-	if err != nil {
-		return fmt.Errorf("prepare snatch stmt: %w", err)
-	}
-
-	sm.stmtToken, err = sm.currentDB.Prepare(`
+		balance=excluded.balance, last_action=excluded.last_action`},
+		{&sm.stmtSnatch, "snatch",
+			`INSERT OR IGNORE INTO snatches (user_id,torrent_id,snatched_time,ip) VALUES (?,?,?,?)`},
+		{&sm.stmtToken, "token", `
 	INSERT INTO tokens (user_id,torrent_id,downloaded) VALUES (?,?,?)
-	ON CONFLICT(user_id,torrent_id) DO UPDATE SET downloaded=tokens.downloaded+excluded.downloaded`)
-	if err != nil {
-		return fmt.Errorf("prepare token stmt: %w", err)
+	ON CONFLICT(user_id,torrent_id) DO UPDATE SET downloaded=tokens.downloaded+excluded.downloaded`},
+	}
+
+	for _, d := range defs {
+		stmt, err := sm.currentDB.Prepare(d.query)
+		if err != nil {
+			return fmt.Errorf("prepare %s stmt: %w", d.label, err)
+		}
+		*d.dest = stmt
 	}
 
 	return nil

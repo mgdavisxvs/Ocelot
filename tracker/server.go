@@ -296,19 +296,13 @@ func (s *Server) handleUpdate(req *http.Request, httpClose bool) []byte {
 }
 
 func (s *Server) handleStatsAPI(httpClose bool) []byte {
-	jsonData, err := s.worker.GetStats()
-	if err != nil {
-		return s.errorResponse(err.Error(), httpClose)
-	}
+	jsonData, _ := s.worker.GetStats()
 	return s.jsonResponse(jsonData, httpClose)
 }
 
 func (s *Server) handleTorrentsAPI(req *http.Request, httpClose bool) []byte {
 	limit := queryInt(req, "limit", 100)
-	jsonData, err := s.worker.GetTorrents(limit)
-	if err != nil {
-		return s.errorResponse(err.Error(), httpClose)
-	}
+	jsonData, _ := s.worker.GetTorrents(limit)
 	return s.jsonResponse(jsonData, httpClose)
 }
 
@@ -326,10 +320,7 @@ func (s *Server) handlePeersAPI(req *http.Request, httpClose bool) []byte {
 }
 
 func (s *Server) handleWhitelistAPI(httpClose bool) []byte {
-	jsonData, err := s.worker.GetWhitelist()
-	if err != nil {
-		return s.errorResponse(err.Error(), httpClose)
-	}
+	jsonData, _ := s.worker.GetWhitelist()
 	return s.jsonResponse(jsonData, httpClose)
 }
 
