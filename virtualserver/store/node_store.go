@@ -70,7 +70,7 @@ func (s *VSStore) GetNode(ctx context.Context, id string) (*domain.Node, error) 
 		SELECT id,name,backend_type,arch,os,cpu_model,cpu_threads,avail_cpu_threads,
 		       ram_mib,avail_ram_mib,storage_mib,avail_storage_mib,
 		       labels,location,trust_class,state,last_heartbeat,
-		       agent_metadata,created_at,updated_at
+		       agent_metadata,created_at,updated_at,heartbeat_seq,heartbeat_gaps
 		FROM virtualserver_nodes WHERE id=?`, id)
 	n, err := scanNode(row)
 	if err == sql.ErrNoRows {
@@ -93,7 +93,7 @@ func (s *VSStore) GetNodeByName(ctx context.Context, name string) (*domain.Node,
 		SELECT id,name,backend_type,arch,os,cpu_model,cpu_threads,avail_cpu_threads,
 		       ram_mib,avail_ram_mib,storage_mib,avail_storage_mib,
 		       labels,location,trust_class,state,last_heartbeat,
-		       agent_metadata,created_at,updated_at
+		       agent_metadata,created_at,updated_at,heartbeat_seq,heartbeat_gaps
 		FROM virtualserver_nodes WHERE name=?`, name)
 	n, err := scanNode(row)
 	if err == sql.ErrNoRows {
@@ -119,6 +119,7 @@ func (s *VSStore) ListNodes(ctx context.Context, stateFilter string) ([]domain.N
 		       n.ram_mib, n.avail_ram_mib, n.storage_mib, n.avail_storage_mib,
 		       n.labels, n.location, n.trust_class, n.state, n.last_heartbeat,
 		       n.agent_metadata, n.created_at, n.updated_at,
+		       n.heartbeat_seq, n.heartbeat_gaps,
 		       c.device_index, c.vendor, c.model, c.vram_mib, c.allocated
 		FROM virtualserver_nodes n
 		LEFT JOIN virtualserver_node_capabilities c ON c.node_id = n.id AND c.cap_type = 'gpu'`
@@ -152,6 +153,7 @@ func (s *VSStore) ListNodes(ctx context.Context, stateFilter string) ([]domain.N
 			&n.TotalRAMMiB, &n.AvailRAMMiB, &n.StorageMiB, &n.AvailStorageMiB,
 			&labelsJSON, &n.Location, &n.TrustClass, &state, &lastHB,
 			&metaJSON, &createdAt, &updatedAt,
+			&n.HeartbeatSeq, &n.HeartbeatGaps,
 			&gpuIdx, &gpuVendor, &gpuModel, &gpuVRAM, &gpuAlloc,
 		); err != nil {
 			return nil, err
@@ -222,9 +224,13 @@ func (s *VSStore) UpdateNodeState(ctx context.Context, id string, to domain.Node
 	return nil
 }
 
-// Heartbeat updates last_heartbeat and available resources.
-// Protected nodes have their state preserved — they are NOT promoted to ready.
-func (s *VSStore) Heartbeat(ctx context.Context, id string, availRAMMiB int64, availCPU int) error {
+// Heartbeat updates last_heartbeat, available resources, and the heartbeat
+// sequence counter (VS-F-S3). seq is the monotonic counter the agent includes
+// in every heartbeat; 0 means the agent does not support sequencing (legacy).
+// A gap (seq > stored+1) increments heartbeat_gaps for alerting. A regression
+// (seq != 0 && seq <= stored) is ignored but does not update the sequence,
+// allowing the reconciler to detect a restarted agent via the gap count.
+func (s *VSStore) Heartbeat(ctx context.Context, id string, availRAMMiB int64, availCPU int, seq uint64) error {
 	n, err := s.GetNode(ctx, id)
 	if err != nil {
 		return err
@@ -242,11 +248,24 @@ func (s *VSStore) Heartbeat(ctx context.Context, id string, availRAMMiB int64, a
 		newState = string(n.State)
 	}
 
+	// Compute gap delta for sequence tracking. A gap of >1 means heartbeats
+	// were dropped (agent silent window or packet loss).
+	var gapDelta int64
+	if seq > 0 && n.HeartbeatSeq > 0 && seq > n.HeartbeatSeq+1 {
+		gapDelta = int64(seq - n.HeartbeatSeq - 1)
+	}
+	newSeq := n.HeartbeatSeq
+	if seq == 0 || seq > n.HeartbeatSeq {
+		newSeq = seq
+	}
+
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE virtualserver_nodes
-		SET last_heartbeat=?, avail_ram_mib=?, avail_cpu_threads=?, state=?, updated_at=?
+		SET last_heartbeat=?, avail_ram_mib=?, avail_cpu_threads=?, state=?,
+		    heartbeat_seq=?, heartbeat_gaps=heartbeat_gaps+?, updated_at=?
 		WHERE id=?`,
-		now, availRAMMiB, availCPU, newState, now, id,
+		now, availRAMMiB, availCPU, newState,
+		newSeq, gapDelta, now, id,
 	)
 	return err
 }
@@ -313,6 +332,7 @@ func scanNodeFields(r nodeScanner) (*domain.Node, error) {
 		&n.StorageMiB, &n.AvailStorageMiB,
 		&labelsJSON, &n.Location, &n.TrustClass, &state,
 		&lastHB, &metaJSON, &createdAt, &updatedAt,
+		&n.HeartbeatSeq, &n.HeartbeatGaps,
 	)
 	if err != nil {
 		return nil, err

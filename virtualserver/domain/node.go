@@ -112,6 +112,8 @@ type Node struct {
 	TrustClass       string
 	State            NodeState
 	LastHeartbeat    *time.Time
+	HeartbeatSeq     uint64 // VS-F-S3: monotonic sequence from agent; 0 = unsupported
+	HeartbeatGaps    int64  // cumulative count of sequence gaps detected
 	AgentMeta        map[string]string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time

@@ -171,7 +171,7 @@ func TestStore_Node_ListFiltered(t *testing.T) {
 	// NodeDiscovered → NodeReady requires going through NodeOnline first
 	// per domain.ValidateNodeTransition. Skip the validation path by using
 	// internal transition via Heartbeat which sets online, then UpdateNodeState.
-	s.Heartbeat(ctx, id, 16384, 8)
+	s.Heartbeat(ctx, id, 16384, 8, 0)
 
 	nodes, err := s.ListNodes(ctx, string(domain.NodeReady))
 	if err != nil {

@@ -407,4 +407,15 @@ var migrations = []migration{
 		description: "volumes_retry_count",
 		up:          `ALTER TABLE virtualserver_volumes ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0`,
 	},
+	{
+		// VS-F-S3: heartbeat_seq is a monotonic counter that the node agent
+		// increments on every heartbeat. A gap (received_seq > stored_seq + 1)
+		// indicates a missed heartbeat; a regression (received < stored) indicates
+		// a restarted or duplicated agent. The store enforces monotonicity and
+		// records the gap count for alerting.
+		version:     20,
+		description: "nodes_heartbeat_seq",
+		up: `ALTER TABLE virtualserver_nodes ADD COLUMN heartbeat_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE virtualserver_nodes ADD COLUMN heartbeat_gaps INTEGER NOT NULL DEFAULT 0`,
+	},
 }
