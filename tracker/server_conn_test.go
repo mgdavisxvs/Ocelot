@@ -448,6 +448,18 @@ func TestShutdown_Timeout_ReturnsError(t *testing.T) {
 	}
 	defer clientConn.Close() // releases the blocked handleConnection goroutine on exit
 
+	// Wait until the server has accepted the connection and called wg.Add(1).
+	// OpenConnections is incremented after wg.Add inside the accept loop, so
+	// once it is > 0 we know the WaitGroup counter is non-zero and Shutdown
+	// will block until handleConnection finishes rather than returning nil.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if f.server.stats.OpenConnections.Load() > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
 	// handleConnection is stuck on http.ReadRequest; Shutdown must time out.
 	if err := f.server.Shutdown(); err == nil {
 		t.Error("expected shutdown timeout error, got nil")
