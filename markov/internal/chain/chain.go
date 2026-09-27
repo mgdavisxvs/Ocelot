@@ -136,6 +136,44 @@ func (c *Chain) Decay() {
 	c.mu.Unlock()
 }
 
+// IsErgodic reports whether every state in the chain is reachable from every
+// other state under the current transition matrix (i.e., the chain is
+// irreducible).  The chainEpsilon floor injected by P() guarantees all
+// entries are > 0, so in practice this always returns true for chains
+// constructed with New().  The method is provided as an explicit runtime guard
+// so startup code can assert the invariant and surface any future regression
+// that removes the epsilon floor.
+//
+// RULING-03 mitigation: call at sidecar startup and log a warning if false.
+func (c *Chain) IsErgodic() bool {
+	p := c.P()
+	n := len(p)
+	if n == 0 {
+		return true
+	}
+	// BFS reachability from state 0; if all n states are reached, chain is
+	// irreducible (necessary condition for ergodicity with aperiodic structure).
+	visited := make([]bool, n)
+	queue := []int{0}
+	visited[0] = true
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for next := 0; next < n; next++ {
+			if !visited[next] && p[cur][next] > 0 {
+				visited[next] = true
+				queue = append(queue, next)
+			}
+		}
+	}
+	for _, v := range visited {
+		if !v {
+			return false
+		}
+	}
+	return true
+}
+
 // Counts returns a deep copy of the raw counts matrix.
 func (c *Chain) Counts() [][]float64 {
 	c.mu.RLock()

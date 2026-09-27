@@ -344,3 +344,6 @@ func (ue *UserEngine) userCount() int {
 	defer ue.mu.RUnlock()
 	return len(ue.lastState)
 }
+
+// chain returns the underlying Markov chain for ergodicity inspection.
+func (ue *UserEngine) chain() interface{ IsErgodic() bool } { return ue.globalChain }

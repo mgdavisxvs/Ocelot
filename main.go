@@ -104,6 +104,9 @@ func main() {
 		log.Printf("warning: could not load peer snapshot: %v", err)
 	} else {
 		log.Printf("peer snapshot loaded from %s", snapshotPath)
+		// RULING-10: post-load DB reconciliation sweep removes banned/deleted peers.
+		tracker.ReconcileSnapshotWithDB(torrents, rawDB)
+		log.Printf("snapshot reconciled with database")
 	}
 
 	// ── Site communication ────────────────────────────────────────────────────
@@ -311,15 +314,21 @@ func main() {
 
 	go printStats(stats, worker)
 
+	// ── Periodic snapshot [F-10] — bound data loss to at most 15 minutes ──────
+	snapCtx, snapCancel := context.WithCancel(context.Background())
+	tracker.StartPeriodicSnapshot(snapCtx, snapshotPath, torrents, 15*time.Minute)
+	log.Printf("periodic swarm snapshot started (interval=15m, path=%s)", snapshotPath)
+
 	// ── Graceful shutdown ─────────────────────────────────────────────────────
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 	log.Println("shutdown signal received — draining connections...")
 
+	snapCancel()   // stop periodic snapshot goroutine
 	markovCancel() // stop freeleech poller and adaptive threshold goroutines
 
-	fmt.Println("\n🛑 Shutting down gracefully...")
+	log.Println("Shutting down gracefully...")
 	if vs != nil {
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutCancel()
@@ -331,7 +340,17 @@ func main() {
 		log.Printf("server shutdown: %v", err)
 	}
 	sched.Stop()
-	worker.Stop() // stops reaper + flushes buffered DB writes
+	worker.Stop() // stops reaper
+
+	// RULING-01 / F-01: context-aware drain with 10s deadline so a stuck flush
+	// goroutine cannot block shutdown indefinitely.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer drainCancel()
+	if err := db.Drain(drainCtx); err != nil {
+		log.Printf("warning: buffered DB drain: %v", err)
+	} else {
+		log.Println("buffered DB drained")
+	}
 
 	// [AI-05] persist swarm state for fast restart
 	if err := tracker.SaveSnapshot(snapshotPath, torrents); err != nil {

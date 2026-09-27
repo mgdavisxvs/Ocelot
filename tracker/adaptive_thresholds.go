@@ -43,16 +43,34 @@ func AdaptiveThresholdPoller(ctx context.Context, client *MarkovClient, adapter 
 	}()
 }
 
+// baseMaxAnnounceRate is the factory default used by ml.NewAnomalyDetector().
+const baseMaxAnnounceRate = 100
+
+// maxThresholdMultiplier caps adaptive relaxation at 3× the base value to
+// prevent the Markov→τ→Markov self-calibration loop from diverging.
+// RULING-04 mitigation: τ ≤ maxThresholdMultiplier × τ_base.
+const maxThresholdMultiplier = 3.0
+
 // thresholdsForPopulation derives threshold adjustments from the live peer count.
 func thresholdsForPopulation(peers int64) ml.ThresholdConfig {
+	var rate int
 	switch {
 	case peers > 50_000:
-		// Relax announce-rate threshold for large swarms.
-		return ml.ThresholdConfig{MaxAnnounceRate: 125}
+		// Relax announce-rate threshold for large swarms (+25%).
+		rate = int(float64(baseMaxAnnounceRate) * 1.25)
 	case peers < 1_000:
-		// Tighten for thin-cover swarms.
-		return ml.ThresholdConfig{MaxAnnounceRate: 75}
+		// Tighten for thin-cover swarms (−25%).
+		rate = int(float64(baseMaxAnnounceRate) * 0.75)
 	default:
 		return ml.ThresholdConfig{} // no change
 	}
+	// Apply convergence bound: never exceed maxThresholdMultiplier × base.
+	max := int(float64(baseMaxAnnounceRate) * maxThresholdMultiplier)
+	if rate > max {
+		rate = max
+	}
+	if rate < 1 {
+		rate = 1
+	}
+	return ml.ThresholdConfig{MaxAnnounceRate: rate}
 }

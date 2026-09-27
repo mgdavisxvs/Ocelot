@@ -258,3 +258,7 @@ func (pe *PeerEngine) peerCount() int {
 	return len(pe.lastState)
 }
 
+// chain returns the underlying Markov chain for ergodicity inspection.
+// RULING-03 / F-02: exposes chain for IsErgodic() check at startup.
+func (pe *PeerEngine) chain() interface{ IsErgodic() bool } { return pe.globalChain }
+

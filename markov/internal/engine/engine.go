@@ -40,6 +40,18 @@ func New(cfg *config.Config, database *db.DB) (*Engine, error) {
 	if err := e.loadPersistedState(context.Background()); err != nil {
 		return nil, err
 	}
+	// RULING-03 / F-02: assert ergodicity at startup.  The chainEpsilon floor in
+	// chain.P() guarantees this in practice; the check surfaces any regression.
+	for name, ch := range map[string]interface{ IsErgodic() bool }{
+		"peer":    e.peers.chain(),
+		"user":    e.users.chain(),
+		"torrent": e.torrents.chain(),
+	} {
+		if !ch.IsErgodic() {
+			slog.Warn("markov chain is not ergodic — power-iteration may not converge",
+				"chain", name)
+		}
+	}
 	return e, nil
 }
 

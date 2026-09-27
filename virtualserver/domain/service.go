@@ -62,6 +62,13 @@ type PlacementPolicy struct {
 	ExcludedNodes     []string          `json:"excludedNodes,omitempty"`
 	RequiredArch      string            `json:"arch,omitempty"`
 	PreferredLocation string            `json:"preferredLocation,omitempty"`
+
+	// AntiAffinityLabels lists label key/value pairs that should NOT co-locate.
+	// When set, the scheduler penalises nodes already hosting a service whose
+	// labels match ALL entries.  This prevents two replicas of the same service
+	// from landing on the same node (spread across distinct physical hosts).
+	// RULING-03 (F-03) mitigation: anti-affinity penalty in bin-pack scoring.
+	AntiAffinityLabels map[string]string `json:"antiAffinityLabels,omitempty"`
 }
 
 // RestartPolicy controls instance restart behavior.

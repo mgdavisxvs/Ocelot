@@ -7,6 +7,8 @@ import (
 )
 
 // Weights controls the relative importance of each placement score factor.
+// AntiAffinity is subtracted — a higher value pushes the node lower in rank.
+// RULING-03 / F-03: added AntiAffinity field for spread-across-nodes penalty.
 type Weights struct {
 	Health              float64
 	CapacityFit         float64
@@ -16,6 +18,7 @@ type Weights struct {
 	PreferredNodeBonus  float64
 	ExistingLoadPenalty float64
 	ArtifactTransfer    float64
+	AntiAffinity        float64 // penalty for co-location with same-label services
 }
 
 // DefaultWeights returns the documented default scoring weights.
@@ -29,6 +32,7 @@ func DefaultWeights() Weights {
 		PreferredNodeBonus:  0.10,
 		ExistingLoadPenalty: 0.05,
 		ArtifactTransfer:    0.10,
+		AntiAffinity:        0.15,
 	}
 }
 
@@ -40,8 +44,8 @@ func computeScore(n domain.Node, spec domain.ServiceSpec, catalog ArtifactCatalo
 	locality := dataLocalityScore(n, spec)
 	artifact := artifactTransferScore(n, spec, catalog)
 	preferred := preferredNodeScore(n, spec)
-
 	load := existingLoadPenaltyScore(n)
+	antiAff := antiAffinityPenaltyScore(n, spec)
 
 	score := w.Health*health +
 		w.CapacityFit*capacity +
@@ -50,7 +54,8 @@ func computeScore(n domain.Node, spec domain.ServiceSpec, catalog ArtifactCatalo
 		w.Reliability*1.0 + // reliability requires historical op data; default 1.0
 		w.PreferredNodeBonus*preferred -
 		w.ArtifactTransfer*artifact -
-		w.ExistingLoadPenalty*load
+		w.ExistingLoadPenalty*load -
+		w.AntiAffinity*antiAff
 
 	if score < 0 {
 		score = 0
@@ -148,4 +153,24 @@ func preferredNodeScore(n domain.Node, spec domain.ServiceSpec) float64 {
 		}
 	}
 	return 0.0
+}
+
+// antiAffinityPenaltyScore returns 1.0 if the node already hosts a service
+// whose labels satisfy ALL of spec.Placement.AntiAffinityLabels, and 0.0
+// otherwise.  The scheduler subtracts this value weighted by
+// Weights.ExistingLoadPenalty so co-located replicas are avoided.
+//
+// RULING-03 / F-03 mitigation: spread replicas across distinct physical nodes.
+func antiAffinityPenaltyScore(n domain.Node, spec domain.ServiceSpec) float64 {
+	required := spec.Placement.AntiAffinityLabels
+	if len(required) == 0 {
+		return 0.0
+	}
+	for k, v := range required {
+		if n.Labels[k] != v {
+			return 0.0 // node does not carry this label — no penalty
+		}
+	}
+	// All anti-affinity labels matched — penalise this node.
+	return 1.0
 }

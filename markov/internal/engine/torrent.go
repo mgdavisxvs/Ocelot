@@ -419,3 +419,6 @@ func (te *TorrentEngine) getPrediction(
 		RecommendedInterval:      interval,
 	}
 }
+
+// chain returns the underlying Markov chain for ergodicity inspection.
+func (te *TorrentEngine) chain() interface{ IsErgodic() bool } { return te.globalChain }
