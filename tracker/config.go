@@ -10,6 +10,30 @@ import (
 	"time"
 )
 
+// ── Typed configuration newtypes (F-C2) ──────────────────────────────────────
+// These newtypes give semantic meaning to bare integer config values, making
+// incorrect unit assignments a type-level error when used in typed contexts.
+// The FileConfig struct keeps int fields for backward-compatible file parsing;
+// callers that need semantic safety use these types explicitly.
+
+// Seconds is a duration expressed as whole seconds (non-negative).
+type Seconds int
+
+// ToDuration converts a Seconds value to a time.Duration.
+func (s Seconds) ToDuration() time.Duration { return time.Duration(s) * time.Second }
+
+// Port is a valid TCP/UDP port number (1–65535).
+type Port uint16
+
+// Valid returns true when the port is in the usable range.
+func (p Port) Valid() bool { return p >= 1 && p <= 65535 }
+
+// Megabytes is a size expressed in mebibytes (MiB), used for buffer and limit fields.
+type Megabytes int
+
+// Bytes returns the size in bytes.
+func (m Megabytes) Bytes() int64 { return int64(m) * 1024 * 1024 }
+
 // FileConfig holds all values parsed from ocelot.conf.
 type FileConfig struct {
 	ListenPort        int
@@ -89,6 +113,34 @@ func DefaultFileConfig() *FileConfig {
 		RateLimitRPS:      100,
 		RateLimitBurst:    200,
 	}
+}
+
+// Validate checks that all numeric fields fall within safe operating ranges.
+// Call after parsing to catch mis-typed or out-of-range config values before
+// the server starts. Returns the first violation found.
+func (fc *FileConfig) Validate() error {
+	if !Port(fc.ListenPort).Valid() {
+		return fmt.Errorf("listen_port %d is not in range 1–65535", fc.ListenPort)
+	}
+	if fc.AnnounceInterval <= 0 {
+		return fmt.Errorf("announce_interval must be > 0 seconds, got %d", fc.AnnounceInterval)
+	}
+	if fc.PeersTimeout <= 0 {
+		return fmt.Errorf("peers_timeout must be > 0 seconds, got %d", fc.PeersTimeout)
+	}
+	if fc.MaxConnections <= 0 {
+		return fmt.Errorf("max_connections must be > 0, got %d", fc.MaxConnections)
+	}
+	if fc.NumWantLimit <= 0 || fc.NumWantLimit > 500 {
+		return fmt.Errorf("numwant_limit must be 1–500, got %d", fc.NumWantLimit)
+	}
+	if fc.RateLimitRPS < 0 {
+		return fmt.Errorf("rate_limit_rps must be >= 0, got %d", fc.RateLimitRPS)
+	}
+	if fc.BatchBufferCap < 0 {
+		return fmt.Errorf("batch_buffer_cap must be >= 0, got %d", fc.BatchBufferCap)
+	}
+	return nil
 }
 
 // ParseFlags processes CLI arguments and returns the config file path.

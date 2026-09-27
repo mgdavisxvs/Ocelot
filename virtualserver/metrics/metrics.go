@@ -122,4 +122,39 @@ var (
 		Name:      "volume_operations_total",
 		Help:      "Total storage driver operations by driver, operation type, and outcome.",
 	}, []string{"driver", "op", "outcome"}) // op: create, delete, mount, unmount, stat, snapshot
+
+	// VS-F-S1: Reconciler work-depth gauges — number of items found in each
+	// pass, equivalent to a channel's pending-item count in a pipeline model.
+
+	// ReconcilerPendingInstances is the number of non-terminal instances seen
+	// at the start of each reconcile pass (declared + scheduled + provisioning
+	// + starting + running + degraded + stopping + failed).
+	ReconcilerPendingInstances = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "ocelot_vs",
+		Name:      "reconciler_pending_instances",
+		Help:      "Number of non-terminal instances found at the start of each reconcile pass.",
+	})
+
+	// ReconcilerPendingVolumes is the number of non-terminal volumes found each pass.
+	ReconcilerPendingVolumes = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "ocelot_vs",
+		Name:      "reconciler_pending_volumes",
+		Help:      "Number of non-terminal volumes found at the start of each reconcile pass.",
+	})
+
+	// ReconcilerBreakersOpen is the current count of instance circuit breakers
+	// in the open (suppressing retries) state.
+	ReconcilerBreakersOpen = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "ocelot_vs",
+		Name:      "reconciler_breakers_open",
+		Help:      "Number of instance restart circuit breakers currently open.",
+	})
+
+	// HeartbeatGapsTotal tracks the cumulative sum of heartbeat sequence gaps
+	// across all nodes (VS-F-S3 observability complement).
+	HeartbeatGapsTotal = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "ocelot_vs",
+		Name:      "node_heartbeat_gaps_total",
+		Help:      "Cumulative heartbeat sequence gaps across all nodes (missed heartbeats).",
+	})
 )

@@ -231,6 +231,10 @@ func (r *VSReconciler) reconcile(ctx context.Context) error {
 		r.store.WriteAuditLog(ctx, "node_ttl_error", "node", "", "", false, err.Error()) //nolint:errcheck
 	}
 
+	// VS-F-S1: emit work-depth gauges at the top of every pass so operators
+	// can observe reconciler backlog independently of loop duration.
+	r.updateWorkDepthMetrics(ctx)
+
 	if err := r.reconcileVolumes(ctx); err != nil {
 		// Non-fatal: log and continue with instance reconciliation.
 		r.store.WriteAuditLog(ctx, "volume_reconcile_error", "volume", "", "", false, err.Error()) //nolint:errcheck
@@ -783,6 +787,45 @@ func outcomeStr(err error) string {
 }
 
 // ── C2: node heartbeat TTL expiry ─────────────────────────────────────────────
+
+// updateWorkDepthMetrics refreshes the VS-F-S1 work-depth Prometheus gauges.
+// It counts pending instances, non-terminal volumes, and open circuit breakers.
+// All list calls are read-only; errors are silently ignored so the metrics pass
+// cannot block the reconciliation cycle.
+func (r *VSReconciler) updateWorkDepthMetrics(ctx context.Context) {
+	if allInsts, err := r.store.ListInstances(ctx, ""); err == nil {
+		var pending float64
+		for _, inst := range allInsts {
+			if !domain.IsTerminalInstanceState(inst.State) {
+				pending++
+			}
+		}
+		vsmetrics.ReconcilerPendingInstances.Set(pending)
+	}
+
+	var volPending float64
+	for _, state := range []domain.VolumeState{
+		domain.VolumeDeclared, domain.VolumeProvisioning,
+		domain.VolumeReady, domain.VolumeBound,
+		domain.VolumeReleasing, domain.VolumeFailed,
+		domain.VolumeQuotaExceeded,
+	} {
+		if vols, err := r.store.ListVolumesByState(ctx, state); err == nil {
+			volPending += float64(len(vols))
+		}
+	}
+	vsmetrics.ReconcilerPendingVolumes.Set(volPending)
+
+	r.restartMu.Lock()
+	var openBreakers float64
+	for _, rb := range r.restartBreakers {
+		if rb.isOpen() {
+			openBreakers++
+		}
+	}
+	r.restartMu.Unlock()
+	vsmetrics.ReconcilerBreakersOpen.Set(openBreakers)
+}
 
 // reconcileNodeHeartbeats marks ready nodes degraded when no heartbeat has
 // been received within nodeTTL. Nodes that have never sent a heartbeat
