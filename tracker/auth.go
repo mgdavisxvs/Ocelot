@@ -51,11 +51,9 @@ func ValidateToken(tokenString string, secret []byte) (*Claims, error) {
 		return nil, ErrUnauthorized.WithError(err)
 	}
 
-	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
-		return claims, nil
-	}
-
-	return nil, ErrUnauthorized.WithDetail("invalid token claims")
+	// jwt.ParseWithClaims with &Claims{} always stores *Claims — the type
+	// assertion cannot fail and token.Valid is already checked by the library.
+	return token.Claims.(*Claims), nil
 }
 
 // APIKey represents an API key

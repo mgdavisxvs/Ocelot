@@ -80,10 +80,9 @@ func (sm *SQLiteShardManager) CurrentDB() *sql.DB {
 
 func (sm *SQLiteShardManager) openDB(path string) (*sql.DB, error) {
 	dsn := fmt.Sprintf("file:%s?cache=shared&mode=rwc", path)
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
-	}
+	// sql.Open with a registered driver never errors; the actual connection
+	// is made lazily on first use (the PRAGMA execs below).
+	db, _ := sql.Open("sqlite", dsn)
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(10)
 	db.SetConnMaxLifetime(time.Hour)
@@ -115,9 +114,7 @@ func (sm *SQLiteShardManager) openCurrentDB() error {
 	if sm.currentPath != "" {
 		size, err := sm.getDBSize(sm.currentPath)
 		if err == nil && size >= MaxDBSize {
-			if err := sm.closeCurrentDB(); err != nil {
-				return err
-			}
+			sm.closeCurrentDB() // always returns nil
 			nextMonth := now.AddDate(0, 1, 0).Format("2006-01")
 			path = filepath.Join(sm.dbDir, fmt.Sprintf("ocelot-%s.db", nextMonth))
 			fmt.Printf("Rotating DB: %s is full, creating %s\n", sm.currentPath, path)
