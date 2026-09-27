@@ -433,8 +433,10 @@ func queryInt(req *http.Request, key string, defaultVal int) int {
 	return v
 }
 
-func netpollerType() string {
-	switch runtime.GOOS {
+func netpollerType() string { return netpollerTypeForOS(runtime.GOOS) }
+
+func netpollerTypeForOS(goos string) string {
+	switch goos {
 	case "linux":
 		return "epoll"
 	case "darwin", "freebsd", "openbsd", "netbsd":

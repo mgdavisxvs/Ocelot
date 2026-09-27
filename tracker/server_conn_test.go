@@ -383,3 +383,28 @@ func TestListenAndServe_MaxMiddlemen_DropsConnection(t *testing.T) {
 		t.Errorf("ListenAndServe returned: %v", err)
 	}
 }
+
+// ── netpollerTypeForOS ────────────────────────────────────────────────────────
+
+// TestNetpollerTypeForOS_AllCases covers every GOOS dispatch arm including the
+// darwin/windows/default branches that are unreachable at runtime on Linux.
+func TestNetpollerTypeForOS_AllCases(t *testing.T) {
+	cases := []struct {
+		goos string
+		want string
+	}{
+		{"linux", "epoll"},
+		{"darwin", "kqueue"},
+		{"freebsd", "kqueue"},
+		{"openbsd", "kqueue"},
+		{"netbsd", "kqueue"},
+		{"windows", "IOCP"},
+		{"plan9", "select"},
+		{"wasm", "select"},
+	}
+	for _, c := range cases {
+		if got := netpollerTypeForOS(c.goos); got != c.want {
+			t.Errorf("netpollerTypeForOS(%q) = %q, want %q", c.goos, got, c.want)
+		}
+	}
+}
