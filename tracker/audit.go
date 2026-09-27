@@ -35,6 +35,10 @@ type AuditEntry struct {
 	Metadata     map[string]interface{}
 }
 
+// currentAuditSchemaVersion is incremented whenever the audit_log schema changes.
+// Written into every row so forensic tools can detect version skew.
+const currentAuditSchemaVersion = 1
+
 // Log records an audit entry
 func (al *AuditLogger) Log(ctx context.Context, action, resourceType, resourceID string, success bool, err error) error {
 	userID := al.getUserIDFromContext(ctx)
@@ -54,8 +58,8 @@ func (al *AuditLogger) Log(ctx context.Context, action, resourceType, resourceID
 	metadataJSON, _ := json.Marshal(metadata)
 
 	query := `INSERT INTO audit_log
-		(timestamp, user_id, action, resource_type, resource_id, ip_address, success, error_message, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		(timestamp, user_id, action, resource_type, resource_id, ip_address, success, error_message, metadata, schema_version)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, dbErr := al.db.Exec(query,
 		time.Now().Unix(),
@@ -67,6 +71,7 @@ func (al *AuditLogger) Log(ctx context.Context, action, resourceType, resourceID
 		success,
 		errorMsg,
 		string(metadataJSON),
+		currentAuditSchemaVersion,
 	)
 
 	if dbErr != nil {
@@ -93,7 +98,7 @@ func (al *AuditLogger) Log(ctx context.Context, action, resourceType, resourceID
 // Query retrieves audit logs with filters
 func (al *AuditLogger) Query(filters AuditFilters) ([]*AuditEntry, error) {
 	query := `SELECT id, timestamp, user_id, action, resource_type, resource_id,
-		ip_address, success, error_message, metadata
+		ip_address, success, error_message, metadata, COALESCE(schema_version, 1)
 		FROM audit_log WHERE 1=1`
 
 	args := []interface{}{}
@@ -138,6 +143,7 @@ func (al *AuditLogger) Query(filters AuditFilters) ([]*AuditEntry, error) {
 		var timestampUnix int64
 		var userIDPtr *int
 		var metadataJSON string
+		var schemaVersion int
 
 		err := rows.Scan(
 			&entry.ID,
@@ -150,7 +156,9 @@ func (al *AuditLogger) Query(filters AuditFilters) ([]*AuditEntry, error) {
 			&entry.Success,
 			&entry.ErrorMessage,
 			&metadataJSON,
+			&schemaVersion,
 		)
+		_ = schemaVersion // available for future migration logic
 
 		if err != nil {
 			continue
@@ -205,7 +213,8 @@ func CreateAuditLogTable(db *sql.DB) error {
 		ip_address TEXT,
 		success BOOLEAN NOT NULL,
 		error_message TEXT,
-		metadata TEXT
+		metadata TEXT,
+		schema_version INTEGER NOT NULL DEFAULT 1
 	);
 	CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
 	CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id);

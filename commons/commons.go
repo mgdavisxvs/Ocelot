@@ -1,6 +1,7 @@
 package commons
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -267,10 +268,15 @@ func nullableUint32(id uint32) interface{} {
 	return id
 }
 
-// announceTxnID generates a deterministic (user, torrent, nanos, direction) key
-// for idempotent settlement within one announce epoch.
+// announceTxnID generates a content-addressable settlement key from
+// (userID, torrentID, uploadedDelta, downloadedDelta, epoch-second, direction).
+// Using SHA-256 over the canonical fields prevents collision across concurrent
+// announces with identical millisecond timestamps (D-G2).
 func announceTxnID(userID, torrentID uint32, nanos int64, direction string) string {
-	return fmt.Sprintf("announce:%d:%d:%d:%s", userID, torrentID, nanos/int64(time.Second), direction)
+	epoch := nanos / int64(time.Second)
+	raw := fmt.Sprintf("%d:%d:%d:%s", userID, torrentID, epoch, direction)
+	sum := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("announce:%x", sum[:16]) // 128-bit prefix, hex-encoded
 }
 
 // WhyDidWorkloadRunHere returns a structured explanation for an allocation

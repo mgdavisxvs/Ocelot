@@ -6,13 +6,19 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
+// maxConsecutiveDrops is the number of consecutive full-buffer events before
+// the hub force-disconnects a chronically slow SSE client (D-T3).
+const maxConsecutiveDrops = 32
+
 // sseClient represents a connected SSE consumer.
 type sseClient struct {
-	ch     chan string
-	closed chan struct{}
+	ch           chan string
+	closed       chan struct{}
+	consecutiveDrops atomic.Int64
 }
 
 // SSEHub broadcasts events to connected admin SSE clients over HTTP.
@@ -107,8 +113,18 @@ func (h *SSEHub) forward(e Event) {
 	for c := range h.clients {
 		select {
 		case c.ch <- msg:
+			c.consecutiveDrops.Store(0)
 		default:
 			// Slow client — drop rather than block the bus dispatch goroutine.
+			drops := c.consecutiveDrops.Add(1)
+			if drops >= maxConsecutiveDrops {
+				// Force-disconnect chronically slow client to reclaim the channel slot.
+				select {
+				case <-c.closed:
+				default:
+					close(c.closed)
+				}
+			}
 		}
 	}
 }

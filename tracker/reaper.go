@@ -50,7 +50,7 @@ func (r *Reaper) run() {
 func (r *Reaper) reap() {
 	cutoff := time.Now().Add(-r.timeout)
 	var totalEvicted uint64
-	r.torrents.ForEach(func(_ string, t *Torrent) bool {
+	r.torrents.ForEachBatch(256, func(_ string, t *Torrent) bool {
 		totalEvicted += reapPeerList(t.Seeders, cutoff)
 		totalEvicted += reapPeerList(t.Leechers, cutoff)
 		return true

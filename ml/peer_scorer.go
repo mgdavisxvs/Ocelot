@@ -7,21 +7,40 @@ import (
 	"time"
 )
 
+// PeerWeights holds the five scoring dimensions for peer selection (D-C3).
+// Named fields prevent accidental weight assignment to the wrong dimension.
+type PeerWeights struct {
+	UploadSpeed  float64 // fraction of score from upload speed
+	Availability float64 // fraction from uptime / days active
+	Proximity    float64 // fraction from network closeness
+	Reputation   float64 // fraction from session completion ratio
+	Freshness    float64 // fraction from recency of last announce
+}
+
+// DefaultPeerWeights returns the canonical weight set.
+func DefaultPeerWeights() PeerWeights {
+	return PeerWeights{
+		UploadSpeed:  0.35,
+		Availability: 0.25,
+		Proximity:    0.20,
+		Reputation:   0.15,
+		Freshness:    0.05,
+	}
+}
+
 // PeerScorer provides ML-based peer recommendation
 type PeerScorer struct {
-	weights map[string]float64
+	weights PeerWeights
+	// p95Speed is a running P95 upload-speed estimator used as the
+	// normalization ceiling instead of the fixed 1e6 magic constant (D-K3).
+	p95Speed *p95Estimator
 }
 
 // NewPeerScorer creates a new peer scorer
 func NewPeerScorer() *PeerScorer {
 	return &PeerScorer{
-		weights: map[string]float64{
-			"upload_speed": 0.35,
-			"availability": 0.25,
-			"proximity":    0.20,
-			"reputation":   0.15,
-			"freshness":    0.05,
-		},
+		weights:  DefaultPeerWeights(),
+		p95Speed: newP95Estimator(1024),
 	}
 }
 
@@ -29,30 +48,73 @@ func NewPeerScorer() *PeerScorer {
 func (ps *PeerScorer) Score(peer *PeerInfo, requesterIP net.IP) float64 {
 	score := 0.0
 
-	// Upload speed (normalized to 0-1 range)
+	// Upload speed: normalize against live P95 ceiling (D-K3).
 	uploadSpeed := float64(peer.Uploaded) / max(float64(time.Since(peer.FirstSeen).Seconds()), 1.0)
-	normalizedSpeed := normalize(uploadSpeed, 0, 1e6) // Normalize to 1MB/s max
-	score += ps.weights["upload_speed"] * normalizedSpeed
+	ps.p95Speed.observe(uploadSpeed)
+	ceiling := ps.p95Speed.p95()
+	if ceiling < 1 {
+		ceiling = 1e6 // fallback before enough observations
+	}
+	normalizedSpeed := normalize(uploadSpeed, 0, ceiling)
+	score += ps.weights.UploadSpeed * normalizedSpeed
 
 	// Availability (uptime percentage)
 	uptime := time.Since(peer.FirstSeen).Hours()
 	availability := min(uptime/24.0, 1.0) // Days active, capped at 1.0
-	score += ps.weights["availability"] * availability
+	score += ps.weights.Availability * availability
 
 	// Proximity (network distance)
 	proximity := 1.0 - (float64(ipDistance(peer.IP, requesterIP)) / 255.0)
-	score += ps.weights["proximity"] * proximity
+	score += ps.weights.Proximity * proximity
 
 	// Reputation (completed vs dropped sessions)
 	reputation := float64(peer.CompletedSessions) / max(float64(peer.TotalSessions), 1.0)
-	score += ps.weights["reputation"] * reputation
+	score += ps.weights.Reputation * reputation
 
 	// Freshness (recent activity)
 	secondsSinceAnnounce := time.Since(peer.LastAnnounce).Seconds()
 	freshness := 1.0 / (1.0 + secondsSinceAnnounce/1800.0) // Half-life 30 minutes
-	score += ps.weights["freshness"] * freshness
+	score += ps.weights.Freshness * freshness
 
 	return score
+}
+
+// p95Estimator tracks a sliding window of float64 samples and returns
+// the approximate P95 value (D-K3 running-estimate ceiling).
+type p95Estimator struct {
+	buf  []float64
+	pos  int
+	full bool
+}
+
+func newP95Estimator(capacity int) *p95Estimator {
+	return &p95Estimator{buf: make([]float64, capacity)}
+}
+
+func (e *p95Estimator) observe(v float64) {
+	e.buf[e.pos] = v
+	e.pos = (e.pos + 1) % len(e.buf)
+	if e.pos == 0 {
+		e.full = true
+	}
+}
+
+func (e *p95Estimator) p95() float64 {
+	size := len(e.buf)
+	if !e.full {
+		size = e.pos
+	}
+	if size == 0 {
+		return 0
+	}
+	tmp := make([]float64, size)
+	copy(tmp, e.buf[:size])
+	sort.Float64s(tmp)
+	idx := int(math.Ceil(float64(size)*0.95)) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	return tmp[idx]
 }
 
 // SelectBest selects the best peers based on ML scoring

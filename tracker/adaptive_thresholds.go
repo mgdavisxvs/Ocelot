@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/mgdavisxvs/Ocelot/ml"
@@ -13,17 +14,22 @@ type ThresholdAdapter interface {
 	SetThresholds(ml.ThresholdConfig)
 }
 
+// minPollsForStability is the number of Markov engine polls that must have
+// elapsed between consecutive threshold applications (D-G3 stability gate).
+// Prevents applying thresholds derived from an unconverged chain.
+const minPollsForStability = 5
+
 // AdaptiveThresholdPoller runs a background goroutine that periodically fetches
 // population metrics from the Markov engine and adjusts anomaly-detection
 // thresholds to match observed swarm behaviour.
 //
-// Scaling heuristics:
-//   - Large swarms (>50k peers) tolerate faster announce rates; relax by 25%.
-//   - Very small swarms (<1k peers) tighten the announce rate by 25% to catch
-//     ratio cheaters operating on thin cover.
+// Stability gate (D-G3): thresholds are applied only when the Markov engine
+// has completed at least minPollsForStability polls since the last application,
+// preventing threshold churn from unconverged chain distributions.
 //
 // It returns immediately; cancel ctx to stop.
 func AdaptiveThresholdPoller(ctx context.Context, client *MarkovClient, adapter ThresholdAdapter, intervalSec int) {
+	var lastAppliedPollCount atomic.Int64
 	go func() {
 		ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
 		defer ticker.Stop()
@@ -36,8 +42,14 @@ func AdaptiveThresholdPoller(ctx context.Context, client *MarkovClient, adapter 
 				if err != nil {
 					continue
 				}
+				// Stability gate: require at least minPollsForStability new polls.
+				last := lastAppliedPollCount.Load()
+				if m.PollCount-last < minPollsForStability {
+					continue
+				}
 				cfg := thresholdsForPopulation(m.TrackedPeers)
 				adapter.SetThresholds(cfg)
+				lastAppliedPollCount.Store(m.PollCount)
 			}
 		}
 	}()

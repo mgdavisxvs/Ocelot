@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/mgdavisxvs/ocelot/markov/internal/config"
@@ -21,7 +22,7 @@ type Engine struct {
 	// snatch watermark: we only fetch snatches newer than this timestamp.
 	snatchWatermark int64
 
-	pollCount int // incremented on each poll; used for decay scheduling
+	pollCount atomic.Int64 // incremented atomically on each poll; used for decay scheduling (D-T5)
 
 	// EventBus publishing — both optional; nil disables Redis event publishing.
 	eventPub        *EventPublisher
@@ -158,12 +159,12 @@ func (e *Engine) poll(ctx context.Context) {
 	e.torrents.observe(torrentRows)
 	e.users.observe(userRows, freeleechUIDs)
 
-	e.pollCount++
-	if e.pollCount%e.cfg.DecayEveryNPolls == 0 {
+	count := e.pollCount.Add(1)
+	if count%int64(e.cfg.DecayEveryNPolls) == 0 {
 		e.peers.decay()
 		e.users.decay()
 		e.torrents.decay()
-		slog.Debug("decay applied", "poll", e.pollCount)
+		slog.Debug("decay applied", "poll", count)
 	}
 
 	slog.Debug("poll complete",
@@ -335,7 +336,7 @@ func (e *Engine) Stats() Stats {
 		TrackedPeers:    e.peers.peerCount(),
 		TrackedTorrents: e.torrents.torrentCount(),
 		TrackedUsers:    e.users.userCount(),
-		PollCount:       e.pollCount,
+		PollCount:       int(e.pollCount.Load()),
 		SnatchWatermark: e.snatchWatermark,
 	}
 }

@@ -144,6 +144,16 @@ func (b *BufferedDB) QueueDepth() int { return len(b.queue) }
 // DroppedOps returns the total number of ops dropped due to a full queue.
 func (b *BufferedDB) DroppedOps() uint64 { return b.dropped.Load() }
 
+// QueuePressure returns the queue fill ratio in [0.0, 1.0].
+// Feed this to Prometheus and the rate limiter as a backpressure signal.
+func (b *BufferedDB) QueuePressure() float64 {
+	cap := cap(b.queue)
+	if cap == 0 {
+		return 0
+	}
+	return float64(len(b.queue)) / float64(cap)
+}
+
 // Flush blocks until the async queue is fully drained.  Safe to call once;
 // subsequent calls are no-ops.
 func (b *BufferedDB) Flush() {

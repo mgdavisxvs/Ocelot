@@ -2,26 +2,34 @@ package tracker
 
 import (
 	"encoding/gob"
+	"encoding/json"
 	"net"
 	"os"
 	"time"
 )
 
-// snapshotPeer is the gob-serialisable DTO for a single peer.
+// snapshotPeer stores only peer presence (IP/port/timestamps). Counters
+// (Uploaded/Downloaded/Left/Corrupt) are excluded: they belong to the
+// authoritative database record and must not be merged from a potentially
+// stale snapshot (D-T4 merge-strategy fix).
 type snapshotPeer struct {
-	UserID          uint32
-	IP              net.IP
-	Port            uint16
-	Uploaded        int64
-	Downloaded      int64
-	Left            int64
-	Corrupt         int64
-	FirstAnnounced  time.Time
-	LastAnnounced   time.Time
-	Announces       uint32
-	Visible         bool
-	Seeder          bool
-	ConnectionTimes []time.Time
+	UserID         uint32
+	IP             net.IP
+	Port           uint16
+	FirstAnnounced time.Time
+	LastAnnounced  time.Time
+	Announces      uint32
+	Visible        bool
+	Seeder         bool
+}
+
+// snapshotManifest records metadata alongside the snapshot file so that
+// startup code can validate freshness before applying the snapshot (D-G5).
+type snapshotManifest struct {
+	CreatedAt   time.Time `json:"created_at"`
+	TorrentCount int      `json:"torrent_count"`
+	PeerCount   int       `json:"peer_count"`
+	SnapshotFile string   `json:"snapshot_file"`
 }
 
 type snapshotEntry struct {
@@ -37,13 +45,14 @@ type peerSnapshot struct {
 	Torrents map[string]*snapshotTorrent // info_hash → torrent peer state
 }
 
-// SaveSnapshot serialises the live swarm state to path using gob encoding.
-// Called on graceful shutdown so the next startup can skip the cold-start
-// peer-list build period.
+// SaveSnapshot serialises the live swarm state to path using gob encoding
+// and writes a JSON manifest file at path+".manifest" recording metadata
+// for startup validation (D-G5).
 func SaveSnapshot(path string, torrents *TorrentList) error {
 	snap := &peerSnapshot{
 		Torrents: make(map[string]*snapshotTorrent),
 	}
+	totalPeers := 0
 
 	torrents.ForEach(func(hash string, t *Torrent) bool {
 		st := &snapshotTorrent{}
@@ -57,6 +66,7 @@ func SaveSnapshot(path string, torrents *TorrentList) error {
 		})
 		if len(st.Peers) > 0 {
 			snap.Torrents[hash] = st
+			totalPeers += len(st.Peers)
 		}
 		return true
 	})
@@ -65,8 +75,24 @@ func SaveSnapshot(path string, torrents *TorrentList) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return gob.NewEncoder(f).Encode(snap)
+	if err := gob.NewEncoder(f).Encode(snap); err != nil {
+		f.Close()
+		return err
+	}
+	f.Close()
+
+	manifest := snapshotManifest{
+		CreatedAt:    time.Now().UTC(),
+		TorrentCount: len(snap.Torrents),
+		PeerCount:    totalPeers,
+		SnapshotFile: path,
+	}
+	mf, err := os.Create(path + ".manifest")
+	if err != nil {
+		return err
+	}
+	defer mf.Close()
+	return json.NewEncoder(mf).Encode(manifest)
 }
 
 // LoadSnapshot deserialises a previous snapshot and merges live peers into
@@ -109,36 +135,26 @@ func LoadSnapshot(path string, torrents *TorrentList) error {
 
 func peerToSnap(p *Peer, seeder bool) snapshotPeer {
 	return snapshotPeer{
-		UserID:          uint32(p.UserID),
-		IP:              p.IP,
-		Port:            p.Port,
-		Uploaded:        p.Uploaded,
-		Downloaded:      p.Downloaded,
-		Left:            p.Left,
-		Corrupt:         p.Corrupt,
-		FirstAnnounced:  p.FirstAnnounced,
-		LastAnnounced:   p.LastAnnounced,
-		Announces:       p.Announces,
-		Visible:         p.Visible,
-		Seeder:          seeder,
-		ConnectionTimes: p.ConnectionTimes,
+		UserID:         uint32(p.UserID),
+		IP:             p.IP,
+		Port:           p.Port,
+		FirstAnnounced: p.FirstAnnounced,
+		LastAnnounced:  p.LastAnnounced,
+		Announces:      p.Announces,
+		Visible:        p.Visible,
+		Seeder:         seeder,
 	}
 }
 
 func snapToPeer(sp snapshotPeer) *Peer {
 	p := &Peer{
-		UserID:          UserID(sp.UserID),
-		IP:              sp.IP,
-		Port:            sp.Port,
-		Uploaded:        sp.Uploaded,
-		Downloaded:      sp.Downloaded,
-		Left:            sp.Left,
-		Corrupt:         sp.Corrupt,
-		FirstAnnounced:  sp.FirstAnnounced,
-		LastAnnounced:   sp.LastAnnounced,
-		Announces:       sp.Announces,
-		Visible:         sp.Visible,
-		ConnectionTimes: sp.ConnectionTimes,
+		UserID:         UserID(sp.UserID),
+		IP:             sp.IP,
+		Port:           sp.Port,
+		FirstAnnounced: sp.FirstAnnounced,
+		LastAnnounced:  sp.LastAnnounced,
+		Announces:      sp.Announces,
+		Visible:        sp.Visible,
 	}
 	if sp.IP != nil {
 		p.IPPort = CompactIPPort(sp.IP, sp.Port)

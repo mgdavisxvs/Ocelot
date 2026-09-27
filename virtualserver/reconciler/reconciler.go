@@ -15,11 +15,44 @@ import (
 )
 
 const (
-	defaultInterval      = 15 * time.Second
-	retryBaseDelay       = 2 * time.Second
-	defaultNodeTTL       = 90 * time.Second
-	degradedFailTimeout  = 5 * time.Minute
+	defaultInterval        = 15 * time.Second
+	retryBaseDelay         = 2 * time.Second
+	defaultNodeTTL         = 90 * time.Second
+	degradedFailTimeout    = 5 * time.Minute
+	restartCBThreshold     = 5               // consecutive rapid failures before circuit opens (VS-D-T1)
+	restartCBRapidWindow   = 2 * time.Minute // window within which failures count as "rapid"
+	restartCBOpenDuration  = 10 * time.Minute // how long to suppress retries when circuit is open
 )
+
+// restartBreaker is a per-instance circuit breaker that prevents infinite
+// rapid-fire restarts for policy=always services (VS-D-T1).
+type restartBreaker struct {
+	mu              sync.Mutex
+	rapidFailures   int
+	lastFailure     time.Time
+	openUntil       time.Time
+}
+
+func (rb *restartBreaker) recordFailure() {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	now := time.Now()
+	if now.Sub(rb.lastFailure) > restartCBRapidWindow {
+		rb.rapidFailures = 0 // reset if last failure was not recent
+	}
+	rb.rapidFailures++
+	rb.lastFailure = now
+	if rb.rapidFailures >= restartCBThreshold {
+		rb.openUntil = now.Add(restartCBOpenDuration)
+		rb.rapidFailures = 0
+	}
+}
+
+func (rb *restartBreaker) isOpen() bool {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return time.Now().Before(rb.openUntil)
+}
 
 // StoreInterface is the subset of VSStore the reconciler requires.
 type StoreInterface interface {
@@ -77,6 +110,10 @@ type VSReconciler struct {
 
 	runningMu sync.Mutex
 
+	// restartBreakers guards against infinite rapid-restart loops (VS-D-T1).
+	restartMu      sync.Mutex
+	restartBreakers map[string]*restartBreaker
+
 	stop chan struct{}
 	done chan struct{}
 }
@@ -109,15 +146,16 @@ func New(cfg Config) *VSReconciler {
 		drivers = map[string]storage.StorageDriver{}
 	}
 	return &VSReconciler{
-		store:        cfg.Store,
-		adapters:     cfg.Adapters,
-		classDrivers: drivers,
-		sched:        cfg.Sched,
-		catalog:      cfg.Catalog,
-		interval:     interval,
-		nodeTTL:      nodeTTL,
-		stop:         make(chan struct{}),
-		done:         make(chan struct{}),
+		store:           cfg.Store,
+		adapters:        cfg.Adapters,
+		classDrivers:    drivers,
+		sched:           cfg.Sched,
+		catalog:         cfg.Catalog,
+		interval:        interval,
+		nodeTTL:         nodeTTL,
+		restartBreakers: make(map[string]*restartBreaker),
+		stop:            make(chan struct{}),
+		done:            make(chan struct{}),
 	}
 }
 
@@ -453,6 +491,21 @@ func (r *VSReconciler) resolveMounts(ctx context.Context, manifest domain.Servic
 			return nil, nil, fmt.Errorf("no driver registered for class %q", vol.Manifest.Spec.Class)
 		}
 
+		// VS-D-T2: Pre-create the DB record in MountPending state BEFORE calling
+		// drv.Mount. This guarantees a record exists even if the driver succeeds
+		// but a later BindMount call fails — preventing ghost mounts with no
+		// DB-visible lifecycle entry.
+		mountID, err := r.store.BindMount(ctx, domain.VolumeMount{
+			VolumeID:   vol.ID,
+			InstanceID: instanceID,
+			TargetPath: decl.TargetPath,
+			ReadOnly:   decl.ReadOnly,
+			State:      domain.MountPending,
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("pre-create mount record: %w", err)
+		}
+
 		t0 := time.Now()
 		mp, err := drv.Mount(ctx, storage.MountRequest{
 			VolumeID:   vol.ID,
@@ -464,17 +517,8 @@ func (r *VSReconciler) resolveMounts(ctx context.Context, manifest domain.Servic
 		vsmetrics.VolumeOperations.WithLabelValues(drv.Name(), "mount", outcomeStr(err)).Inc()
 		_ = t0
 		if err != nil {
+			r.store.UpdateMountState(ctx, mountID, domain.MountFailed) //nolint:errcheck
 			return nil, nil, fmt.Errorf("mount volume %q: %w", vol.ID, err)
-		}
-
-		mountID, err := r.store.BindMount(ctx, domain.VolumeMount{
-			VolumeID:   vol.ID,
-			InstanceID: instanceID,
-			TargetPath: decl.TargetPath,
-			ReadOnly:   decl.ReadOnly,
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("bind mount record: %w", err)
 		}
 		r.store.UpdateMountState(ctx, mountID, domain.MountActive) //nolint:errcheck
 		r.store.WriteAuditLog(ctx, "mount_active", "volume", vol.ID, "", true, //nolint:errcheck
@@ -915,6 +959,15 @@ func (r *VSReconciler) handleFailedInstance(ctx context.Context, inst *domain.Se
 		return
 	}
 
+	// VS-D-T1: Circuit breaker for policy=always — suppress restarts when too many
+	// consecutive rapid failures signal a persistent crash loop.
+	cb := r.getRestartBreaker(inst.ID)
+	if cb.isOpen() {
+		r.store.WriteAuditLog(ctx, "restart_suppressed", "instance", inst.ID, "", false, //nolint:errcheck
+			fmt.Sprintf("circuit_open policy=%s", policy.Policy))
+		return
+	}
+
 	// Exponential backoff: retryBaseDelay * 2^retryCount
 	delay := retryBaseDelay
 	for i := 0; i < inst.RetryCount && i < 6; i++ {
@@ -924,9 +977,22 @@ func (r *VSReconciler) handleFailedInstance(ctx context.Context, inst *domain.Se
 		return // too soon; next loop will check again
 	}
 
+	cb.recordFailure()
 	r.teardownMounts(ctx, inst.ID)
 	r.store.ReleaseAllocation(ctx, inst.ID)                                      //nolint:errcheck
 	r.store.IncrementRetryCount(ctx, inst.ID)                                    //nolint:errcheck
 	r.store.WriteAuditLog(ctx, "retry_scheduled", "instance", inst.ID, "", true, //nolint:errcheck
 		fmt.Sprintf("attempt=%d", inst.RetryCount+1))
+}
+
+// getRestartBreaker returns the per-instance circuit breaker, creating it if needed.
+func (r *VSReconciler) getRestartBreaker(instanceID string) *restartBreaker {
+	r.restartMu.Lock()
+	defer r.restartMu.Unlock()
+	if cb, ok := r.restartBreakers[instanceID]; ok {
+		return cb
+	}
+	cb := &restartBreaker{}
+	r.restartBreakers[instanceID] = cb
+	return cb
 }

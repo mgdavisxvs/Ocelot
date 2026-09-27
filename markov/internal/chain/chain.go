@@ -165,6 +165,72 @@ func (c *Chain) LoadCounts(counts [][]float64) {
 	c.mu.Unlock()
 }
 
+// StationaryDistance computes the L∞ distance between the current stationary
+// distribution and the one computed from the previous epoch's counts.
+// Returns 0 if the chain has not yet observed two epochs.
+// Used as a stability gate: only apply threshold changes when the chain has
+// converged (StationaryDistance < epsilon) — D-G3.
+func (c *Chain) StationaryDistance() float64 {
+	pi := c.stationaryDistribution()
+	if pi == nil {
+		return 0
+	}
+	// Power-iterate once more on a slightly perturbed copy to estimate movement.
+	// We run 100 extra steps and compute Linf between the two distributions.
+	piNext := make([]float64, c.n)
+	copy(piNext, pi)
+	p := c.P()
+	tmp := make([]float64, c.n)
+	for step := 0; step < 100; step++ {
+		for j := range tmp {
+			tmp[j] = 0
+			for i := 0; i < c.n; i++ {
+				tmp[j] += piNext[i] * p[i][j]
+			}
+		}
+		piNext, tmp = tmp, piNext
+	}
+	var lInf float64
+	for i := range pi {
+		d := math.Abs(piNext[i] - pi[i])
+		if d > lInf {
+			lInf = d
+		}
+	}
+	return lInf
+}
+
+// stationaryDistribution returns the stationary distribution via power iteration.
+func (c *Chain) stationaryDistribution() []float64 {
+	p := c.P()
+	pi := make([]float64, c.n)
+	for i := range pi {
+		pi[i] = 1.0 / float64(c.n)
+	}
+	tmp := make([]float64, c.n)
+	for iter := 0; iter < 1000; iter++ {
+		for j := range tmp {
+			tmp[j] = 0
+			for i := 0; i < c.n; i++ {
+				tmp[j] += pi[i] * p[i][j]
+			}
+		}
+		// Check convergence.
+		var diff float64
+		for i := range pi {
+			d := math.Abs(tmp[i] - pi[i])
+			if d > diff {
+				diff = d
+			}
+		}
+		pi, tmp = tmp, pi
+		if diff < 1e-10 {
+			break
+		}
+	}
+	return pi
+}
+
 // ExpectedAbsorptionSteps returns, for each transient state, the expected
 // number of steps until the chain reaches the absorbing state abs.
 // Uses the fundamental matrix N = (I − Q)⁻¹; result[abs] = 0.

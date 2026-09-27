@@ -42,7 +42,9 @@ type AnnounceResponse struct {
 
 // Announce handles a BitTorrent announce request.
 // Go equivalent of worker::announce() (worker.cpp:266-735).
-func (w *Worker) Announce(_ context.Context, req *AnnounceRequest, user *User, clientIP net.IP, userAgent, passkey string) (*AnnounceResponse, error) {
+func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User, clientIP net.IP, userAgent, passkey string) (*AnnounceResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	now := time.Now()
 
 	// Admission policy: if set, check whether this passkey is allowed to join the swarm.

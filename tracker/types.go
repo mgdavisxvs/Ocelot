@@ -230,13 +230,18 @@ func (tl *TorrentList) Reset() {
 }
 
 // UserList is a concurrent-safe map of users keyed by passkey.
+// A secondary byID index enables O(1) GetByID lookups (D-K1).
 type UserList struct {
 	mu    sync.RWMutex
 	users map[string]*User
+	byID  map[UserID]*User
 }
 
 func NewUserList() *UserList {
-	return &UserList{users: make(map[string]*User)}
+	return &UserList{
+		users: make(map[string]*User),
+		byID:  make(map[UserID]*User),
+	}
 }
 
 func (ul *UserList) Get(passkey string) (*User, bool) {
@@ -249,12 +254,19 @@ func (ul *UserList) Get(passkey string) (*User, bool) {
 func (ul *UserList) Set(passkey string, user *User) {
 	ul.mu.Lock()
 	defer ul.mu.Unlock()
+	if old, ok := ul.users[passkey]; ok {
+		delete(ul.byID, old.ID)
+	}
 	ul.users[passkey] = user
+	ul.byID[user.ID] = user
 }
 
 func (ul *UserList) Delete(passkey string) {
 	ul.mu.Lock()
 	defer ul.mu.Unlock()
+	if u, ok := ul.users[passkey]; ok {
+		delete(ul.byID, u.ID)
+	}
 	delete(ul.users, passkey)
 }
 
@@ -275,17 +287,12 @@ func (ul *UserList) ForEach(fn func(passkey string, u *User) bool) {
 	}
 }
 
-// GetByID returns the first user matching the given UserID.
-// Linear scan — only use off the hot path (e.g. fraud enforcement).
+// GetByID returns the user with the given UserID in O(1) via secondary index.
 func (ul *UserList) GetByID(id UserID) (*User, bool) {
 	ul.mu.RLock()
 	defer ul.mu.RUnlock()
-	for _, u := range ul.users {
-		if u.ID == id {
-			return u, true
-		}
-	}
-	return nil, false
+	u, ok := ul.byID[id]
+	return u, ok
 }
 
 // Reset clears all users. Used during full list reloads.
@@ -293,6 +300,7 @@ func (ul *UserList) Reset() {
 	ul.mu.Lock()
 	defer ul.mu.Unlock()
 	ul.users = make(map[string]*User)
+	ul.byID = make(map[UserID]*User)
 }
 
 // Stats tracks global tracker statistics using atomics — no mutex required.
@@ -316,14 +324,16 @@ type Stats struct {
 	AnomalyRejections atomic.Uint64 // ratio_cheating, impossible_upload_speed, ddos_pattern, …
 }
 
-// Whitelist is a concurrent-safe list of allowed BitTorrent client peer_id prefixes.
+// Whitelist is a concurrent-safe set of allowed BitTorrent client peer_id prefixes.
+// Stored as map[prefix]struct{} for O(1) membership checks and O(1) idempotent Add (D-K4).
+// IsAllowed is still O(K) where K = number of prefixes since peer_id matching requires prefix scan.
 type Whitelist struct {
 	mu       sync.RWMutex
-	prefixes []string
+	prefixes map[string]struct{}
 }
 
 func NewWhitelist() *Whitelist {
-	return &Whitelist{prefixes: make([]string, 0)}
+	return &Whitelist{prefixes: make(map[string]struct{})}
 }
 
 // IsAllowed returns true if the peer_id matches any whitelisted prefix,
@@ -335,7 +345,7 @@ func (wl *Whitelist) IsAllowed(peerID []byte) bool {
 		return true
 	}
 	peerIDStr := string(peerID)
-	for _, prefix := range wl.prefixes {
+	for prefix := range wl.prefixes {
 		if len(peerIDStr) >= len(prefix) && peerIDStr[:len(prefix)] == prefix {
 			return true
 		}
@@ -343,39 +353,27 @@ func (wl *Whitelist) IsAllowed(peerID []byte) bool {
 	return false
 }
 
-// Add appends a prefix to the whitelist (idempotent).
+// Add inserts a prefix into the whitelist in O(1) (idempotent).
 func (wl *Whitelist) Add(prefix string) {
 	wl.mu.Lock()
-	defer wl.mu.Unlock()
-	for _, p := range wl.prefixes {
-		if p == prefix {
-			return
-		}
-	}
-	wl.prefixes = append(wl.prefixes, prefix)
+	wl.prefixes[prefix] = struct{}{}
+	wl.mu.Unlock()
 }
 
-// Remove deletes a prefix from the whitelist.
+// Remove deletes a prefix from the whitelist in O(1).
 func (wl *Whitelist) Remove(prefix string) {
 	wl.mu.Lock()
-	defer wl.mu.Unlock()
-	out := wl.prefixes[:0]
-	for _, p := range wl.prefixes {
-		if p != prefix {
-			out = append(out, p)
-		}
-	}
-	wl.prefixes = out
+	delete(wl.prefixes, prefix)
+	wl.mu.Unlock()
 }
 
-// Reset replaces the entire prefix list atomically.
+// Reset replaces the entire prefix set atomically.
 func (wl *Whitelist) Reset(prefixes []string) {
 	wl.mu.Lock()
 	defer wl.mu.Unlock()
-	if prefixes == nil {
-		wl.prefixes = make([]string, 0)
-	} else {
-		wl.prefixes = prefixes
+	wl.prefixes = make(map[string]struct{}, len(prefixes))
+	for _, p := range prefixes {
+		wl.prefixes[p] = struct{}{}
 	}
 }
 
@@ -383,7 +381,9 @@ func (wl *Whitelist) Reset(prefixes []string) {
 func (wl *Whitelist) GetAll() []string {
 	wl.mu.RLock()
 	defer wl.mu.RUnlock()
-	out := make([]string, len(wl.prefixes))
-	copy(out, wl.prefixes)
+	out := make([]string, 0, len(wl.prefixes))
+	for p := range wl.prefixes {
+		out = append(out, p)
+	}
 	return out
 }
