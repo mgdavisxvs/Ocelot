@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,11 +23,13 @@ import (
 // (whitelist, IP validation, peer state) is never overridden here.
 type ComputeCommons struct {
 	db        *sql.DB
-	prices    *PriceTable
+	// D-C1: prices is an atomic pointer so readers need no lock; ReloadPrices
+	// does a single Store of a freshly-allocated, never-mutated PriceTable.
+	prices    atomic.Pointer[PriceTable]
 	scheduler *EconomicScheduler
 	metrics   *CommonsMetrics
 	logger    *slog.Logger
-	mu        sync.RWMutex // protects prices (rarely written)
+	mu        sync.RWMutex // protects scheduler (rarely written)
 }
 
 // New creates and initialises a ComputeCommons backed by the given *sql.DB.
@@ -43,10 +46,10 @@ func New(db *sql.DB, logger *slog.Logger) (*ComputeCommons, error) {
 
 	cc := &ComputeCommons{
 		db:      db,
-		prices:  pt,
 		metrics: DefaultMetrics,
 		logger:  logger,
 	}
+	cc.prices.Store(pt)
 	cc.scheduler = NewEconomicScheduler(pt, cc.metrics)
 	return cc, nil
 }
@@ -60,9 +63,7 @@ func New(db *sql.DB, logger *slog.Logger) (*ComputeCommons, error) {
 // Settlement is idempotent: if the same (user, torrent, timestamps) combination
 // is settled twice, the second call is a no-op via UNIQUE(txn_id).
 func (c *ComputeCommons) SettleAnnounce(stats *AnnounceStats) error {
-	c.mu.RLock()
-	pt := c.prices
-	c.mu.RUnlock()
+	pt := c.prices.Load()
 
 	// D-G4: FreeType contract — a freeleech torrent must never incur a download
 	// charge regardless of what EffectiveDownloaded was set to by the caller.
@@ -172,13 +173,15 @@ func (c *ComputeCommons) EvaluatePeers(req *AllocationRequest) *AllocationDecisi
 }
 
 // ReloadPrices refreshes the price table from the database.
+// D-C1: prices.Store is a single atomic swap; the old PriceTable is never
+// mutated, so readers that loaded the previous pointer remain consistent.
 func (c *ComputeCommons) ReloadPrices() error {
 	pt, err := LoadPriceTable(c.db)
 	if err != nil {
 		return err
 	}
+	c.prices.Store(pt)
 	c.mu.Lock()
-	c.prices = pt
 	c.scheduler = NewEconomicScheduler(pt, c.metrics)
 	c.mu.Unlock()
 	return nil

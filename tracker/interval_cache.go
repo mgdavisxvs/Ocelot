@@ -1,23 +1,20 @@
 package tracker
 
-import (
-	"sync"
-)
-
 // IntervalCache stores Markov-recommended announce intervals per torrent.
 // The tracker's interval calculation reads from this cache; Markov writes to it
 // via interval.update events.
+//
+// F-K2: backed by IntervalSkipList for O(log n) Get/Set and ordered iteration.
 type IntervalCache struct {
-	mu      sync.RWMutex
-	entries map[TorrentID]int // recommended seconds
-	bus     *Bus
+	list *IntervalSkipList
+	bus  *Bus
 }
 
 // NewIntervalCache creates the cache and subscribes to interval.update events.
 func NewIntervalCache(bus *Bus) *IntervalCache {
 	ic := &IntervalCache{
-		entries: make(map[TorrentID]int),
-		bus:     bus,
+		list: NewIntervalSkipList(),
+		bus:  bus,
 	}
 	bus.Subscribe("interval.update", ic.onUpdate)
 	return ic
@@ -25,9 +22,7 @@ func NewIntervalCache(bus *Bus) *IntervalCache {
 
 // GetOrDefault returns the cached interval for a torrent, or fallback if none.
 func (ic *IntervalCache) GetOrDefault(torrentID TorrentID, fallback int) int {
-	ic.mu.RLock()
-	v, ok := ic.entries[torrentID]
-	ic.mu.RUnlock()
+	v, ok := ic.list.Get(torrentID)
 	if ok {
 		return v
 	}
@@ -39,14 +34,16 @@ func (ic *IntervalCache) onUpdate(e Event) {
 	if !ok {
 		return
 	}
-	ic.mu.Lock()
-	ic.entries[ev.TorrentID] = ev.RecommendedInterval
-	ic.mu.Unlock()
+	ic.list.Set(ev.TorrentID, ev.RecommendedInterval)
 }
 
 // Set allows direct writes (e.g. from tests or admin override).
 func (ic *IntervalCache) Set(torrentID TorrentID, interval int) {
-	ic.mu.Lock()
-	ic.entries[torrentID] = interval
-	ic.mu.Unlock()
+	ic.list.Set(torrentID, interval)
+}
+
+// RangeByInterval returns all TorrentIDs whose recommended interval ≤ maxSec,
+// in ascending TorrentID order.
+func (ic *IntervalCache) RangeByInterval(maxSec int) []TorrentID {
+	return ic.list.RangeByInterval(maxSec)
 }
