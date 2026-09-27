@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"testing"
@@ -265,5 +266,43 @@ func TestParseConfigFile_DirectoryPath_ScanError(t *testing.T) {
 	_, err := ParseConfigFile(dir)
 	if err == nil {
 		t.Error("expected error when path is a directory, got nil")
+	}
+}
+
+// TestParseFlags_Default verifies that ParseFlags returns the default path
+// "ocelot.conf" when no -c flag is provided.
+func TestParseFlags_Default(t *testing.T) {
+	oldArgs := os.Args
+	oldCL := flag.CommandLine
+	defer func() {
+		os.Args = oldArgs
+		flag.CommandLine = oldCL
+	}()
+
+	flag.CommandLine = flag.NewFlagSet("test", flag.ContinueOnError)
+	os.Args = []string{"cmd"}
+
+	got := ParseFlags()
+	if got != "ocelot.conf" {
+		t.Errorf("ParseFlags() = %q, want %q", got, "ocelot.conf")
+	}
+}
+
+// TestParseFlags_CustomPath verifies that ParseFlags returns the value given
+// to the -c flag.
+func TestParseFlags_CustomPath(t *testing.T) {
+	oldArgs := os.Args
+	oldCL := flag.CommandLine
+	defer func() {
+		os.Args = oldArgs
+		flag.CommandLine = oldCL
+	}()
+
+	flag.CommandLine = flag.NewFlagSet("test", flag.ContinueOnError)
+	os.Args = []string{"cmd", "-c", "/etc/ocelot/custom.conf"}
+
+	got := ParseFlags()
+	if got != "/etc/ocelot/custom.conf" {
+		t.Errorf("ParseFlags() = %q, want %q", got, "/etc/ocelot/custom.conf")
 	}
 }
