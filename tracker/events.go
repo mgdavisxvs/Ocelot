@@ -1,29 +1,41 @@
 package tracker
 
 import (
+	"sync/atomic"
 	"time"
 )
+
+// globalSeq is a process-wide Lamport clock incremented on every event creation.
+var globalSeq atomic.Uint64
 
 // Event is the base interface every bus event implements.
 type Event interface {
 	Topic() string
 	OccurredAt() time.Time
 	TraceID() string
+	Seq() uint64 // Lamport logical timestamp; monotonically increasing per process
 }
 
 // baseEvent holds the fields common to all events.
 type baseEvent struct {
-	topic     string
+	topic      string
 	occurredAt time.Time
-	traceID   string
+	traceID    string
+	seq        uint64 // Lamport timestamp assigned at construction
 }
 
 func (b baseEvent) Topic() string         { return b.topic }
 func (b baseEvent) OccurredAt() time.Time { return b.occurredAt }
 func (b baseEvent) TraceID() string       { return b.traceID }
+func (b baseEvent) Seq() uint64           { return b.seq }
 
 func newBase(topic, traceID string) baseEvent {
-	return baseEvent{topic: topic, occurredAt: time.Now(), traceID: traceID}
+	return baseEvent{
+		topic:      topic,
+		occurredAt: time.Now(),
+		traceID:    traceID,
+		seq:        globalSeq.Add(1),
+	}
 }
 
 // ── announce.* ───────────────────────────────────────────────────────────────

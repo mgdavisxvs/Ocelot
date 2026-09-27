@@ -70,6 +70,13 @@ type Config struct {
 	TLSCertFile   string // PEM certificate file for TLS listeners
 	TLSKeyFile    string // PEM key file for TLS listeners
 	OpsAddr       string // address for the operations/metrics server
+
+	// Feature #05 — differential privacy for demand heatmap
+	DemandHeatmapDPEpsilon float64
+
+	// Feature #07 — gossip anti-entropy
+	GossipPeerAddrs   string // comma-separated sibling /internal/gossip/nodes URLs
+	GossipIntervalSec int    // default 30
 }
 
 func NewServer(config *Config, worker *Worker) *Server {

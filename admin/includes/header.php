@@ -71,6 +71,14 @@
                                 <a href="audit.php" class="<?= basename($_SERVER['PHP_SELF']) === 'audit.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> rounded-md px-3 py-2 text-sm font-medium">
                                     Audit
                                 </a>
+                                <a href="credits.php" class="<?= basename($_SERVER['PHP_SELF']) === 'credits.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> rounded-md px-3 py-2 text-sm font-medium flex items-center gap-1">
+                                    <i data-lucide="credit-card" class="w-3.5 h-3.5"></i>
+                                    Credits
+                                </a>
+                                <a href="forecast.php" class="<?= basename($_SERVER['PHP_SELF']) === 'forecast.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> rounded-md px-3 py-2 text-sm font-medium flex items-center gap-1">
+                                    <i data-lucide="trending-up" class="w-3.5 h-3.5"></i>
+                                    Forecast
+                                </a>
                             </div>
                         </div>
                     </div>
@@ -111,6 +119,8 @@
                     <a href="markov.php" class="<?= basename($_SERVER['PHP_SELF']) === 'markov.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Markov</a>
                     <a href="whitelist.php" class="<?= basename($_SERVER['PHP_SELF']) === 'whitelist.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Whitelist</a>
                     <a href="audit.php" class="<?= basename($_SERVER['PHP_SELF']) === 'audit.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Audit</a>
+                    <a href="credits.php" class="<?= basename($_SERVER['PHP_SELF']) === 'credits.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Credits</a>
+                    <a href="forecast.php" class="<?= basename($_SERVER['PHP_SELF']) === 'forecast.php' ? 'bg-gray-900 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white' ?> block rounded-md px-3 py-2 text-base font-medium">Forecast</a>
                     <a href="logout.php" class="text-gray-300 hover:bg-gray-700 hover:text-white block rounded-md px-3 py-2 text-base font-medium">Logout</a>
                 </div>
             </div>

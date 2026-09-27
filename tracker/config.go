@@ -56,6 +56,15 @@ type FileConfig struct {
 	TLSAutoTLS  bool
 	TLSDomain   string
 	TLSCacheDir string
+
+	// Differential privacy for demand heatmap (Feature #05)
+	// 0 disables DP; typical range 0.1–2.0.
+	DemandHeatmapDPEpsilon float64
+
+	// Gossip anti-entropy peer addresses (Feature #07)
+	// Comma-separated list of sibling tracker /internal/gossip/nodes URLs.
+	GossipPeerAddrs   string
+	GossipIntervalSec int
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.

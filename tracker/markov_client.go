@@ -76,6 +76,36 @@ func (c *MarkovClient) Metrics(ctx context.Context) (*markovMetrics, error) {
 	return &out, json.NewDecoder(resp.Body).Decode(&out)
 }
 
+// SeederPageRank calls GET /pagerank and returns a map of user-level PageRank
+// scores computed by the Markov engine from seeder upload/ratio behaviour.
+func (c *MarkovClient) SeederPageRank(ctx context.Context) (map[UserID]float64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/pagerank", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("markov /pagerank: HTTP %d", resp.StatusCode)
+	}
+	// Markov returns {"user_id": score, ...} — keys are string-encoded integers.
+	var raw map[string]float64
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, err
+	}
+	out := make(map[UserID]float64, len(raw))
+	for k, v := range raw {
+		var id int64
+		if _, err := fmt.Sscanf(k, "%d", &id); err == nil {
+			out[UserID(id)] = v
+		}
+	}
+	return out, nil
+}
+
 // FreeleechPoller runs a background goroutine that periodically fetches
 // freeleech candidates from the Markov engine and calls siteComm.NotifyFreeleech
 // for each one.  It returns immediately; cancel the context to stop it.

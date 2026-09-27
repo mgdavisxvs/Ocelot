@@ -1,6 +1,8 @@
 package tracker
 
 import (
+	"math"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -131,4 +133,40 @@ func NetKeyFromIP(ip []byte) uint16 {
 		return 0
 	}
 	return uint16(ip[0])<<8 | uint16(ip[1])
+}
+
+// NetFractionDP returns the fraction of demand from the given /16 net key with
+// (ε, δ=0)-differential privacy via the Laplace mechanism.
+//
+// The Laplace noise scale is b = 1 / (ε × n), where n is the total count.
+// Callers should use ε ∈ (0.1, 2.0]; smaller ε gives stronger privacy at the
+// cost of accuracy.  Returns 0 when the window is empty.
+func (h *DemandHeatmap) NetFractionDP(net uint16, epsilon float64) float64 {
+	h.mu.Lock()
+	total := h.total
+	count := h.netCount[net]
+	h.mu.Unlock()
+
+	if total == 0 || epsilon <= 0 {
+		return 0
+	}
+	raw := float64(count) / float64(total)
+	scale := 1.0 / (epsilon * float64(total))
+	noisy := raw + laplaceNoise(scale)
+	if noisy < 0 {
+		return 0
+	}
+	if noisy > 1 {
+		return 1
+	}
+	return noisy
+}
+
+// laplaceNoise samples from Laplace(0, scale) using the inverse-CDF method.
+func laplaceNoise(scale float64) float64 {
+	u := rand.Float64() - 0.5
+	if u == 0 {
+		return 0
+	}
+	return -scale * math.Copysign(math.Log(1-2*math.Abs(u)), u)
 }

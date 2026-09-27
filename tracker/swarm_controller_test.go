@@ -592,7 +592,7 @@ func TestSortPeersByProximityOrder(t *testing.T) {
 		{IP: net.ParseIP("10.0.0.10"), Port: 6884},   // EDGE same  → priority 0
 	}
 
-	sorter := SortPeersByProximity(nodes)
+	sorter := SortPeersByProximity(nodes, nil)
 	sorter(clientIP, peers)
 
 	if peers[0].Port != 6884 {
@@ -611,7 +611,7 @@ func TestSortPeersByProximityOrder(t *testing.T) {
 }
 
 func TestSortPeersByProximityNilNodes(t *testing.T) {
-	sorter := SortPeersByProximity(nil)
+	sorter := SortPeersByProximity(nil, nil)
 	peers := []PeerEntry{
 		{IP: net.ParseIP("10.0.0.1"), Port: 6881},
 		{IP: net.ParseIP("10.0.0.2"), Port: 6882},
@@ -624,7 +624,7 @@ func TestSortPeersByProximityNilNodes(t *testing.T) {
 }
 
 func TestSortPeersByProximitySinglePeer(t *testing.T) {
-	sorter := SortPeersByProximity(NewNodeRegistry())
+	sorter := SortPeersByProximity(NewNodeRegistry(), nil)
 	peers := []PeerEntry{{IP: net.ParseIP("10.0.0.1"), Port: 6881}}
 	sorter(net.ParseIP("10.0.0.2"), peers) // must not panic with len=1
 }
