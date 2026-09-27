@@ -321,7 +321,9 @@ func TestListenAndServe_AcceptError_DefaultBranch(t *testing.T) {
 
 	// Close the listener directly without Shutdown — triggers the default
 	// (non-shutdown) Accept error branch.
+	f.server.mu.Lock()
 	f.server.listener.Close()
+	f.server.mu.Unlock()
 	time.Sleep(5 * time.Millisecond)
 
 	// Now call Shutdown to break the error loop cleanly.

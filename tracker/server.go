@@ -64,7 +64,9 @@ func (s *Server) ListenAndServe() error {
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
+	s.mu.Lock()
 	s.listener = listener
+	s.mu.Unlock()
 
 	fmt.Printf("Ocelot tracker listening on %s (%s netpoller)\n",
 		s.config.ListenAddr, netpollerType())
@@ -446,9 +448,11 @@ func netpollerType() string {
 
 func (s *Server) Shutdown() error {
 	s.shutdownCancel()
+	s.mu.Lock()
 	if s.listener != nil {
 		s.listener.Close()
 	}
+	s.mu.Unlock()
 	done := make(chan struct{})
 	go func() {
 		s.wg.Wait()

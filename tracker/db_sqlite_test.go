@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1174,4 +1175,26 @@ func TestLoadTokens_ScanError_ReturnsError(t *testing.T) {
 		t.Error("expected scan error from LoadTokens, got nil")
 	}
 }
+
+// ── NewSQLiteShardManager: openCurrentDB failure ──────────────────────────────
+
+// TestNewSQLiteShardManager_DBPathIsDirectory_ReturnsError pre-creates a
+// directory at the path where SQLite expects to create its DB file.  openDB
+// fails because SQLite cannot use a directory as a database, causing
+// NewSQLiteShardManager to return an error on its openCurrentDB call.
+func TestNewSQLiteShardManager_DBPathIsDirectory_ReturnsError(t *testing.T) {
+	dbDir := t.TempDir()
+	month := time.Now().Format("2006-01")
+	dbPath := filepath.Join(dbDir, fmt.Sprintf("ocelot-%s.db", month))
+
+	if err := os.Mkdir(dbPath, 0755); err != nil {
+		t.Fatalf("setup mkdir: %v", err)
+	}
+
+	_, err := NewSQLiteShardManager(dbDir)
+	if err == nil {
+		t.Error("expected error when DB path is a directory, got nil")
+	}
+}
+
 
