@@ -408,3 +408,51 @@ func TestNetpollerTypeForOS_AllCases(t *testing.T) {
 		}
 	}
 }
+
+// ── Shutdown timeout ──────────────────────────────────────────────────────────
+
+// TestShutdown_Timeout_ReturnsError covers server.go:467-468 — the
+// "shutdown timeout" error path.  A client connects but never sends data,
+// keeping handleConnection blocked on http.ReadRequest indefinitely (no
+// ReadTimeout).  Shutdown() times out after the configured ShutdownTimeout
+// (100 ms) and returns a non-nil error.
+func TestShutdown_Timeout_ReturnsError(t *testing.T) {
+	// Pre-bind a random port so we know where to dial.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	f := newTestFixture()
+	f.server.config.ListenAddr = addr
+	f.server.config.ReadTimeout = 0               // no per-conn deadline
+	f.server.config.ShutdownTimeout = 100 * time.Millisecond
+
+	listenDone := make(chan error, 1)
+	go func() { listenDone <- f.server.ListenAndServe() }()
+
+	// Wait until the server is accepting connections.
+	var clientConn net.Conn
+	for i := 0; i < 100; i++ {
+		time.Sleep(2 * time.Millisecond)
+		c, dialErr := net.DialTimeout("tcp", addr, time.Second)
+		if dialErr == nil {
+			clientConn = c
+			break
+		}
+	}
+	if clientConn == nil {
+		t.Fatal("could not connect to server within 200 ms")
+	}
+	defer clientConn.Close() // releases the blocked handleConnection goroutine on exit
+
+	// handleConnection is stuck on http.ReadRequest; Shutdown must time out.
+	if err := f.server.Shutdown(); err == nil {
+		t.Error("expected shutdown timeout error, got nil")
+	}
+
+	// ListenAndServe exits via the shutdownCtx; drain it.
+	<-listenDone
+}

@@ -24,6 +24,7 @@ type Server struct {
 	config         *Config
 	mu             sync.Mutex
 	activeConns    map[net.Conn]struct{}
+	shuttingDown   bool
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
 	wg             sync.WaitGroup
@@ -38,6 +39,7 @@ type Config struct {
 	MaxMiddlemen     int
 	NumWantLimit     int
 	KeepaliveTimeout time.Duration
+	ShutdownTimeout  time.Duration
 	SitePassword     string
 	ReportPassword   string
 	ReadTimeout      time.Duration
@@ -85,18 +87,18 @@ func (s *Server) ListenAndServe() error {
 		}
 
 		s.mu.Lock()
-		if len(s.activeConns) >= s.config.MaxMiddlemen {
+		if s.shuttingDown || len(s.activeConns) >= s.config.MaxMiddlemen {
 			s.mu.Unlock()
 			conn.Close()
 			continue
 		}
 		s.activeConns[conn] = struct{}{}
+		s.wg.Add(1)
 		s.mu.Unlock()
 
 		s.stats.OpenConnections.Add(1)
 		s.stats.OpenedConnections.Add(1)
 
-		s.wg.Add(1)
 		go s.handleConnection(conn)
 	}
 }
@@ -451,6 +453,7 @@ func netpollerTypeForOS(goos string) string {
 func (s *Server) Shutdown() error {
 	s.shutdownCancel()
 	s.mu.Lock()
+	s.shuttingDown = true
 	if s.listener != nil {
 		s.listener.Close()
 	}
@@ -460,10 +463,14 @@ func (s *Server) Shutdown() error {
 		s.wg.Wait()
 		close(done)
 	}()
+	timeout := s.config.ShutdownTimeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
 	select {
 	case <-done:
 		return nil
-	case <-time.After(30 * time.Second):
+	case <-time.After(timeout):
 		return fmt.Errorf("shutdown timeout")
 	}
 }
