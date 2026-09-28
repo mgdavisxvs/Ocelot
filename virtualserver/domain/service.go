@@ -20,9 +20,10 @@ const (
 
 // ArtifactReference points to a distributable artifact.
 type ArtifactReference struct {
-	Type     ArtifactType `json:"type"`
-	InfoHash string       `json:"infoHash,omitempty"` // 40-char hex, ocelot type
-	URL      string       `json:"url,omitempty"`      // url type
+	Type        ArtifactType `json:"type"`
+	InfoHash    string       `json:"infoHash,omitempty"`    // 40-char hex, ocelot type
+	URL         string       `json:"url,omitempty"`         // url type
+	ContentHash string       `json:"contentHash,omitempty"` // optional SHA-256 hex for url type; restores content-addressing (Church GAP-1)
 }
 
 func (a ArtifactReference) Validate() error {
@@ -141,6 +142,14 @@ func (m ServiceManifest) Validate() error {
 		case "always", "on-failure", "never":
 		default:
 			errs = append(errs, fmt.Sprintf("spec.restart.policy %q is not valid (use always/on-failure/never)", m.Spec.Restart.Policy))
+		}
+	}
+	// D5: TargetPath must be an absolute POSIX path to prevent ambiguity at mount time (Chomsky AMB-1).
+	for i, m := range m.Spec.Mounts {
+		if m.TargetPath == "" {
+			errs = append(errs, fmt.Sprintf("spec.mounts[%d].targetPath must not be empty", i))
+		} else if !strings.HasPrefix(m.TargetPath, "/") {
+			errs = append(errs, fmt.Sprintf("spec.mounts[%d].targetPath %q must be an absolute path (start with /)", i, m.TargetPath))
 		}
 	}
 	if len(errs) > 0 {

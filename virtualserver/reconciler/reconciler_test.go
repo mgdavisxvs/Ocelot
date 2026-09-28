@@ -23,6 +23,8 @@ type mockStore struct {
 	services  map[int64]*domain.Service
 	allocs    map[string]*store.Allocation
 	auditLog  []string
+	// activeMountsByVolume overrides ListActiveMountsByVolume for D1 test.
+	activeMountsByVolume map[string][]domain.VolumeMount
 }
 
 func newMockStore() *mockStore {
@@ -171,7 +173,10 @@ func (m *mockStore) UpdateMountState(_ context.Context, _ int64, _ domain.Volume
 func (m *mockStore) ListMountsByInstance(_ context.Context, _ string) ([]domain.VolumeMount, error) {
 	return nil, nil
 }
-func (m *mockStore) ListActiveMountsByVolume(_ context.Context, _ string) ([]domain.VolumeMount, error) {
+func (m *mockStore) ListActiveMountsByVolume(_ context.Context, volumeID string) ([]domain.VolumeMount, error) {
+	if m.activeMountsByVolume != nil {
+		return m.activeMountsByVolume[volumeID], nil
+	}
 	return nil, nil
 }
 
@@ -235,6 +240,10 @@ func (m *mockStore) IncrementVolumeRetryCount(_ context.Context, _ string) (int,
 
 func (m *mockStore) ListInstanceOperations(_ context.Context, _ string) ([]domain.Operation, error) {
 	return nil, nil
+}
+
+func (m *mockStore) RecordHealthObservation(_ context.Context, _, _, _, _ string) error {
+	return nil
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -372,6 +381,36 @@ func TestReconciler_FailedInstance_MaxRetries(t *testing.T) {
 	}
 }
 
+// D3: an instance with RetryCount >= maxInstanceRetries must be terminated regardless
+// of the service's MaximumAttempts=0 (unlimited) manifest setting (Gödel I-1).
+func TestReconciler_PlatformRetryCapTerminates(t *testing.T) {
+	ms := newMockStore()
+	// Service with MaximumAttempts=0 (unlimited) — platform cap must override.
+	svc := newTestService("mock")
+	svc.Manifest.Spec.Restart = domain.RestartPolicy{Policy: "always", MaximumAttempts: 0}
+	ms.services[1] = svc
+	ms.nodes = []domain.Node{newTestNode()}
+
+	inst := &domain.ServiceInstance{
+		ID:         "inst-cap",
+		ServiceID:  1,
+		State:      domain.InstanceFailed,
+		RetryCount: maxInstanceRetries, // exactly at platform cap
+		UpdatedAt:  time.Now().Add(-60 * time.Second),
+	}
+	ms.addInstance(inst)
+
+	r := newReconcilerWithMock(ms, adapter.NewMockAdapter())
+	r.reconcile(context.Background())
+
+	ms.mu.Lock()
+	finalState := ms.instances["inst-cap"].State
+	ms.mu.Unlock()
+	if finalState != domain.InstanceTerminated {
+		t.Errorf("expected InstanceTerminated at platform retry cap, got %q", finalState)
+	}
+}
+
 func TestReconciler_NoReadyNodes_ScheduleFails(t *testing.T) {
 	ms := newMockStore()
 	ms.services[1] = newTestService("mock")
@@ -477,6 +516,45 @@ func TestReconciler_MissingAdapter_SkipsInstance(t *testing.T) {
 	ms.mu.Unlock()
 	if finalState != domain.InstanceFailed {
 		t.Logf("state=%q (acceptable if error logged)", finalState)
+	}
+}
+
+// D1: when a volume transitions to quota_exceeded, all RUNNING instances with
+// an active mount on that volume must be transitioned to DEGRADED (Wolfram EMERGENT-1).
+func TestReconciler_QuotaExceeded_DegradesBoundInstances(t *testing.T) {
+	ms := newMockStore()
+	ms.services[1] = newTestService("mock")
+	ms.nodes = []domain.Node{newTestNode()}
+
+	const volID = "vol-quota-test"
+	const instID = "inst-quota-bound"
+
+	// Seed a RUNNING instance.
+	ms.addInstance(&domain.ServiceInstance{
+		ID:        instID,
+		ServiceID: 1,
+		State:     domain.InstanceRunning,
+		NodeID:    "n1",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+
+	// Override ListActiveMountsByVolume to return the mount linking vol→inst.
+	ms.activeMountsByVolume = map[string][]domain.VolumeMount{
+		volID: {{VolumeID: volID, InstanceID: instID, State: domain.MountActive}},
+	}
+
+	r := newReconcilerWithMock(ms, adapter.NewMockAdapter())
+	ctx := context.Background()
+
+	// Directly invoke degradeInstancesForVolume — equivalent to quota reconciler firing.
+	r.degradeInstancesForVolume(ctx, volID)
+
+	ms.mu.Lock()
+	finalState := ms.instances[instID].State
+	ms.mu.Unlock()
+	if finalState != domain.InstanceDegraded {
+		t.Errorf("expected InstanceDegraded after volume quota exceeded, got %q", finalState)
 	}
 }
 

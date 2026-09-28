@@ -15,14 +15,15 @@ import (
 )
 
 const (
-	defaultInterval        = 15 * time.Second
-	retryBaseDelay         = 2 * time.Second
-	defaultNodeTTL         = 90 * time.Second
-	degradedFailTimeout    = 5 * time.Minute
-	restartCBThreshold     = 5               // consecutive rapid failures before circuit opens (VS-D-T1)
-	restartCBRapidWindow   = 2 * time.Minute // window within which failures count as "rapid"
-	restartCBOpenDuration  = 10 * time.Minute // how long to suppress retries when circuit is open
-	maxVolumeRetries       = 5               // failed → declared re-provisioning limit (VS-D-T3)
+	defaultInterval       = 15 * time.Second
+	retryBaseDelay        = 2 * time.Second
+	defaultNodeTTL        = 90 * time.Second
+	degradedFailTimeout   = 5 * time.Minute
+	restartCBThreshold    = 5                // consecutive rapid failures before circuit opens (VS-D-T1)
+	restartCBRapidWindow  = 2 * time.Minute  // window within which failures count as "rapid"
+	restartCBOpenDuration = 10 * time.Minute // how long to suppress retries when circuit is open
+	maxVolumeRetries      = 5                // failed → declared re-provisioning limit (VS-D-T3)
+	maxInstanceRetries    = 20               // platform-level hard cap regardless of manifest MaximumAttempts=0 (Gödel I-1)
 )
 
 // restartBreaker is a per-instance circuit breaker that prevents infinite
@@ -98,6 +99,9 @@ type StoreInterface interface {
 	// Operation event methods (VS-D-S1: quota_exceeded events visible on instances API).
 	ListInstanceOperations(ctx context.Context, instanceID string) ([]domain.Operation, error)
 	AppendOperationEvent(ctx context.Context, operationID, eventType, message string, payload map[string]interface{}) error
+
+	// RecordHealthObservation persists a health-check result for the instance audit trail (D2).
+	RecordHealthObservation(ctx context.Context, instanceID, nodeID, status, message string) error
 }
 
 // ArtifactCatalog is the narrow interface bridging the reconciler to artifact availability.
@@ -119,11 +123,12 @@ type VSReconciler struct {
 	runningMu sync.Mutex
 
 	// restartBreakers guards against infinite rapid-restart loops (VS-D-T1).
-	restartMu      sync.Mutex
+	restartMu       sync.Mutex
 	restartBreakers map[string]*restartBreaker
 
-	stop chan struct{}
-	done chan struct{}
+	stop  chan struct{}
+	done  chan struct{}
+	nudge chan struct{} // non-blocking single-slot; Nudge() triggers an immediate reconcile (Tao)
 }
 
 // Config holds VSReconciler construction parameters.
@@ -164,6 +169,17 @@ func New(cfg Config) *VSReconciler {
 		restartBreakers: make(map[string]*restartBreaker),
 		stop:            make(chan struct{}),
 		done:            make(chan struct{}),
+		nudge:           make(chan struct{}, 1),
+	}
+}
+
+// Nudge triggers an immediate reconcile pass without waiting for the next
+// interval tick. It is non-blocking: if a nudge is already queued the call
+// returns instantly (Tao optimization — reduces initial convergence to <100ms).
+func (r *VSReconciler) Nudge() {
+	select {
+	case r.nudge <- struct{}{}:
+	default:
 	}
 }
 
@@ -193,6 +209,8 @@ func (r *VSReconciler) loop() {
 		case <-r.stop:
 			return
 		case <-ticker.C:
+			r.tryRun()
+		case <-r.nudge:
 			r.tryRun()
 		}
 	}
@@ -676,12 +694,34 @@ func (r *VSReconciler) reconcileQuotaCheck(ctx context.Context) {
 				// VS-D-S1: emit operation event on every instance with an active mount,
 				// making the quota breach visible through GET /v1/instances/{id}/operations.
 				r.emitQuotaExceededEvent(ctx, vol.ID, stat.UsedMiB, vol.Manifest.Spec.CapacityMiB)
+				// D1: propagate DEGRADED to all running instances so the state machine
+				// reflects the actual unhealthy condition (Wolfram EMERGENT-1).
+				r.degradeInstancesForVolume(ctx, vol.ID)
 			}
 		case !overQuota && vol.State == domain.VolumeQuotaExceeded:
 			if err := r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeBound); err == nil {
 				volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeQuotaExceeded, domain.VolumeBound)
 			}
 		}
+	}
+}
+
+// degradeInstancesForVolume transitions every RUNNING instance that holds an
+// active mount on volumeID to DEGRADED. This propagates quota_exceeded state
+// into the instance state machine (D1 — Wolfram EMERGENT-1).
+func (r *VSReconciler) degradeInstancesForVolume(ctx context.Context, volumeID string) {
+	mounts, err := r.store.ListActiveMountsByVolume(ctx, volumeID)
+	if err != nil {
+		return
+	}
+	for _, m := range mounts {
+		inst, err := r.store.GetInstance(ctx, m.InstanceID)
+		if err != nil || inst == nil || inst.State != domain.InstanceRunning {
+			continue
+		}
+		r.store.UpdateInstanceState(ctx, m.InstanceID, domain.InstanceDegraded) //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "instance_degraded_quota", "instance", m.InstanceID, "", false, //nolint:errcheck
+			fmt.Sprintf("volume=%s quota exceeded", volumeID))
 	}
 }
 
@@ -927,20 +967,24 @@ func (r *VSReconciler) inspectInstance(ctx context.Context, inst *domain.Service
 	status, err := ad.Inspect(ctx, handle)
 	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "inspect", outcomeStr(err)).Inc()
 	if err != nil || !status.Running {
+		msg := fmt.Sprintf("process exited: adapter=%s running=false", ad.Name())
+		r.store.RecordHealthObservation(ctx, inst.ID, inst.NodeID, "unhealthy", msg) //nolint:errcheck
 		r.teardownMounts(ctx, inst.ID)
 		r.store.ReleaseAllocation(ctx, inst.ID)                                         //nolint:errcheck
 		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceFailed)                //nolint:errcheck
-		r.store.WriteAuditLog(ctx, "instance_process_exited", "instance", inst.ID, "", false, //nolint:errcheck
-			fmt.Sprintf("adapter=%s running=false", ad.Name()))
+		r.store.WriteAuditLog(ctx, "instance_process_exited", "instance", inst.ID, "", false, msg) //nolint:errcheck
 		return
 	}
 
 	health, err := ad.Health(ctx, handle)
 	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "health", outcomeStr(err)).Inc()
 	if err != nil || !health.Healthy {
+		r.store.RecordHealthObservation(ctx, inst.ID, inst.NodeID, "unhealthy", health.Message) //nolint:errcheck
 		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceDegraded) //nolint:errcheck
 		r.store.WriteAuditLog(ctx, "instance_degraded", "instance", inst.ID, "", false, //nolint:errcheck
 			fmt.Sprintf("health=%v msg=%s", health.Healthy, health.Message))
+	} else {
+		r.store.RecordHealthObservation(ctx, inst.ID, inst.NodeID, "healthy", health.Message) //nolint:errcheck
 	}
 }
 
@@ -971,10 +1015,13 @@ func (r *VSReconciler) handleDegradedInstance(ctx context.Context, inst *domain.
 	health, err := ad.Health(ctx, handle)
 	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "health", outcomeStr(err)).Inc()
 	if err == nil && health.Healthy {
+		r.store.RecordHealthObservation(ctx, inst.ID, inst.NodeID, "healthy", health.Message) //nolint:errcheck
 		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceRunning) //nolint:errcheck
 		r.store.WriteAuditLog(ctx, "instance_recovered", "instance", inst.ID, "", true, "") //nolint:errcheck
 		return
 	}
+
+	r.store.RecordHealthObservation(ctx, inst.ID, inst.NodeID, "unhealthy", health.Message) //nolint:errcheck
 
 	if time.Since(inst.UpdatedAt) > degradedFailTimeout {
 		r.teardownMounts(ctx, inst.ID)
@@ -1043,6 +1090,15 @@ func (r *VSReconciler) destroyInstance(ctx context.Context, svc *domain.Service,
 func (r *VSReconciler) handleFailedInstance(ctx context.Context, inst *domain.ServiceInstance) {
 	svc, err := r.store.GetService(ctx, inst.ServiceID)
 	if err != nil {
+		return
+	}
+
+	// D3: platform-level hard cap regardless of manifest MaximumAttempts=0 (unlimited) (Gödel I-1).
+	if inst.RetryCount >= maxInstanceRetries {
+		r.destroyInstance(ctx, svc, inst)
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceTerminated) //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "terminated_platform_retry_cap", "instance", inst.ID, "", false, //nolint:errcheck
+			fmt.Sprintf("retries=%d platform_cap=%d", inst.RetryCount, maxInstanceRetries))
 		return
 	}
 

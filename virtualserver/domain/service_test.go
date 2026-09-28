@@ -149,6 +149,47 @@ func TestArtifactReference_Validate_URL(t *testing.T) {
 	}
 }
 
+func TestServiceManifest_Mount_RelativeTargetPath_Rejected(t *testing.T) {
+	m := validManifest()
+	m.Spec.Mounts = []ServiceVolumeMount{
+		{VolumeName: "data", TargetPath: "relative/path"},
+	}
+	if err := m.Validate(); err == nil {
+		t.Error("expected error for relative targetPath")
+	}
+}
+
+func TestServiceManifest_Mount_AbsoluteTargetPath_Accepted(t *testing.T) {
+	m := validManifest()
+	m.Spec.Mounts = []ServiceVolumeMount{
+		{VolumeName: "data", TargetPath: "/data"},
+	}
+	if err := m.Validate(); err != nil {
+		t.Errorf("expected valid manifest with absolute targetPath, got: %v", err)
+	}
+}
+
+func TestServiceManifest_Mount_EmptyTargetPath_Rejected(t *testing.T) {
+	m := validManifest()
+	m.Spec.Mounts = []ServiceVolumeMount{
+		{VolumeName: "data", TargetPath: ""},
+	}
+	if err := m.Validate(); err == nil {
+		t.Error("expected error for empty targetPath")
+	}
+}
+
+func TestArtifactReference_URL_WithContentHash(t *testing.T) {
+	a := ArtifactReference{
+		Type:        ArtifactTypeURL,
+		URL:         "https://example.com/model.bin",
+		ContentHash: "abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+	}
+	if err := a.Validate(); err != nil {
+		t.Errorf("unexpected error with contentHash: %v", err)
+	}
+}
+
 func TestServiceManifest_JSONRoundtrip(t *testing.T) {
 	m := validManifest()
 	b, err := json.Marshal(m)

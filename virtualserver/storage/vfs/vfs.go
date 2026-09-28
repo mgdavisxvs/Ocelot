@@ -15,8 +15,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
+
+// quotaCacheTTL is how long a cached UsedBytes result is considered fresh (D4).
+const quotaCacheTTL = 5 * time.Second
 
 // ErrPathEscape is returned when a requested path would escape the VFS root.
 var ErrPathEscape = errors.New("path escapes VFS root")
@@ -39,6 +43,11 @@ type VirtualFS struct {
 	root        string // absolute path of the mount root on the host
 	readOnly    bool
 	capacityMiB int64 // 0 = unlimited
+
+	// quotaMu protects the cached used-bytes value (D4: avoid O(F) WalkDir per quota check).
+	quotaMu      sync.Mutex
+	quotaCache   int64
+	quotaRefresh time.Time
 }
 
 // New constructs a VirtualFS rooted at hostPath. readOnly and capacityMiB come
@@ -140,11 +149,54 @@ func (v *VirtualFS) MkdirAll(path string) error {
 }
 
 // UsedBytes returns the total bytes consumed under the VFS root (du-style walk).
+// It always performs a full traversal; use CheckQuota for frequent callers.
 func (v *VirtualFS) UsedBytes() (int64, error) {
+	return v.walkUsedBytes()
+}
+
+// CheckQuota returns an error when capacityMiB is set and the current
+// usage would exceed it after adding additionalBytes. It uses a TTL-cached
+// WalkDir result to avoid O(F) directory traversal on every write (D4).
+func (v *VirtualFS) CheckQuota(additionalBytes int64) error {
+	if v.capacityMiB <= 0 {
+		return nil
+	}
+	used, err := v.usedBytesCached()
+	if err != nil {
+		return fmt.Errorf("quota check: %w", err)
+	}
+	limitBytes := v.capacityMiB * 1024 * 1024
+	if used+additionalBytes > limitBytes {
+		return fmt.Errorf("quota exceeded: used %d + %d > limit %d bytes", used, additionalBytes, limitBytes)
+	}
+	return nil
+}
+
+// usedBytesCached returns a cached UsedBytes value, refreshing it when the
+// cache is stale. The cache TTL is quotaCacheTTL; callers that need an exact
+// reading should call UsedBytes directly.
+func (v *VirtualFS) usedBytesCached() (int64, error) {
+	v.quotaMu.Lock()
+	defer v.quotaMu.Unlock()
+	if !v.quotaRefresh.IsZero() && time.Since(v.quotaRefresh) < quotaCacheTTL {
+		return v.quotaCache, nil
+	}
+	used, err := v.walkUsedBytes()
+	if err != nil {
+		return 0, err
+	}
+	v.quotaCache = used
+	v.quotaRefresh = time.Now()
+	return used, nil
+}
+
+// walkUsedBytes performs a full WalkDir sum without locking; must be called
+// with quotaMu held when updating the cache.
+func (v *VirtualFS) walkUsedBytes() (int64, error) {
 	var total int64
 	err := filepath.WalkDir(v.root, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // skip unreadable entries
+			return nil
 		}
 		if !d.IsDir() {
 			fi, err := d.Info()
@@ -155,23 +207,6 @@ func (v *VirtualFS) UsedBytes() (int64, error) {
 		return nil
 	})
 	return total, err
-}
-
-// CheckQuota returns an error when capacityMiB is set and the current
-// usage would exceed it after adding additionalBytes.
-func (v *VirtualFS) CheckQuota(additionalBytes int64) error {
-	if v.capacityMiB <= 0 {
-		return nil
-	}
-	used, err := v.UsedBytes()
-	if err != nil {
-		return fmt.Errorf("quota check: %w", err)
-	}
-	limitBytes := v.capacityMiB * 1024 * 1024
-	if used+additionalBytes > limitBytes {
-		return fmt.Errorf("quota exceeded: used %d + %d > limit %d bytes", used, additionalBytes, limitBytes)
-	}
-	return nil
 }
 
 // resolve converts a relative VFS path to an absolute host path and verifies
