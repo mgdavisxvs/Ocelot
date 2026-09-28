@@ -107,6 +107,14 @@ func buildMux(h *Handlers) *http.ServeMux {
 			h.UpdateNodeState(w, r)
 			return
 		}
+		if hasSuffix(r.URL.Path, "/heartbeat") {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			h.NodeHeartbeat(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			h.GetNode(w, r)
@@ -140,6 +148,8 @@ func buildMux(h *Handlers) *http.ServeMux {
 		switch r.Method {
 		case http.MethodGet:
 			h.GetService(w, r)
+		case http.MethodPut:
+			h.UpdateService(w, r)
 		case http.MethodDelete:
 			h.DeleteService(w, r)
 		default:
@@ -229,6 +239,14 @@ func buildMux(h *Handlers) *http.ServeMux {
 				return
 			}
 			h.RestoreVolume(w, r)
+			return
+		}
+		if hasSuffix(r.URL.Path, "/verify-chain") {
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			h.VerifyChain(w, r)
 			return
 		}
 		switch r.Method {

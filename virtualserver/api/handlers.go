@@ -26,12 +26,14 @@ type HandlerStore interface {
 	GetNode(ctx context.Context, id string) (*domain.Node, error)
 	ListNodes(ctx context.Context, stateFilter string) ([]domain.Node, error)
 	UpdateNodeState(ctx context.Context, id string, to domain.NodeState) error
+	Heartbeat(ctx context.Context, id string, availRAMMiB int64, availCPU int, seq uint64) error
 
 	// Services
 	CreateService(ctx context.Context, m domain.ServiceManifest) (int64, error)
 	GetService(ctx context.Context, id int64) (*domain.Service, error)
 	ListServices(ctx context.Context, namespace string) ([]domain.Service, error)
 	DeleteService(ctx context.Context, id int64) error
+	UpdateService(ctx context.Context, id int64, m domain.ServiceManifest) error
 
 	// Instances
 	GetInstance(ctx context.Context, id string) (*domain.ServiceInstance, error)
@@ -50,6 +52,7 @@ type HandlerStore interface {
 	GetSnapshot(ctx context.Context, id string) (*domain.VolumeSnapshot, error)
 	ListSnapshots(ctx context.Context, volumeID string) ([]domain.VolumeSnapshot, error)
 	UpdateSnapshotState(ctx context.Context, id string, state domain.SnapshotState, driverRef string, sizeMiB int64) error
+	VerifySnapshotChain(ctx context.Context, volumeID string) (string, error)
 
 	// Operations
 	GetOperation(ctx context.Context, id string) (*domain.Operation, error)
@@ -195,6 +198,33 @@ func (h *Handlers) GetNode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, nodeToResponse(*n))
 }
 
+// POST /v1/nodes/{id}/heartbeat
+func (h *Handlers) NodeHeartbeat(w http.ResponseWriter, r *http.Request) {
+	id := pathSegmentBefore(r.URL.Path, "heartbeat")
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "missing node id", "INVALID_REQUEST")
+		return
+	}
+	var req NodeHeartbeatRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := h.store.Heartbeat(r.Context(), id, req.AvailRAMMiB, req.AvailCPUThreads, req.Sequence); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "node not found", "NOT_FOUND")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+	n, err := h.store.GetNode(r.Context(), id)
+	if err != nil {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	writeJSON(w, http.StatusOK, nodeToResponse(*n))
+}
+
 // PUT /v1/nodes/{id}/state
 func (h *Handlers) UpdateNodeState(w http.ResponseWriter, r *http.Request) {
 	id := pathSegmentBefore(r.URL.Path, "state")
@@ -285,6 +315,42 @@ func (h *Handlers) GetService(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+	writeJSON(w, http.StatusOK, serviceToResponse(*svc))
+}
+
+// PUT /v1/services/{id}
+func (h *Handlers) UpdateService(w http.ResponseWriter, r *http.Request) {
+	idStr := pathSegment(r.URL.Path, "services")
+	if idStr == "" {
+		writeError(w, r, http.StatusBadRequest, "missing service id", "INVALID_REQUEST")
+		return
+	}
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "service id must be numeric", "INVALID_REQUEST")
+		return
+	}
+	var req UpdateServiceRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := req.Manifest.Validate(); err != nil {
+		writeError(w, r, http.StatusBadRequest, err.Error(), "INVALID_MANIFEST")
+		return
+	}
+	if err := h.store.UpdateService(r.Context(), id, req.Manifest); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "service not found", "NOT_FOUND")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+	svc, err := h.store.GetService(r.Context(), id)
+	if err != nil {
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	writeJSON(w, http.StatusOK, serviceToResponse(*svc))
@@ -551,11 +617,47 @@ func (h *Handlers) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	final, err := h.store.GetSnapshot(r.Context(), snap.ID)
+	var resp SnapshotResponse
 	if err != nil {
-		writeJSON(w, http.StatusCreated, snapshotToResponse(snap))
+		resp = snapshotToResponse(snap)
+	} else {
+		resp = snapshotToResponse(*final)
+	}
+	// VS-F-K3: verify chain integrity after a completed snapshot.
+	if resp.State == string(domain.SnapshotReady) {
+		if violationAt, verErr := h.store.VerifySnapshotChain(r.Context(), id); verErr == nil && violationAt != "" {
+			resp.ChainViolationAt = violationAt
+		}
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+// GET /v1/volumes/{id}/verify-chain
+// Walks all ready snapshots for the volume and re-derives each Merkle chain hash (VS-F-K3).
+func (h *Handlers) VerifyChain(w http.ResponseWriter, r *http.Request) {
+	id := pathSegmentBefore(r.URL.Path, "verify-chain")
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "missing volume id", "BAD_REQUEST")
 		return
 	}
-	writeJSON(w, http.StatusCreated, snapshotToResponse(*final))
+	if _, err := h.store.GetVolume(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "volume not found", "NOT_FOUND")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+	violationAt, err := h.store.VerifySnapshotChain(r.Context(), id)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "chain verification error: "+err.Error(), "INTERNAL")
+		return
+	}
+	writeJSON(w, http.StatusOK, ChainVerificationResponse{
+		VolumeID:         id,
+		Intact:           violationAt == "",
+		ChainViolationAt: violationAt,
+	})
 }
 
 // GET /v1/volumes/{id}/snapshots

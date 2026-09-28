@@ -1158,3 +1158,291 @@ func TestStore_Operation_AppendEvent(t *testing.T) {
 		t.Errorf("unexpected payload: %v", op.Events[0].Payload)
 	}
 }
+
+func TestStore_Instance_ListInstanceOperations(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	instID := makeOpInstance(t, s, "liopNS", "lio")
+	s.CreateOperation(ctx, instID, domain.OpProvision, "mock")
+	s.CreateOperation(ctx, instID, domain.OpStart, "mock")
+
+	ops, err := s.ListInstanceOperations(ctx, instID)
+	if err != nil {
+		t.Fatalf("ListInstanceOperations: %v", err)
+	}
+	if len(ops) != 2 {
+		t.Errorf("expected 2 operations, got %d", len(ops))
+	}
+}
+
+// ── Service store extras ───────────────────────────────────────────────────────
+
+func TestStore_Service_GetByName(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "ns-gbn", "") //nolint:errcheck
+	s.CreateService(ctx, makeManifest("ns-gbn", "svc-gbn"))
+
+	svc, err := s.GetServiceByName(ctx, "ns-gbn", "svc-gbn")
+	if err != nil {
+		t.Fatalf("GetServiceByName: %v", err)
+	}
+	if svc.Manifest.Metadata.Name != "svc-gbn" {
+		t.Errorf("unexpected name: %q", svc.Manifest.Metadata.Name)
+	}
+}
+
+func TestStore_Service_GetByName_NotFound(t *testing.T) {
+	s := openStore(t)
+	if _, err := s.GetServiceByName(context.Background(), "no-ns", "no-svc"); err != store.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestStore_Service_UpdateService(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "ns-upd", "") //nolint:errcheck
+	id, err := s.CreateService(ctx, makeManifest("ns-upd", "svc-upd"))
+	if err != nil {
+		t.Fatalf("CreateService: %v", err)
+	}
+
+	updated := makeManifest("ns-upd", "svc-upd")
+	updated.Spec.Instances = 3
+	if err := s.UpdateService(ctx, id, updated); err != nil {
+		t.Fatalf("UpdateService: %v", err)
+	}
+
+	svc, err := s.GetService(ctx, id)
+	if err != nil {
+		t.Fatalf("GetService after update: %v", err)
+	}
+	if svc.Manifest.Spec.Instances != 3 {
+		t.Errorf("expected instances=3, got %d", svc.Manifest.Spec.Instances)
+	}
+}
+
+func TestStore_Service_UpdateService_NotFound(t *testing.T) {
+	s := openStore(t)
+	err := s.UpdateService(context.Background(), 99999, makeManifest("ns", "svc"))
+	if err == nil {
+		t.Error("expected error for non-existent service id")
+	}
+}
+
+// ── Node heartbeat ─────────────────────────────────────────────────────────────
+
+func TestStore_Node_Heartbeat(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+
+	n := domain.Node{
+		Name:        "hb-node",
+		Arch:        "x86_64",
+		State:       domain.NodeDiscovered,
+		TotalRAMMiB: 32768,
+		AvailRAMMiB: 32768,
+		CPUThreads:  16,
+	}
+	id, err := s.CreateNode(ctx, n)
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+
+	if err := s.Heartbeat(ctx, id, 16384, 8, 1); err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+
+	got, err := s.GetNode(ctx, id)
+	if err != nil {
+		t.Fatalf("GetNode after heartbeat: %v", err)
+	}
+	// Discovered→Ready transition on first heartbeat.
+	if got.State != domain.NodeReady {
+		t.Errorf("expected state=ready after heartbeat, got %q", got.State)
+	}
+	if got.AvailRAMMiB != 16384 {
+		t.Errorf("expected availRAMMiB=16384, got %d", got.AvailRAMMiB)
+	}
+}
+
+func TestStore_Node_Heartbeat_NotFound(t *testing.T) {
+	s := openStore(t)
+	err := s.Heartbeat(context.Background(), "nonexistent", 1024, 4, 0)
+	if err == nil {
+		t.Error("expected error for unknown node")
+	}
+}
+
+// ── Health observations ────────────────────────────────────────────────────────
+
+func TestStore_Health_RecordList(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+
+	instID := makeOpInstance(t, s, "hlthNS", "hlth")
+	nodeID, _ := s.CreateNode(ctx, makeNode("hlth-node"))
+
+	if err := s.RecordHealthObservation(ctx, instID, nodeID, "healthy", "all good"); err != nil {
+		t.Fatalf("RecordHealthObservation healthy: %v", err)
+	}
+	if err := s.RecordHealthObservation(ctx, instID, nodeID, "unhealthy", "probe timeout"); err != nil {
+		t.Fatalf("RecordHealthObservation unhealthy: %v", err)
+	}
+
+	obs, err := s.ListHealthObservations(ctx, instID)
+	if err != nil {
+		t.Fatalf("ListHealthObservations: %v", err)
+	}
+	if len(obs) != 2 {
+		t.Fatalf("expected 2 observations, got %d", len(obs))
+	}
+	// ListHealthObservations returns newest-first.
+	if obs[0].Status != "unhealthy" {
+		t.Errorf("expected newest observation to be unhealthy, got %q", obs[0].Status)
+	}
+	if obs[0].Message != "probe timeout" {
+		t.Errorf("unexpected message: %q", obs[0].Message)
+	}
+}
+
+func TestStore_Health_EmptyInstance(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	instID := makeOpInstance(t, s, "hlthNS2", "hlth2")
+	obs, err := s.ListHealthObservations(ctx, instID)
+	if err != nil {
+		t.Fatalf("ListHealthObservations empty: %v", err)
+	}
+	if len(obs) != 0 {
+		t.Errorf("expected 0 observations, got %d", len(obs))
+	}
+}
+
+// ── Volume release / retry ─────────────────────────────────────────────────────
+
+func TestStore_Volume_StartVolumeRelease(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "relNS", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-rel", "relNS", "rel"))
+	// declared → provisioning → ready (StartVolumeRelease requires a releasable state)
+	s.UpdateVolumeState(ctx, "vol-rel", domain.VolumeProvisioning) //nolint:errcheck
+	s.UpdateVolumeState(ctx, "vol-rel", domain.VolumeReady)        //nolint:errcheck
+
+	if err := s.StartVolumeRelease(ctx, "vol-rel"); err != nil {
+		t.Fatalf("StartVolumeRelease: %v", err)
+	}
+	v, _ := s.GetVolume(ctx, "vol-rel")
+	if v.State != domain.VolumeReleasing {
+		t.Errorf("expected releasing, got %q", v.State)
+	}
+}
+
+func TestStore_Volume_StartVolumeRelease_ActiveMount(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "relNS2", "")                               //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-relm", "relNS2", "relm"))      //nolint:errcheck
+	s.UpdateVolumeState(ctx, "vol-relm", domain.VolumeProvisioning)    //nolint:errcheck
+	s.UpdateVolumeState(ctx, "vol-relm", domain.VolumeReady)           //nolint:errcheck
+	svcID, _ := s.CreateService(ctx, makeManifest("relNS2", "relm-svc"))
+	instID, _ := s.CreateInstance(ctx, svcID, domain.VSPath{Namespace: "relNS2", Service: "relm-svc", Instance: "0"})
+	s.BindMount(ctx, domain.VolumeMount{VolumeID: "vol-relm", InstanceID: instID, TargetPath: "/d"}) //nolint:errcheck
+
+	err := s.StartVolumeRelease(ctx, "vol-relm")
+	if err != store.ErrConflict {
+		t.Errorf("expected ErrConflict for active mount, got: %v", err)
+	}
+}
+
+func TestStore_Volume_StartVolumeRelease_NotFound(t *testing.T) {
+	s := openStore(t)
+	err := s.StartVolumeRelease(context.Background(), "missing")
+	if err != store.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestStore_Volume_IncrementVolumeRetryCount(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "retryNS", "") //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-retry", "retryNS", "retry"))
+	// Put volume into failed state via UpdateVolumeFailure (direct state write).
+	s.UpdateVolumeFailure(ctx, "vol-retry", "transient error") //nolint:errcheck
+
+	count, err := s.IncrementVolumeRetryCount(ctx, "vol-retry")
+	if err != nil {
+		t.Fatalf("IncrementVolumeRetryCount: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected count=1, got %d", count)
+	}
+
+	// Volume should have been reset to declared state.
+	v, _ := s.GetVolume(ctx, "vol-retry")
+	if v.State != domain.VolumeDeclared {
+		t.Errorf("expected declared after retry, got %q", v.State)
+	}
+}
+
+// ── Snapshot chain verification ────────────────────────────────────────────────
+
+func TestStore_Snapshot_VerifyChain_NoSnapshots(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "vcNS1", "")              //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-vc1", "vcNS1", "vc1")) //nolint:errcheck
+
+	badID, err := s.VerifySnapshotChain(ctx, "vol-vc1")
+	if err != nil {
+		t.Fatalf("VerifySnapshotChain: %v", err)
+	}
+	if badID != "" {
+		t.Errorf("expected intact chain (empty string), got %q", badID)
+	}
+}
+
+func TestStore_Snapshot_VerifyChain_IntactChain(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "vcNS2", "")                          //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-vc2", "vcNS2", "vc2"))   //nolint:errcheck
+
+	// Two sequential snapshots with UpdateSnapshotState (which sets chain_hash).
+	s.CreateSnapshot(ctx, domain.VolumeSnapshot{ID: "vc2-s1", VolumeID: "vol-vc2", Label: "v1"}) //nolint:errcheck
+	s.CreateSnapshot(ctx, domain.VolumeSnapshot{ID: "vc2-s2", VolumeID: "vol-vc2", Label: "v2"}) //nolint:errcheck
+	s.UpdateSnapshotState(ctx, "vc2-s1", domain.SnapshotReady, "/refs/s1", 512)                   //nolint:errcheck
+	s.UpdateSnapshotState(ctx, "vc2-s2", domain.SnapshotReady, "/refs/s2", 512)                   //nolint:errcheck
+
+	badID, err := s.VerifySnapshotChain(ctx, "vol-vc2")
+	if err != nil {
+		t.Fatalf("VerifySnapshotChain: %v", err)
+	}
+	if badID != "" {
+		t.Errorf("expected intact chain for normally-created snapshots, got violation at %q", badID)
+	}
+}
+
+func TestStore_Snapshot_VerifyChain_SkipsNonReady(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	s.CreateNamespace(ctx, "vcNS3", "")                           //nolint:errcheck
+	s.CreateVolume(ctx, makeVolume("vol-vc3", "vcNS3", "vc3"))    //nolint:errcheck
+
+	// One ready snapshot; one pending (no chain_hash). Chain should be intact.
+	s.CreateSnapshot(ctx, domain.VolumeSnapshot{ID: "vc3-s1", VolumeID: "vol-vc3", Label: "v1"})  //nolint:errcheck
+	s.CreateSnapshot(ctx, domain.VolumeSnapshot{ID: "vc3-s2", VolumeID: "vol-vc3", Label: "v2"})  //nolint:errcheck
+	s.UpdateSnapshotState(ctx, "vc3-s1", domain.SnapshotReady, "/refs/s1", 256)                    //nolint:errcheck
+	// vc3-s2 stays pending — chain verification must skip it (chain_hash = "").
+
+	badID, err := s.VerifySnapshotChain(ctx, "vol-vc3")
+	if err != nil {
+		t.Fatalf("VerifySnapshotChain with pending snap: %v", err)
+	}
+	if badID != "" {
+		t.Errorf("expected intact chain when pending snapshots are present, got violation at %q", badID)
+	}
+}

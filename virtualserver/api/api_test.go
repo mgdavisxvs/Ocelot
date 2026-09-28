@@ -233,6 +233,28 @@ func (s *testStore) ListHealthObservations(_ context.Context, _ string) ([]domai
 	return nil, nil
 }
 
+func (s *testStore) Heartbeat(_ context.Context, id string, availRAMMiB int64, _ int, _ uint64) error {
+	n, ok := s.nodes[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	n.AvailRAMMiB = availRAMMiB
+	return nil
+}
+
+func (s *testStore) UpdateService(_ context.Context, id int64, m domain.ServiceManifest) error {
+	svc, ok := s.services[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	svc.Manifest = m
+	return nil
+}
+
+func (s *testStore) VerifySnapshotChain(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 const testAdminKey = "test-secret-key"

@@ -65,12 +65,15 @@ type ServiceResponse struct {
 
 // InstanceResponse is the API representation of a service instance.
 type InstanceResponse struct {
-	ID         string `json:"id"`
-	ServiceID  int64  `json:"serviceId"`
-	NodeID     string `json:"nodeId,omitempty"`
-	VSPath     string `json:"vsPath"`
-	State      string `json:"state"`
-	RetryCount int    `json:"retryCount"`
+	ID            string            `json:"id"`
+	ServiceID     int64             `json:"serviceId"`
+	NodeID        string            `json:"nodeId,omitempty"`
+	VSPath        string            `json:"vsPath"`
+	State         string            `json:"state"`
+	RetryCount    int               `json:"retryCount"`
+	RuntimeHandle map[string]string `json:"runtimeHandle,omitempty"`
+	CreatedAt     time.Time         `json:"createdAt"`
+	UpdatedAt     time.Time         `json:"updatedAt"`
 }
 
 // DeclareVolumeRequest wraps a VolumeManifest for POST /v1/volumes.
@@ -108,14 +111,34 @@ type VolumeMountResponse struct {
 
 // SnapshotResponse is the API representation of a volume snapshot.
 type SnapshotResponse struct {
-	ID          string     `json:"id"`
-	VolumeID    string     `json:"volumeId"`
-	Label       string     `json:"label"`
-	State       string     `json:"state"`
-	DriverRef   string     `json:"driverRef,omitempty"`
-	SizeMiB     int64      `json:"sizeMiB"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	CompletedAt *time.Time `json:"completedAt,omitempty"`
+	ID               string     `json:"id"`
+	VolumeID         string     `json:"volumeId"`
+	Label            string     `json:"label"`
+	State            string     `json:"state"`
+	DriverRef        string     `json:"driverRef,omitempty"`
+	SizeMiB          int64      `json:"sizeMiB"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	CompletedAt      *time.Time `json:"completedAt,omitempty"`
+	ChainViolationAt string     `json:"chainViolationAt,omitempty"`
+}
+
+// NodeHeartbeatRequest is the request body for POST /v1/nodes/{id}/heartbeat.
+type NodeHeartbeatRequest struct {
+	AvailRAMMiB     int64  `json:"availRAMMB"`
+	AvailCPUThreads int    `json:"availCPUThreads"`
+	Sequence        uint64 `json:"sequence"`
+}
+
+// UpdateServiceRequest is the request body for PUT /v1/services/{id}.
+type UpdateServiceRequest struct {
+	Manifest domain.ServiceManifest `json:"manifest"`
+}
+
+// ChainVerificationResponse is the response body for GET /v1/volumes/{id}/verify-chain.
+type ChainVerificationResponse struct {
+	VolumeID         string `json:"volumeId"`
+	Intact           bool   `json:"intact"`
+	ChainViolationAt string `json:"chainViolationAt,omitempty"`
 }
 
 // RestoreVolumeRequest is the request body for POST /v1/volumes/{id}/restore.
@@ -193,12 +216,15 @@ func serviceToResponse(s domain.Service) ServiceResponse {
 
 func instanceToResponse(i domain.ServiceInstance) InstanceResponse {
 	return InstanceResponse{
-		ID:         i.ID,
-		ServiceID:  i.ServiceID,
-		NodeID:     i.NodeID,
-		VSPath:     i.VSPath.String(),
-		State:      string(i.State),
-		RetryCount: i.RetryCount,
+		ID:            i.ID,
+		ServiceID:     i.ServiceID,
+		NodeID:        i.NodeID,
+		VSPath:        i.VSPath.String(),
+		State:         string(i.State),
+		RetryCount:    i.RetryCount,
+		RuntimeHandle: i.RuntimeHandle,
+		CreatedAt:     i.CreatedAt,
+		UpdatedAt:     i.UpdatedAt,
 	}
 }
 
