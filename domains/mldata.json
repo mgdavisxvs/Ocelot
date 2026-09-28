@@ -1,0 +1,9 @@
+{
+  "domain": "mldata",
+  "wire_format": {"format": "json"},
+  "auth": {"strategy": "none"},
+  "resource": {"key_param": "model_ref", "plural": "model_versions"},
+  "roles": {"provider": "seeder", "consumer": "fetcher"},
+  "delta": {"produced": "bytes_served", "consumed": "bytes_fetched", "remaining": "left", "corrupt": "corrupt"},
+  "actions": {"event": "model_announce", "query": "model_scrape"}
+}

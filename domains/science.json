@@ -1,0 +1,9 @@
+{
+  "domain": "science",
+  "wire_format": {"format": "json"},
+  "auth": {"strategy": "none"},
+  "resource": {"key_param": "study_ref", "plural": "datasets"},
+  "roles": {"provider": "depositor", "consumer": "analyst"},
+  "delta": {"produced": "bytes_served", "consumed": "bytes_fetched", "remaining": "left", "corrupt": "corrupt"},
+  "actions": {"event": "data_announce", "query": "data_scrape"}
+}

@@ -1,0 +1,9 @@
+{
+  "domain": "patch",
+  "wire_format": {"format": "bencode"},
+  "auth": {"strategy": "prefix_trie"},
+  "resource": {"key_param": "info_hash", "plural": "patches"},
+  "roles": {"provider": "seed", "consumer": "fetch"},
+  "delta": {"produced": "bytes_served", "consumed": "bytes_recv", "remaining": "left", "corrupt": "corrupt"},
+  "actions": {"event": "patch_announce", "query": "patch_scrape"}
+}

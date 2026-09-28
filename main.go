@@ -192,6 +192,41 @@ func main() {
 	sched.Start()
 	log.Printf("scheduler started (interval=%ds)", config.ScheduleInterval)
 
+	// ── UC background monitors ────────────────────────────────────────────────
+	ucCtx, ucCancel := context.WithCancel(context.Background())
+
+	if config.SLACheckInterval > 0 {
+		slaM := tracker.NewSLAMonitor(worker, config.SLAMaxAnnounceSec, config.SLACheckInterval)
+		slaM.Start(ucCtx)
+		log.Printf("SLA monitor started (sla=%ds interval=%ds)", config.SLAMaxAnnounceSec, config.SLACheckInterval)
+	}
+	if config.MinReplicas > 0 {
+		presM := tracker.NewPreservationMonitor(worker, config.MinReplicas, config.SLACheckInterval)
+		presM.Start(ucCtx)
+		log.Printf("preservation monitor started (min_replicas=%d)", config.MinReplicas)
+	}
+	tracker.RunEdgeRolloutAdvancer(ucCtx, worker, rawDB.CurrentDB())
+	log.Println("edge rollout advancer started")
+
+	// Periodic UC cleanup: CI artifact TTL purge + expired torrent eviction +
+	// daily quota resets.  Runs every ScheduleInterval seconds alongside the
+	// main WAL scheduler.
+	go func() {
+		tick := time.NewTicker(time.Duration(config.ScheduleInterval) * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ucCtx.Done():
+				return
+			case <-tick.C:
+				tracker.PurgeCIArtifacts(rawDB.CurrentDB(), torrents)
+				tracker.PurgeExpiredTorrents(nil, torrents)
+				tracker.ResetDailyBackupQuotas(rawDB.CurrentDB())
+				tracker.ResetDailyDataQuotas(rawDB.CurrentDB())
+			}
+		}
+	}()
+
 	// ── Signal handlers ───────────────────────────────────────────────────────
 	sigAdmin := make(chan os.Signal, 1)
 	signal.Notify(sigAdmin, syscall.SIGHUP, syscall.SIGUSR1)
@@ -296,6 +331,7 @@ func main() {
 	log.Println("shutdown signal received — draining connections...")
 
 	markovCancel() // stop freeleech poller and adaptive threshold goroutines
+	ucCancel()     // stop UC background monitors and cleanup goroutine
 
 	if err := server.Shutdown(); err != nil {
 		log.Printf("server shutdown: %v", err)

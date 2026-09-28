@@ -1,0 +1,9 @@
+{
+  "domain": "blockchain",
+  "wire_format": {"format": "bencode"},
+  "auth": {"strategy": "none"},
+  "resource": {"key_param": "info_hash", "plural": "snapshots"},
+  "roles": {"provider": "archiver", "consumer": "syncer"},
+  "delta": {"produced": "bytes_served", "consumed": "bytes_recv", "remaining": "left", "corrupt": "corrupt"},
+  "actions": {"event": "sync_announce", "query": "sync_scrape"}
+}

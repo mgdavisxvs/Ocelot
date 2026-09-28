@@ -1,0 +1,9 @@
+{
+  "domain": "threatintel",
+  "wire_format": {"format": "json"},
+  "auth": {"strategy": "prefix_trie"},
+  "resource": {"key_param": "bundle_ref", "plural": "feed_bundles"},
+  "roles": {"provider": "publisher", "consumer": "subscriber"},
+  "delta": {"produced": "bytes_published", "consumed": "bytes_consumed", "remaining": "left", "corrupt": "corrupt"},
+  "actions": {"event": "feed_announce", "query": "feed_scrape"}
+}

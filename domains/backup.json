@@ -1,0 +1,9 @@
+{
+  "domain": "backup",
+  "wire_format": {"format": "json"},
+  "auth": {"strategy": "none"},
+  "resource": {"key_param": "backup_ref", "plural": "backup_jobs"},
+  "roles": {"provider": "backupd", "consumer": "restored"},
+  "delta": {"produced": "bytes_backed", "consumed": "bytes_restored", "remaining": "left", "corrupt": "corrupt"},
+  "actions": {"event": "backup_announce", "query": "backup_scrape"}
+}

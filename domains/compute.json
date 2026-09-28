@@ -1,0 +1,9 @@
+{
+  "domain": "compute",
+  "wire_format": {"format": "json"},
+  "auth": {"strategy": "none"},
+  "resource": {"key_param": "job_ref", "plural": "jobs"},
+  "roles": {"provider": "orchestrator", "consumer": "worker"},
+  "delta": {"produced": "result_bytes", "consumed": "input_bytes", "remaining": "left", "corrupt": "corrupt"},
+  "actions": {"event": "job_announce", "query": "job_scrape"}
+}

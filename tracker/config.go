@@ -54,6 +54,18 @@ type FileConfig struct {
 	// RedisAddr is the Redis server address for optional dual-write / caching
 	// e.g. "localhost:6379" (empty = Redis disabled)
 	RedisAddr string
+	// UC use-case config fields
+	LiveAnnounceInterval  int     // announce interval override for live streams (default 10)
+	LivePeersTimeout      int     // peer timeout for live streams (default 45)
+	MinReplicas           int     // minimum replica count for preservation monitor (default 3)
+	SLACheckInterval      int     // SLA monitor check interval in seconds (default 60)
+	SLAMaxAnnounceSec     int     // maximum seconds between announces before SLA alert (default 300)
+	BackupRetentionDays   int     // days to keep backup torrents (default 30)
+	DataRetentionDays     int     // days to keep tick data torrents (default 90)
+	CIArtifactTTL         int     // CI artifact TTL in seconds (default 14400)
+	RolloutDwellSeconds   int     // default dwell seconds between rollout stages (default 300)
+	RolloutAnomalyGate    float64 // default anomaly rate gate for rollouts (default 0.05)
+	CheatCorruptThreshold float64 // corrupt ratio above which a game peer is banned (default 0.1)
 }
 
 // DefaultFileConfig returns conservative defaults matching ocelot.conf.dist.
@@ -83,6 +95,17 @@ func DefaultFileConfig() *FileConfig {
 		RateLimitRPS:      100,
 		RateLimitBurst:    200,
 		BatchBufferCap:    4096,
+		LiveAnnounceInterval:  10,
+		LivePeersTimeout:      45,
+		MinReplicas:           3,
+		SLACheckInterval:      60,
+		SLAMaxAnnounceSec:     300,
+		BackupRetentionDays:   30,
+		DataRetentionDays:     90,
+		CIArtifactTTL:         14400,
+		RolloutDwellSeconds:   300,
+		RolloutAnomalyGate:    0.05,
+		CheatCorruptThreshold: 0.10,
 	}
 }
 
@@ -192,6 +215,32 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.OTelEndpoint = val
 		case "redis_addr":
 			cfg.RedisAddr = val
+		case "live_announce_interval":
+			cfg.LiveAnnounceInterval = parseIntVal(val, cfg.LiveAnnounceInterval)
+		case "live_peers_timeout":
+			cfg.LivePeersTimeout = parseIntVal(val, cfg.LivePeersTimeout)
+		case "min_replicas":
+			cfg.MinReplicas = parseIntVal(val, cfg.MinReplicas)
+		case "sla_check_interval":
+			cfg.SLACheckInterval = parseIntVal(val, cfg.SLACheckInterval)
+		case "sla_max_announce_sec":
+			cfg.SLAMaxAnnounceSec = parseIntVal(val, cfg.SLAMaxAnnounceSec)
+		case "backup_retention_days":
+			cfg.BackupRetentionDays = parseIntVal(val, cfg.BackupRetentionDays)
+		case "data_retention_days":
+			cfg.DataRetentionDays = parseIntVal(val, cfg.DataRetentionDays)
+		case "ci_artifact_ttl":
+			cfg.CIArtifactTTL = parseIntVal(val, cfg.CIArtifactTTL)
+		case "rollout_dwell_seconds":
+			cfg.RolloutDwellSeconds = parseIntVal(val, cfg.RolloutDwellSeconds)
+		case "rollout_anomaly_gate":
+			if v, err := strconv.ParseFloat(val, 64); err == nil {
+				cfg.RolloutAnomalyGate = v
+			}
+		case "cheat_corrupt_threshold":
+			if v, err := strconv.ParseFloat(val, 64); err == nil {
+				cfg.CheatCorruptThreshold = v
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -234,6 +283,17 @@ func (fc *FileConfig) ToTrackerConfig() *Config {
 		OTelEndpoint:         fc.OTelEndpoint,
 		MaxConnections:       fc.MaxConnections,
 		RedisAddr:            fc.RedisAddr,
+		LiveAnnounceInterval:  fc.LiveAnnounceInterval,
+		LivePeersTimeout:      fc.LivePeersTimeout,
+		MinReplicas:           fc.MinReplicas,
+		SLACheckInterval:      fc.SLACheckInterval,
+		SLAMaxAnnounceSec:     fc.SLAMaxAnnounceSec,
+		BackupRetentionDays:   fc.BackupRetentionDays,
+		DataRetentionDays:     fc.DataRetentionDays,
+		CIArtifactTTL:         fc.CIArtifactTTL,
+		RolloutDwellSeconds:   fc.RolloutDwellSeconds,
+		RolloutAnomalyGate:    fc.RolloutAnomalyGate,
+		CheatCorruptThreshold: fc.CheatCorruptThreshold,
 		TLS: TLSConfig{
 			CertFile: fc.TLSCertFile,
 			KeyFile:  fc.TLSKeyFile,

@@ -128,6 +128,10 @@ type Torrent struct {
 	Leechers           *PeerList
 	LastSelectedSeeder string
 	TokenedUsers       map[UserID]struct{}
+	Category           TorrentCategory // per-category middleware dispatch
+	RolloutPct         uint8           // staged rollout gate (0 = gate disabled, 100 = full)
+	TTLSeconds         int             // time-to-live in seconds (0 = immortal)
+	CreatedAt          time.Time       // creation timestamp for TTL calculation
 }
 
 func NewTorrent(id TorrentID) *Torrent {
@@ -142,12 +146,13 @@ func NewTorrent(id TorrentID) *Torrent {
 
 // User represents a tracker user.
 type User struct {
-	ID        UserID
-	Deleted   atomic.Bool
-	CanLeech  atomic.Bool
-	ProtectIP atomic.Bool
-	Leeching  atomic.Uint32
-	Seeding   atomic.Uint32
+	ID                UserID
+	Deleted           atomic.Bool
+	CanLeech          atomic.Bool
+	ProtectIP         atomic.Bool
+	Leeching          atomic.Uint32
+	Seeding           atomic.Uint32
+	HealthAttestation uint32 // atomic: 1 = healthy, 0 = not attested
 }
 
 func NewUser(id UserID, canLeech, protectIP bool) *User {

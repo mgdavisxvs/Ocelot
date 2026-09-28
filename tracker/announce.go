@@ -96,6 +96,11 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 		return errAnnounce("unregistered torrent")
 	}
 
+	// Per-category middleware gate (UC use cases)
+	if err := runCategoryMiddleware(req, torrent, user); err != nil {
+		return errAnnounce("%s", err.Error())
+	}
+
 	peerKey := PeerKeyPrime(req.PeerID, user.ID, torrent.ID)
 
 	var (

@@ -1,0 +1,9 @@
+{
+  "domain": "imagery",
+  "wire_format": {"format": "json"},
+  "auth": {"strategy": "none"},
+  "resource": {"key_param": "scene_ref", "plural": "scenes"},
+  "roles": {"provider": "ingester", "consumer": "analyst"},
+  "delta": {"produced": "bytes_served", "consumed": "bytes_fetched", "remaining": "left", "corrupt": "corrupt"},
+  "actions": {"event": "scene_announce", "query": "scene_scrape"}
+}

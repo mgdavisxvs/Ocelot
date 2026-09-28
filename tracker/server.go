@@ -91,6 +91,18 @@ type Config struct {
 	// RedisAddr is an optional Redis server address for dual-write / caching.
 	// Empty disables Redis.
 	RedisAddr string
+	// UC use-case config
+	LiveAnnounceInterval  int
+	LivePeersTimeout      int
+	MinReplicas           int
+	SLACheckInterval      int
+	SLAMaxAnnounceSec     int
+	BackupRetentionDays   int
+	DataRetentionDays     int
+	CIArtifactTTL         int
+	RolloutDwellSeconds   int
+	RolloutAnomalyGate    float64
+	CheatCorruptThreshold float64
 }
 
 func NewServer(config *Config, worker *Worker) *Server {
@@ -983,6 +995,59 @@ func (s *Server) StartAdminAPIServer(db *sql.DB) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"ok":true}`))
 	})
+
+	// UC-1 Software Patch Distribution
+	mux.HandleFunc("/patch/release", func(w http.ResponseWriter, r *http.Request) { s.handlePatchRelease(w, r, db) })
+	mux.HandleFunc("/patch/rollout/advance", func(w http.ResponseWriter, r *http.Request) { s.handlePatchRolloutAdvance(w, r, db) })
+	// UC-2 ML Model Distribution
+	mux.HandleFunc("/model/register", func(w http.ResponseWriter, r *http.Request) { s.handleModelRegister(w, r, db) })
+	mux.HandleFunc("/model/eta", s.handleModelETA)
+	mux.HandleFunc("/model/manifest", func(w http.ResponseWriter, r *http.Request) { s.handleModelManifest(w, r, db) })
+	// UC-3 WebRTC Signalling / CDN Fallback
+	mux.HandleFunc("/webrtc/announce", s.handleWebRTCAnnounce)
+	mux.HandleFunc("/cdn/status", s.handleCDNStatus)
+	// UC-4 Backup Quota
+	// (checkBackupQuota is invoked from announce path; no standalone endpoint)
+	// UC-5 Data Use Agreements
+	mux.HandleFunc("/dua/grant", func(w http.ResponseWriter, r *http.Request) { s.handleDUAGrant(w, r, db) })
+	mux.HandleFunc("/dua/revoke", func(w http.ResponseWriter, r *http.Request) { s.handleDUARevoke(w, r, db) })
+	// UC-6 IoT OTA Updates
+	mux.HandleFunc("/ota/register", func(w http.ResponseWriter, r *http.Request) { s.handleOTARegister(w, r, db) })
+	// UC-7 Live Stream Segmentation
+	mux.HandleFunc("/live/segment", s.handleLiveSegment)
+	mux.HandleFunc("/live/playlist", s.handleLivePlaylist)
+	// UC-8 Distributed Package Registry
+	mux.HandleFunc("/packages/resolve", func(w http.ResponseWriter, r *http.Request) { s.handlePkgResolve(w, r, db) })
+	mux.HandleFunc("/packages/publish", func(w http.ResponseWriter, r *http.Request) { s.handlePkgPublish(w, r, db) })
+	// UC-9 Compute Resource Shuttle
+	mux.HandleFunc("/compute/scale", s.handleComputeScale)
+	mux.HandleFunc("/compute/eta", s.handleComputeJobETA)
+	// UC-10 Container Image Distribution
+	mux.HandleFunc("/container/layer", func(w http.ResponseWriter, r *http.Request) { s.handleLayerResolve(w, r, db) })
+	mux.HandleFunc("/container/layer/register", func(w http.ResponseWriter, r *http.Request) { s.handleLayerRegister(w, r, db) })
+	// UC-11 Blockchain IBD Snapshot
+	mux.HandleFunc("/chain/snapshot", func(w http.ResponseWriter, r *http.Request) { s.handleChainSnapshot(w, r, db) })
+	mux.HandleFunc("/chain/snapshot/register", func(w http.ResponseWriter, r *http.Request) { s.handleChainSnapshotRegister(w, r, db) })
+	// UC-12 AV Map Tiles / Vehicle Attestation
+	mux.HandleFunc("/map/tile", func(w http.ResponseWriter, r *http.Request) { s.handleMapTileResolve(w, r, db) })
+	mux.HandleFunc("/admin/vehicle/attest", s.handleVehicleAttest)
+	// UC-13 HIPAA / BAA Gate
+	mux.HandleFunc("/admin/baa/grant", func(w http.ResponseWriter, r *http.Request) { s.handleBAAGrant(w, r, db) })
+	mux.HandleFunc("/admin/baa/revoke", func(w http.ResponseWriter, r *http.Request) { s.handleBAARevoke(w, r, db) })
+	// UC-14 SLA Monitor — background goroutine; no direct endpoint
+	// UC-15 Tick Data Quota — applyDataQuota called from announce; no direct endpoint
+	// UC-16 Preservation Monitor — background goroutine; no direct endpoint
+	// UC-17 CI Artifact Shuttle
+	mux.HandleFunc("/ci/artifact/register", func(w http.ResponseWriter, r *http.Request) { s.handleCIArtifactRegister(w, r, db) })
+	mux.HandleFunc("/ci/artifact/ready", func(w http.ResponseWriter, r *http.Request) { s.handleCIArtifactReady(w, r, db) })
+	// UC-18 Satellite Imagery Scene
+	mux.HandleFunc("/scene/register", func(w http.ResponseWriter, r *http.Request) { s.handleSceneRegister(w, r, db) })
+	mux.HandleFunc("/scene/resolve", func(w http.ResponseWriter, r *http.Request) { s.handleSceneResolve(w, r, db) })
+	// UC-19 Game World Epoch
+	mux.HandleFunc("/game/epoch", func(w http.ResponseWriter, r *http.Request) { s.handleGameEpoch(w, r, db) })
+	// UC-20 Edge AI Rollout
+	mux.HandleFunc("/edge/rollout/create", func(w http.ResponseWriter, r *http.Request) { s.handleEdgeRolloutCreate(w, r, db) })
+	mux.HandleFunc("/edge/rollout/status", s.handleEdgeRolloutStatus)
 
 	// Stack: rate limit → auth → mux.  The rate limiter runs first so
 	// unauthenticated callers cannot exhaust resources before the JWT check.
