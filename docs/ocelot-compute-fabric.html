@@ -19,6 +19,8 @@
       --orange:   #d29922;
       --red:      #f85149;
       --purple:   #bc8cff;
+      --teal:     #39d353;
+      --gpu:      #76e6ca;
     }
     body        { background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, sans-serif; }
     pre, code   { font-family: ui-monospace, 'Cascadia Code', 'Fira Code', monospace; }
@@ -35,22 +37,20 @@
     .badge-green  { background: rgba(63,185,80,.15); color: var(--green); }
     .badge-orange { background: rgba(210,153,34,.15); color: var(--orange); }
     .badge-purple { background: rgba(188,140,255,.15); color: var(--purple); }
+    .badge-gpu    { background: rgba(118,230,202,.15); color: var(--gpu); }
     .step-num   { width: 2rem; height: 2rem; min-width: 2rem; border-radius: 9999px;
                   background: rgba(88,166,255,.15); color: var(--accent);
                   display: flex; align-items: center; justify-content: center;
                   font-size: .85rem; font-weight: 700; }
     details > summary { list-style: none; cursor: pointer; }
     details > summary::-webkit-details-marker { display: none; }
-    .endpoint-row { border-left: 3px solid var(--border); padding-left: .75rem; }
-    .endpoint-get  { border-color: var(--green); }
-    .endpoint-post { border-color: var(--accent); }
-    .endpoint-del  { border-color: var(--red); }
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
     table { border-collapse: collapse; width: 100%; }
     th, td { border: 1px solid var(--border); padding: .5rem .75rem; text-align: left; font-size: .85rem; }
     th { background: rgba(30,37,48,.8); color: var(--muted); font-weight: 600; }
     tr:nth-child(even) td { background: rgba(22,27,34,.6); }
+    .gpu-glow { box-shadow: 0 0 0 1px rgba(118,230,202,.3), 0 4px 16px rgba(118,230,202,.08); }
   </style>
 </head>
 <body x-data="guide()" class="min-h-screen">
@@ -64,14 +64,14 @@
       <span style="color:var(--muted)" class="text-sm">/ Compute Fabric Guide</span>
     </div>
     <div class="flex items-center gap-2">
-      <span class="badge badge-green"><i data-lucide="check-circle-2" class="w-3 h-3"></i> v1.0</span>
+      <span class="badge badge-green"><i data-lucide="check-circle-2" class="w-3 h-3"></i> v1.1</span>
       <span class="badge badge-blue">Go 1.21+</span>
     </div>
   </div>
 </nav>
 
 <!-- ── Hero ───────────────────────────────────────────────────────── -->
-<header class="border-b" style="border-color:var(--border); background: linear-gradient(135deg,#0d1117 0%,#111827 100%)">
+<header class="border-b" style="border-color:var(--border); background: linear-gradient(135deg,#0d1117 0%,#0f1f2e 100%)">
   <div class="max-w-6xl mx-auto px-4 py-14">
     <div class="flex items-start gap-4">
       <div class="p-3 rounded-xl" style="background:rgba(88,166,255,.1)">
@@ -81,14 +81,15 @@
         <h1 class="text-3xl font-bold mb-2">Ocelot as a Compute Fabric</h1>
         <p class="text-lg mb-4" style="color:var(--muted)">
           Deploy Ocelot's BitTorrent swarm as a peer-to-peer job-distribution layer —
-          routing compute payloads, container layers, CI artifacts, and ML model shards
-          across heterogeneous hardware without a central broker.
+          routing compute payloads, container layers, CI artifacts, ML model shards,
+          and GPU inference tasks across heterogeneous hardware without a central broker.
         </p>
         <div class="flex flex-wrap gap-2">
           <span class="badge badge-blue"><i data-lucide="server" class="w-3 h-3"></i> Dell R640</span>
+          <span class="badge badge-gpu"><i data-lucide="zap" class="w-3 h-3"></i> R730 + 2×V100 16 GB</span>
           <span class="badge badge-orange"><i data-lucide="apple" class="w-3 h-3"></i> M1 Mac Mini 8 GB</span>
-          <span class="badge badge-purple"><i data-lucide="zap" class="w-3 h-3"></i> UC-9 Compute Shuttle</span>
-          <span class="badge badge-green"><i data-lucide="activity" class="w-3 h-3"></i> Prometheus</span>
+          <span class="badge badge-purple"><i data-lucide="cpu" class="w-3 h-3"></i> UC-9 Compute Shuttle</span>
+          <span class="badge badge-green"><i data-lucide="activity" class="w-3 h-3"></i> Prometheus + DCGM</span>
         </div>
       </div>
     </div>
@@ -125,27 +126,45 @@
       <div class="card p-5 mb-4">
         <p class="mb-3">
           Ocelot's announce engine tracks which peers hold which torrent pieces in real time.
-          When you register a payload under <code>category = compute</code>, the swarm
-          becomes a self-balancing distribution mesh:
+          When you register a payload under <code>category = compute</code> or
+          <code>category = edgeai</code>, the swarm becomes a self-balancing distribution mesh:
         </p>
         <ul class="space-y-2 text-sm" style="color:var(--muted)">
           <li class="flex gap-2"><i data-lucide="arrow-right" class="w-4 h-4 mt-0.5 shrink-0" style="color:var(--accent)"></i>
             <span><strong class="text-white">UC-9 Compute Shuttle</strong> — <code>GET /compute/scale</code> returns a
             <code>scale_up</code> verdict when the leecher/seeder ratio exceeds 4, so your orchestrator
-            knows when to spin extra workers.</span></li>
+            knows when to spin extra workers or GPU nodes.</span></li>
           <li class="flex gap-2"><i data-lucide="arrow-right" class="w-4 h-4 mt-0.5 shrink-0" style="color:var(--accent)"></i>
-            <span><strong class="text-white">UC-11 Container Layer Cache</strong> — container image layers are
-            content-addressed torrents; peers pull only the missing diff, identical to Docker's layer model
-            but without a registry bottleneck.</span></li>
+            <span><strong class="text-white">UC-2 Model Registry</strong> — ML model weights and shards are registered
+            under <code>category = edgeai</code>; V100 workers pull only the diff on each version update,
+            cutting re-distribution time from hours to minutes.</span></li>
+          <li class="flex gap-2"><i data-lucide="arrow-right" class="w-4 h-4 mt-0.5 shrink-0" style="color:var(--accent)"></i>
+            <span><strong class="text-white">UC-11 Container Layer Cache</strong> — CUDA container image layers are
+            content-addressed torrents; peers pull only missing diffs, eliminating registry bottlenecks
+            when deploying GPU workloads across a cluster.</span></li>
           <li class="flex gap-2"><i data-lucide="arrow-right" class="w-4 h-4 mt-0.5 shrink-0" style="color:var(--accent)"></i>
             <span><strong class="text-white">UC-18 CI Artifact Store</strong> — build artefacts (binaries, test
-            reports, coverage data) are registered with a TTL; Ocelot garbage-collects them after
+            reports, ONNX exports) are registered with a TTL; Ocelot garbage-collects them after
             <code>ci_artifact_ttl</code> seconds.</span></li>
           <li class="flex gap-2"><i data-lucide="arrow-right" class="w-4 h-4 mt-0.5 shrink-0" style="color:var(--accent)"></i>
             <span><strong class="text-white">UC-20 Edge Rollout</strong> — staged rollouts advance automatically
-            when the anomaly rate stays below <code>rollout_anomaly_gate</code>, giving you canary deployments
-            with zero extra tooling.</span></li>
+            when the anomaly rate stays below <code>rollout_anomaly_gate</code>, giving you zero-downtime
+            GPU firmware and driver updates with built-in canary gating.</span></li>
         </ul>
+      </div>
+      <!-- GPU callout -->
+      <div class="card p-5 mb-4 gpu-glow" style="border-color:rgba(118,230,202,.4)">
+        <div class="flex gap-2 mb-2">
+          <i data-lucide="zap" class="w-4 h-4 shrink-0 mt-0.5" style="color:var(--gpu)"></i>
+          <strong style="color:var(--gpu)">R730 + V100 role in the fabric</strong>
+        </div>
+        <p class="text-sm" style="color:var(--muted)">
+          The R730 acts as a <em>GPU seeder</em>: it seeds model weights and CUDA container layers
+          at 10 GbE line rate while simultaneously running inference. Because BitTorrent is
+          upload-parallel, a single V100 node can distribute a 14 GB model to 20 workers
+          in the time a unicast copy would reach 2. Both V100s contribute independently —
+          each worker in the swarm picks pieces from whichever GPU node responds fastest.
+        </p>
       </div>
       <div class="card p-5" style="border-color:var(--orange)">
         <div class="flex gap-2 mb-2">
@@ -166,37 +185,71 @@
         <i data-lucide="package" class="w-5 h-5" style="color:var(--accent)"></i>
         Prerequisites
       </h2>
-      <div class="grid md:grid-cols-2 gap-4">
+      <div class="grid md:grid-cols-3 gap-4">
+        <!-- R640 -->
         <div class="card p-5">
           <div class="flex items-center gap-2 mb-3">
             <i data-lucide="server" class="w-4 h-4" style="color:var(--accent)"></i>
-            <strong>Dell PowerEdge R640</strong>
+            <strong>Dell R640</strong>
           </div>
           <ul class="text-sm space-y-1" style="color:var(--muted)">
-            <li>• RHEL / Rocky / Ubuntu 22.04 LTS (x86_64)</li>
-            <li>• Go 1.21+ — <code>dnf install golang</code> or tarball from <code>go.dev/dl</code></li>
-            <li>• gcc + sqlite-devel for CGo SQLite: <code>dnf install gcc sqlite-devel</code></li>
-            <li>• Redis 7 (optional, for dual-write): <code>dnf install redis</code></li>
+            <li>• RHEL / Rocky / Ubuntu 22.04 (x86_64)</li>
+            <li>• Go 1.21+ via <code>dnf install golang</code></li>
+            <li>• CGo: <code>dnf install gcc sqlite-devel</code></li>
+            <li>• Redis 7 (optional dual-write)</li>
             <li>• systemd (pre-installed)</li>
-            <li>• Port 6969/tcp open (or your chosen <code>listen_port</code>)</li>
-            <li>• Port 8181/tcp for Admin API (firewall to mgmt VLAN only)</li>
+            <li>• Ports 6969/tcp + 8181/tcp open</li>
           </ul>
         </div>
+        <!-- R730 + V100 -->
+        <div class="card p-5 gpu-glow" style="border-color:rgba(118,230,202,.35)">
+          <div class="flex items-center gap-2 mb-3">
+            <i data-lucide="zap" class="w-4 h-4" style="color:var(--gpu)"></i>
+            <strong>R730 + 2×V100 16 GB</strong>
+          </div>
+          <ul class="text-sm space-y-1" style="color:var(--muted)">
+            <li>• Ubuntu 22.04 LTS (x86_64) — recommended for CUDA</li>
+            <li>• Go 1.21+ (same as R640)</li>
+            <li>• CGo: <code>apt install gcc libsqlite3-dev</code></li>
+            <li>• NVIDIA driver 525+: <code>ubuntu-drivers install</code></li>
+            <li>• CUDA Toolkit 12.x: <code>apt install cuda-toolkit-12-3</code></li>
+            <li>• nvidia-container-toolkit (for GPU containers)</li>
+            <li>• DCGM (GPU metrics): <code>apt install datacenter-gpu-manager</code></li>
+            <li>• Ports 6969, 8181, 9090 (metrics), 9400 (DCGM) open</li>
+          </ul>
+        </div>
+        <!-- M1 Mac Mini -->
         <div class="card p-5">
           <div class="flex items-center gap-2 mb-3">
             <i data-lucide="apple" class="w-4 h-4" style="color:var(--orange)"></i>
-            <strong>Apple M1 Mac Mini 8 GB</strong>
+            <strong>M1 Mac Mini 8 GB</strong>
           </div>
           <ul class="text-sm space-y-1" style="color:var(--muted)">
-            <li>• macOS 13 Ventura or 14 Sonoma (arm64)</li>
-            <li>• Xcode Command Line Tools: <code>xcode-select --install</code></li>
-            <li>• Go 1.21+ arm64 tarball from <code>go.dev/dl</code></li>
-            <li>• Homebrew SQLite headers: <code>brew install sqlite</code></li>
-            <li>• No Redis required (skip for RAM-constrained profile)</li>
-            <li>• Allow ocelot in System Settings → Privacy → Local Network</li>
-            <li>• Open port 6969 in macOS pf firewall if needed</li>
+            <li>• macOS 13 Ventura / 14 Sonoma (arm64)</li>
+            <li>• Xcode CLT: <code>xcode-select --install</code></li>
+            <li>• Go 1.21+ arm64 tarball</li>
+            <li>• <code>brew install sqlite</code> for CGo headers</li>
+            <li>• No Redis (save RAM)</li>
+            <li>• Allow ocelot in Privacy → Local Network</li>
           </ul>
         </div>
+      </div>
+
+      <!-- CUDA version matrix -->
+      <div class="card p-4 mt-4">
+        <h3 class="font-semibold mb-3 flex items-center gap-2 text-sm">
+          <i data-lucide="table" class="w-4 h-4" style="color:var(--gpu)"></i>
+          V100 CUDA Compatibility Matrix
+        </h3>
+        <table>
+          <thead><tr><th>CUDA</th><th>Driver (min)</th><th>cuDNN</th><th>TF/PyTorch</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td>11.8</td><td>520.61.05</td><td>8.6</td><td>TF 2.11 / PT 1.13</td><td>Stable LTS path</td></tr>
+            <tr><td>12.1</td><td>530.30.02</td><td>8.9</td><td>TF 2.13 / PT 2.0</td><td>Recommended</td></tr>
+            <tr><td>12.3</td><td>545.23.06</td><td>8.9</td><td>PT 2.1</td><td>Latest V100-supported</td></tr>
+          </tbody>
+        </table>
+        <p class="text-xs mt-2" style="color:var(--muted)">V100 (Volta, SM 7.0) is supported through CUDA 12.x. CUDA 13 drops Volta support.</p>
       </div>
     </section>
 
@@ -207,12 +260,15 @@
         Build from Source
       </h2>
 
-      <!-- Platform tabs -->
       <div class="flex gap-0 border-b mb-6" style="border-color:var(--border)">
         <button class="tab-btn px-5 py-2.5 text-sm font-medium"
                 :class="buildTab==='r640' ? 'tab-active' : ''"
                 style="color:var(--muted)"
                 @click="buildTab='r640'">R640 (Linux x86_64)</button>
+        <button class="tab-btn px-5 py-2.5 text-sm font-medium"
+                :class="buildTab==='r730' ? 'tab-active' : ''"
+                style="color:var(--muted)"
+                @click="buildTab='r730'">R730 + V100 (Linux x86_64)</button>
         <button class="tab-btn px-5 py-2.5 text-sm font-medium"
                 :class="buildTab==='m1' ? 'tab-active' : ''"
                 style="color:var(--muted)"
@@ -227,17 +283,58 @@ cd Ocelot
 # 2 — build (CGo required for mattn/go-sqlite3)
 CGO_ENABLED=1 go build -ldflags="-s -w" -o ocelot .
 
-# 3 — verify
-./ocelot --version || ./ocelot -h
-
-# 4 — install
+# 3 — install
 sudo install -m 0755 ocelot /usr/local/bin/ocelot
 
-# 5 — create runtime directories
-sudo mkdir -p /var/lib/ocelot/db
-sudo mkdir -p /etc/ocelot
+# 4 — create runtime directories
+sudo mkdir -p /var/lib/ocelot/db /etc/ocelot
 sudo useradd -r -s /sbin/nologin ocelot
 sudo chown -R ocelot:ocelot /var/lib/ocelot</code></pre>
+      </div>
+
+      <div x-show="buildTab==='r730'">
+        <pre><code class="language-bash"># ── 1. Verify NVIDIA driver and CUDA ─────────────────────────────
+nvidia-smi
+# Should show:   Driver Version: 525+   CUDA Version: 12.x
+# Both V100 GPUs listed (GPU 0, GPU 1)
+
+nvcc --version
+# Should show:   release 12.x
+
+# ── 2. Install build dependencies ────────────────────────────────
+sudo apt update
+sudo apt install -y gcc libsqlite3-dev git
+
+# ── 3. Install Go 1.21+ (if not present) ─────────────────────────
+wget https://go.dev/dl/go1.22.3.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.22.3.linux-amd64.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
+source ~/.profile
+
+# ── 4. Clone and build Ocelot ────────────────────────────────────
+git clone https://github.com/mgdavisxvs/Ocelot.git
+cd Ocelot
+CGO_ENABLED=1 go build -ldflags="-s -w" -o ocelot .
+
+# ── 5. Install ───────────────────────────────────────────────────
+sudo install -m 0755 ocelot /usr/local/bin/ocelot
+sudo mkdir -p /var/lib/ocelot/db /etc/ocelot
+sudo useradd -r -s /sbin/nologin ocelot
+sudo chown -R ocelot:ocelot /var/lib/ocelot
+
+# ── 6. Set up DCGM exporter (GPU metrics for Prometheus) ─────────
+sudo systemctl enable --now nvidia-dcgm
+# DCGM exporter exposes GPU metrics on :9400/metrics
+# Add to your prometheus.yml scrape config (see Monitoring section)</code></pre>
+        <div class="card p-4 mt-4" style="border-color:rgba(118,230,202,.35)">
+          <p class="text-sm" style="color:var(--muted)">
+            <strong style="color:var(--gpu)">Note:</strong> Ocelot itself does not link against CUDA.
+            The V100 GPUs are used by worker processes (<em>separate</em> from Ocelot) that
+            pull model weights via the tracker's swarm and load them into GPU memory.
+            Ocelot is the distribution layer; your inference engine (vLLM, TRT-LLM, Triton) is the
+            consumer. See the <a href="#gpu">GPU Workloads</a> section for the full pipeline.
+          </p>
+        </div>
       </div>
 
       <div x-show="buildTab==='m1'">
@@ -253,12 +350,12 @@ git clone https://github.com/mgdavisxvs/Ocelot.git
 cd Ocelot
 CGO_ENABLED=1 go build -ldflags="-s -w" -o ocelot .
 
-# 4 — install (no root needed for personal machine)
+# 4 — install
 mkdir -p ~/opt/ocelot/db ~/opt/ocelot/conf
 cp ocelot ~/opt/ocelot/
 
 # 5 — smoke test
-~/opt/ocelot/ocelot -c /dev/null &amp;   # starts with defaults
+~/opt/ocelot/ocelot -c /dev/null &amp;
 curl -s http://localhost:34000/stats
 kill %1</code></pre>
       </div>
@@ -272,7 +369,7 @@ kill %1</code></pre>
       </h2>
       <p class="text-sm mb-5" style="color:var(--muted)">
         All keys are <code>key = value</code>; lines starting with <code>#</code> are comments.
-        Omitted keys fall back to built-in defaults shown below.
+        Omitted keys fall back to built-in defaults.
       </p>
 
       <div class="flex gap-0 border-b mb-6" style="border-color:var(--border)">
@@ -280,6 +377,10 @@ kill %1</code></pre>
                 :class="cfgTab==='r640' ? 'tab-active' : ''"
                 style="color:var(--muted)"
                 @click="cfgTab='r640'">R640 — high-throughput</button>
+        <button class="tab-btn px-5 py-2.5 text-sm font-medium"
+                :class="cfgTab==='r730' ? 'tab-active' : ''"
+                style="color:var(--muted)"
+                @click="cfgTab='r730'">R730 + V100 — GPU fabric node</button>
         <button class="tab-btn px-5 py-2.5 text-sm font-medium"
                 :class="cfgTab==='m1' ? 'tab-active' : ''"
                 style="color:var(--muted)"
@@ -293,17 +394,17 @@ kill %1</code></pre>
         </div>
         <pre><code># ── Network ───────────────────────────────────────────────────────
 listen_port          = 6969
-max_connections      = 2000        # R640 NIC can sustain 10k+ concurrent
-max_middlemen        = 200000      # swarm size ceiling (RAM allows it)
-max_read_buffer      = 8192        # 8 KiB request buffer
+max_connections      = 2000
+max_middlemen        = 200000
+max_read_buffer      = 8192
 connection_timeout   = 15
 keepalive_timeout    = 90
 
 # ── Announce ──────────────────────────────────────────────────────
-announce_interval    = 1800        # 30-minute standard interval
+announce_interval    = 1800
 numwant_limit        = 75
-peers_timeout        = 7200        # 2 h before a peer is considered dead
-reap_peers_interval  = 300         # reaper runs every 5 min
+peers_timeout        = 7200
+reap_peers_interval  = 300
 request_log_size     = 2000
 
 # ── Security ──────────────────────────────────────────────────────
@@ -314,11 +415,11 @@ jwt_secret           = REPLACE_WITH_64_CHAR_SECRET
 
 # ── Storage ───────────────────────────────────────────────────────
 db_dir               = /var/lib/ocelot/db
-del_reason_lifetime  = 604800      # 7 days
+del_reason_lifetime  = 604800
 
 # ── Write pipeline ────────────────────────────────────────────────
-batch_buffer_cap     = 32768       # async write queue (8× default)
-schedule_interval    = 60          # WAL checkpoint every 1 min
+batch_buffer_cap     = 32768
+schedule_interval    = 60
 
 # ── Rate limiting ─────────────────────────────────────────────────
 rate_limit_rps       = 5000
@@ -326,36 +427,109 @@ rate_limit_burst     = 15000
 
 # ── Observability ─────────────────────────────────────────────────
 metrics_port         = :9090
-otel_endpoint        = http://localhost:4318   # OTel Collector on same host
+otel_endpoint        = http://localhost:4318
 
-# ── Redis dual-write [optional] ───────────────────────────────────
+# ── Redis dual-write ──────────────────────────────────────────────
 redis_addr           = 127.0.0.1:6379
 
-# ── TLS (Let's Encrypt) ───────────────────────────────────────────
-# tls_auto             = true
-# tls_domain           = tracker.example.internal
-# tls_cache_dir        = /var/lib/ocelot/tls
-
 # ── UC: Compute Fabric ────────────────────────────────────────────
-ci_artifact_ttl      = 86400       # 24 h artefact TTL
-rollout_dwell_seconds = 120        # advance rollout stage every 2 min
-rollout_anomaly_gate  = 0.03       # tighten anomaly gate for prod
-
-# ── UC: Preservation ──────────────────────────────────────────────
-min_replicas         = 5           # alert if fewer than 5 seeders
-
-# ── UC: SLA Monitor ───────────────────────────────────────────────
-sla_check_interval   = 30
-sla_max_announce_sec = 90          # SLA breach after 90 s silence
-
-# ── UC: Live Streams ──────────────────────────────────────────────
-live_announce_interval = 5         # 5 s for real-time segment delivery
+ci_artifact_ttl       = 86400
+rollout_dwell_seconds = 120
+rollout_anomaly_gate  = 0.03
+min_replicas          = 5
+sla_check_interval    = 30
+sla_max_announce_sec  = 90
+live_announce_interval = 5
 live_peers_timeout     = 30
-
-# ── UC: Data quotas ───────────────────────────────────────────────
-data_retention_days  = 180
+data_retention_days   = 180
 backup_retention_days = 60
 cheat_corrupt_threshold = 0.08</code></pre>
+      </div>
+
+      <div x-show="cfgTab==='r730'">
+        <div class="flex items-center gap-2 mb-2 text-sm" style="color:var(--muted)">
+          <i data-lucide="file-text" class="w-4 h-4"></i>
+          <code>/etc/ocelot/ocelot.conf</code>
+          <span class="badge badge-gpu ml-2">GPU fabric node</span>
+        </div>
+        <pre><code># ── Network ───────────────────────────────────────────────────────
+# R730 has dual 10 GbE; Broadwell CPUs are slower than R640's Skylake Gold
+# so we cap connections slightly lower to prevent scheduler thrash.
+listen_port          = 6969
+max_connections      = 1500
+max_middlemen        = 120000      # ~750 MB peer-map RAM at full load
+max_read_buffer      = 8192
+connection_timeout   = 15
+keepalive_timeout    = 60
+
+# ── Announce ──────────────────────────────────────────────────────
+# GPU workers pulling large model shards want tight SLA windows;
+# keep announce_interval short so scale decisions are fresh.
+announce_interval    = 900         # 15 min (halved vs default for GPU workers)
+numwant_limit        = 100         # GPU node can serve many peers in parallel
+peers_timeout        = 5400        # 90 min — shorter than R640 (less RAM)
+reap_peers_interval  = 180         # aggressive reap: free RAM quickly
+request_log_size     = 1000
+
+# ── Security ──────────────────────────────────────────────────────
+site_password        = REPLACE_WITH_32_HEX_CHARS
+report_password      = REPLACE_WITH_32_HEX_CHARS
+admin_api_port       = :8181
+jwt_secret           = REPLACE_WITH_64_CHAR_SECRET
+
+# ── Storage ───────────────────────────────────────────────────────
+db_dir               = /var/lib/ocelot/db
+del_reason_lifetime  = 259200      # 3 days — GPU nodes rotate artefacts faster
+
+# ── Write pipeline ────────────────────────────────────────────────
+# V100 PCIe does not compete with the write path (Ocelot uses CPU only).
+# Buffer is sized between R640 and M1 — R730 has enough RAM but older CPUs.
+batch_buffer_cap     = 16384
+schedule_interval    = 90
+
+# ── Rate limiting ─────────────────────────────────────────────────
+# 20 GPU inference workers × 150 req/s each = 3000 peak RPS; add headroom.
+rate_limit_rps       = 4000
+rate_limit_burst     = 10000
+
+# ── Observability ─────────────────────────────────────────────────
+metrics_port         = :9090
+otel_endpoint        = http://localhost:4318
+
+# ── Redis dual-write ──────────────────────────────────────────────
+redis_addr           = 127.0.0.1:6379
+
+# ── UC: GPU / ML Compute Fabric ───────────────────────────────────
+# Model weights can be many GBs; let TTL breathe so workers finish download.
+ci_artifact_ttl       = 172800     # 48 h for GPU build artefacts
+rollout_dwell_seconds = 180        # wait 3 min between rollout stages
+rollout_anomaly_gate  = 0.04       # slightly tighter gate for GPU workloads
+
+# ── UC: Preservation ──────────────────────────────────────────────
+# GPU model weights must be replicated; alert if seeders drop below 3.
+min_replicas          = 3
+
+# ── UC: SLA Monitor ───────────────────────────────────────────────
+sla_check_interval    = 30
+sla_max_announce_sec  = 120        # GPU workers are expensive; surface stalls fast
+
+# ── UC: Live / streaming ──────────────────────────────────────────
+live_announce_interval = 5         # tight for real-time inference result streaming
+live_peers_timeout     = 30
+
+# ── UC: Data retention ────────────────────────────────────────────
+data_retention_days   = 90
+backup_retention_days = 45
+cheat_corrupt_threshold = 0.08</code></pre>
+        <div class="card p-4 mt-4" style="border-color:rgba(118,230,202,.35)">
+          <p class="text-sm" style="color:var(--muted)">
+            <strong style="color:var(--gpu)">Tuning note:</strong>
+            The R730 Xeon E5-2600 v4 CPUs handle fewer simultaneous goroutines efficiently
+            than the R640's Xeon Gold. If you see high CPU steal or softirq time under load,
+            reduce <code>max_connections</code> to 1000 and <code>max_middlemen</code> to 80000.
+            Ocelot's hot path is announce processing; it does not use the GPU at all.
+          </p>
+        </div>
       </div>
 
       <div x-show="cfgTab==='m1'">
@@ -365,7 +539,7 @@ cheat_corrupt_threshold = 0.08</code></pre>
         </div>
         <pre><code># ── Network ───────────────────────────────────────────────────────
 listen_port          = 34000       # avoid privileged port on macOS
-max_connections      = 64          # conservative: 8 GB unified memory
+max_connections      = 64
 max_middlemen        = 15000       # keeps RSS under ~200 MB
 max_read_buffer      = 4096
 connection_timeout   = 10
@@ -373,8 +547,8 @@ connection_timeout   = 10
 # ── Announce ──────────────────────────────────────────────────────
 announce_interval    = 1800
 numwant_limit        = 50
-peers_timeout        = 3600        # 1 h — frees memory sooner
-reap_peers_interval  = 600         # less aggressive GC cadence
+peers_timeout        = 3600        # shorter to free memory sooner
+reap_peers_interval  = 600
 
 # ── Security ──────────────────────────────────────────────────────
 site_password        = REPLACE_WITH_32_HEX_CHARS
@@ -388,7 +562,7 @@ del_reason_lifetime  = 86400
 
 # ── Write pipeline ────────────────────────────────────────────────
 batch_buffer_cap     = 2048        # smaller queue saves ~6 MB RAM
-schedule_interval    = 300         # WAL checkpoint every 5 min
+schedule_interval    = 300
 
 # ── Rate limiting ─────────────────────────────────────────────────
 rate_limit_rps       = 500
@@ -396,35 +570,26 @@ rate_limit_burst     = 1000
 
 # ── Observability ─────────────────────────────────────────────────
 metrics_port         = :9090
-# otel_endpoint omitted — no OTel collector on mini by default
+# otel_endpoint omitted — no OTel collector
 # redis_addr  omitted — skip Redis to save RAM
 
 # ── UC: Compute Fabric ────────────────────────────────────────────
 ci_artifact_ttl       = 14400      # 4 h (default)
 rollout_dwell_seconds = 300
 rollout_anomaly_gate  = 0.05
-
-# ── UC: Preservation ──────────────────────────────────────────────
-min_replicas          = 2          # lower threshold for small swarm
-
-# ── UC: SLA Monitor ───────────────────────────────────────────────
+min_replicas          = 2
 sla_check_interval    = 60
 sla_max_announce_sec  = 300
-
-# ── UC: Live Streams ──────────────────────────────────────────────
 live_announce_interval = 10
 live_peers_timeout     = 45
-
-# ── Data quotas ───────────────────────────────────────────────────
 data_retention_days   = 90
 backup_retention_days = 30
 cheat_corrupt_threshold = 0.10</code></pre>
         <div class="card p-4 mt-4" style="border-color:var(--orange)">
           <p class="text-sm" style="color:var(--orange)">
-            <strong>Memory budget:</strong> with <code>max_middlemen=15000</code> and
-            <code>batch_buffer_cap=2048</code>, steady-state RSS is ~180–220 MB,
-            leaving ~7.5 GB for macOS, your workload, and the SQLite page cache.
-            If RSS climbs past 400 MB, reduce <code>max_middlemen</code> to 8000.
+            <strong>Memory budget:</strong> <code>max_middlemen=15000</code> +
+            <code>batch_buffer_cap=2048</code> → steady-state RSS ~180–220 MB.
+            Reduce <code>max_middlemen</code> to 8000 if RSS exceeds 400 MB.
           </p>
         </div>
       </div>
@@ -441,11 +606,15 @@ cheat_corrupt_threshold = 0.10</code></pre>
         <button class="tab-btn px-5 py-2.5 text-sm font-medium"
                 :class="svcTab==='r640' ? 'tab-active' : ''"
                 style="color:var(--muted)"
-                @click="svcTab='r640'">systemd (R640)</button>
+                @click="svcTab='r640'">systemd — R640</button>
+        <button class="tab-btn px-5 py-2.5 text-sm font-medium"
+                :class="svcTab==='r730' ? 'tab-active' : ''"
+                style="color:var(--muted)"
+                @click="svcTab='r730'">systemd — R730 + V100</button>
         <button class="tab-btn px-5 py-2.5 text-sm font-medium"
                 :class="svcTab==='m1' ? 'tab-active' : ''"
                 style="color:var(--muted)"
-                @click="svcTab='m1'">launchd (M1)</button>
+                @click="svcTab='m1'">launchd — M1</button>
       </div>
 
       <div x-show="svcTab==='r640'" class="space-y-4">
@@ -465,25 +634,68 @@ User=ocelot
 Group=ocelot
 ExecStart=/usr/local/bin/ocelot -c /etc/ocelot/ocelot.conf
 ExecReload=/bin/kill -HUP $MAINPID
-ExecStop=/bin/kill -TERM $MAINPID
-
 WorkingDirectory=/var/lib/ocelot
-RuntimeDirectory=ocelot
-StateDirectory=ocelot
-
-# Graceful drain timeout — allow in-flight announces to complete
 TimeoutStopSec=60
-
-# Resource limits
 LimitNOFILE=131072
 LimitNPROC=32768
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ocelot
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target</code></pre>
+        </div>
+        <pre><code class="language-bash">sudo systemctl daemon-reload
+sudo systemctl enable --now ocelot
+sudo systemctl reload ocelot                         # SIGHUP — config hot-reload
+sudo kill -USR1 $(systemctl show ocelot -p MainPID --value)  # SIGUSR1 — state reload
+sudo journalctl -u ocelot -f</code></pre>
+      </div>
+
+      <div x-show="svcTab==='r730'" class="space-y-4">
+        <div>
+          <div class="flex items-center gap-2 mb-2 text-sm" style="color:var(--muted)">
+            <i data-lucide="file-text" class="w-4 h-4"></i>
+            <code>/etc/systemd/system/ocelot.service</code>
+          </div>
+          <pre><code>[Unit]
+Description=Ocelot BitTorrent Tracker — GPU Compute Fabric (R730)
+After=network-online.target redis.service nvidia-dcgm.service
+Wants=network-online.target
+# Ocelot itself does not use GPUs, but we wait for DCGM so the
+# NVML metrics path is already initialised before workers connect.
+
+[Service]
+Type=simple
+User=ocelot
+Group=ocelot
+ExecStart=/usr/local/bin/ocelot -c /etc/ocelot/ocelot.conf
+ExecReload=/bin/kill -HUP $MAINPID
+WorkingDirectory=/var/lib/ocelot
+TimeoutStopSec=90          # GPU workers need extra drain time
+
+# File descriptor headroom: each GPU worker maintains multiple connections
+LimitNOFILE=131072
+LimitNPROC=65536
 
 # Hardening
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/ocelot
-CapabilityBoundingSet=
+
+# Expose /dev/nvidia* so any NVML tool run under this user can reach GPUs.
+# Ocelot does not call NVML; this allows the admin API to shell out to
+# nvidia-smi if you wire a custom health endpoint.
+DeviceAllow=/dev/nvidia0 rw
+DeviceAllow=/dev/nvidia1 rw
+DeviceAllow=/dev/nvidiactl rw
+DeviceAllow=/dev/nvidia-uvm rw
+
+Environment=CUDA_VISIBLE_DEVICES=0,1
 
 Restart=on-failure
 RestartSec=5
@@ -491,21 +703,31 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target</code></pre>
         </div>
-        <pre><code class="language-bash"># Enable + start
-sudo systemctl daemon-reload
+        <pre><code class="language-bash">sudo systemctl daemon-reload
 sudo systemctl enable --now ocelot
 
-# Reload config (SIGHUP — no restart needed)
+# Verify both V100s are visible to the service user
+sudo -u ocelot nvidia-smi --query-gpu=name,memory.total --format=csv
+
+# Reload config without restart (SIGHUP)
 sudo systemctl reload ocelot
 
-# Reload in-memory torrent/user state (SIGUSR1)
-sudo kill -USR1 $(systemctl show ocelot --value -p MainPID)
+# Reload torrent/user state (SIGUSR1)
+sudo kill -USR1 $(systemctl show ocelot -p MainPID --value)
 
-# Logs
-sudo journalctl -u ocelot -f
-
-# Status
-sudo systemctl status ocelot</code></pre>
+# Combined health check
+curl -s http://localhost:6969/stats | jq .
+curl -s http://localhost:9090/metrics | grep ocelot_
+curl -s http://localhost:9400/metrics | grep DCGM_FI_DEV_GPU_UTIL  # GPU util %</code></pre>
+        <div class="card p-4" style="border-color:rgba(118,230,202,.35)">
+          <p class="text-sm" style="color:var(--muted)">
+            <strong style="color:var(--gpu)">DCGM + Prometheus:</strong>
+            NVIDIA DCGM exposes GPU metrics (utilisation, memory, temperature, PCIe bandwidth)
+            on <code>:9400/metrics</code>. Add it alongside Ocelot's <code>:9090/metrics</code>
+            to your Prometheus scrape config so you can correlate announce throughput with
+            GPU memory pressure in a single dashboard.
+          </p>
+        </div>
       </div>
 
       <div x-show="svcTab==='m1'" class="space-y-4">
@@ -519,63 +741,226 @@ sudo systemctl status ocelot</code></pre>
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
 &lt;plist version="1.0"&gt;
 &lt;dict&gt;
-  &lt;key&gt;Label&lt;/key&gt;
-  &lt;string&gt;com.mgdavisxvs.ocelot&lt;/string&gt;
-
+  &lt;key&gt;Label&lt;/key&gt;&lt;string&gt;com.mgdavisxvs.ocelot&lt;/string&gt;
   &lt;key&gt;ProgramArguments&lt;/key&gt;
   &lt;array&gt;
     &lt;string&gt;/Users/YOUR_USER/opt/ocelot/ocelot&lt;/string&gt;
     &lt;string&gt;-c&lt;/string&gt;
     &lt;string&gt;/Users/YOUR_USER/opt/ocelot/conf/ocelot.conf&lt;/string&gt;
   &lt;/array&gt;
-
   &lt;key&gt;WorkingDirectory&lt;/key&gt;
   &lt;string&gt;/Users/YOUR_USER/opt/ocelot&lt;/string&gt;
-
-  &lt;key&gt;StandardOutPath&lt;/key&gt;
-  &lt;string&gt;/Users/YOUR_USER/opt/ocelot/ocelot.log&lt;/string&gt;
-  &lt;key&gt;StandardErrorPath&lt;/key&gt;
-  &lt;string&gt;/Users/YOUR_USER/opt/ocelot/ocelot.log&lt;/string&gt;
-
-  &lt;key&gt;RunAtLoad&lt;/key&gt;
-  &lt;true/&gt;
-  &lt;key&gt;KeepAlive&lt;/key&gt;
-  &lt;true/&gt;
-
-  &lt;!-- Throttle restarts to avoid CPU spin on crash loops --&gt;
-  &lt;key&gt;ThrottleInterval&lt;/key&gt;
-  &lt;integer&gt;10&lt;/integer&gt;
-
+  &lt;key&gt;StandardOutPath&lt;/key&gt;&lt;string&gt;/Users/YOUR_USER/opt/ocelot/ocelot.log&lt;/string&gt;
+  &lt;key&gt;StandardErrorPath&lt;/key&gt;&lt;string&gt;/Users/YOUR_USER/opt/ocelot/ocelot.log&lt;/string&gt;
+  &lt;key&gt;RunAtLoad&lt;/key&gt;&lt;true/&gt;
+  &lt;key&gt;KeepAlive&lt;/key&gt;&lt;true/&gt;
+  &lt;key&gt;ThrottleInterval&lt;/key&gt;&lt;integer&gt;10&lt;/integer&gt;
   &lt;key&gt;SoftResourceLimits&lt;/key&gt;
   &lt;dict&gt;
-    &lt;key&gt;NumberOfFiles&lt;/key&gt;
-    &lt;integer&gt;65536&lt;/integer&gt;
+    &lt;key&gt;NumberOfFiles&lt;/key&gt;&lt;integer&gt;65536&lt;/integer&gt;
   &lt;/dict&gt;
 &lt;/dict&gt;
 &lt;/plist&gt;</code></pre>
         </div>
-        <pre><code class="language-bash"># Load agent (starts automatically on login)
-launchctl load ~/Library/LaunchAgents/com.mgdavisxvs.ocelot.plist
-
-# Start / stop manually
+        <pre><code class="language-bash">launchctl load ~/Library/LaunchAgents/com.mgdavisxvs.ocelot.plist
 launchctl start com.mgdavisxvs.ocelot
-launchctl stop  com.mgdavisxvs.ocelot
-
-# Reload config (SIGHUP)
-kill -HUP $(launchctl list | awk '/ocelot/{print $1}')
-
-# Reload state (SIGUSR1)
-kill -USR1 $(launchctl list | awk '/ocelot/{print $1}')
-
-# Tail logs
-tail -f ~/opt/ocelot/ocelot.log
-
-# Unload (prevent auto-start on next login)
-launchctl unload ~/Library/LaunchAgents/com.mgdavisxvs.ocelot.plist</code></pre>
+kill -HUP  $(launchctl list | awk '/ocelot/{print $1}')   # config reload
+kill -USR1 $(launchctl list | awk '/ocelot/{print $1}')   # state reload
+tail -f ~/opt/ocelot/ocelot.log</code></pre>
       </div>
     </section>
 
-    <!-- ⑥ Compute API ─────────────────────────────────────────────────── -->
+    <!-- ⑥ GPU Workloads ──────────────────────────────────────────────── -->
+    <section id="gpu">
+      <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
+        <i data-lucide="zap" class="w-5 h-5" style="color:var(--gpu)"></i>
+        GPU Workload Pipeline (R730 + V100)
+      </h2>
+      <p class="text-sm mb-5" style="color:var(--muted)">
+        The R730 plays two concurrent roles: <strong>seeder</strong> (distributing model weights
+        via the swarm) and <strong>inference worker</strong> (consuming those weights on its V100s).
+        This section covers the end-to-end setup.
+      </p>
+
+      <!-- Architecture diagram as a styled flow -->
+      <div class="card p-5 mb-6">
+        <h3 class="font-semibold mb-4 text-sm">Architecture: model weight distribution via Ocelot</h3>
+        <div class="grid grid-cols-4 gap-2 text-xs text-center">
+          <div class="rounded-lg p-3" style="background:rgba(88,166,255,.1);border:1px solid rgba(88,166,255,.3)">
+            <i data-lucide="upload-cloud" class="w-5 h-5 mx-auto mb-1" style="color:var(--accent)"></i>
+            <div class="font-semibold">1. Trainer</div>
+            <div style="color:var(--muted)">Exports model → torrent<br/>via Admin API</div>
+          </div>
+          <div class="flex items-center justify-center">
+            <i data-lucide="arrow-right" class="w-5 h-5" style="color:var(--muted)"></i>
+          </div>
+          <div class="rounded-lg p-3" style="background:rgba(118,230,202,.08);border:1px solid rgba(118,230,202,.3)">
+            <i data-lucide="server" class="w-5 h-5 mx-auto mb-1" style="color:var(--gpu)"></i>
+            <div class="font-semibold">2. R730 (Ocelot)</div>
+            <div style="color:var(--muted)">Tracker + seeder<br/>10 GbE uplink</div>
+          </div>
+          <div class="flex items-center justify-center">
+            <i data-lucide="arrow-right" class="w-5 h-5" style="color:var(--muted)"></i>
+          </div>
+        </div>
+        <div class="grid grid-cols-3 gap-2 text-xs text-center mt-2">
+          <div class="rounded-lg p-3" style="background:rgba(118,230,202,.08);border:1px solid rgba(118,230,202,.3)">
+            <i data-lucide="cpu" class="w-5 h-5 mx-auto mb-1" style="color:var(--gpu)"></i>
+            <div class="font-semibold">3. GPU Worker</div>
+            <div style="color:var(--muted)">Leeches weights<br/>loads into V100 VRAM</div>
+          </div>
+          <div class="rounded-lg p-3" style="background:rgba(118,230,202,.08);border:1px solid rgba(118,230,202,.3)">
+            <i data-lucide="cpu" class="w-5 h-5 mx-auto mb-1" style="color:var(--gpu)"></i>
+            <div class="font-semibold">3. GPU Worker</div>
+            <div style="color:var(--muted)">Leeches weights<br/>also becomes seeder</div>
+          </div>
+          <div class="rounded-lg p-3" style="background:rgba(63,185,80,.08);border:1px solid rgba(63,185,80,.3)">
+            <i data-lucide="activity" class="w-5 h-5 mx-auto mb-1" style="color:var(--green)"></i>
+            <div class="font-semibold">4. Orchestrator</div>
+            <div style="color:var(--muted)">Polls /compute/scale<br/>spins workers on demand</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step-by-step -->
+      <div class="space-y-4">
+
+        <details class="card">
+          <summary class="flex items-center justify-between p-4 cursor-pointer hover:bg-white/5">
+            <span class="font-medium">Step 1 — Register a model torrent (category = edgeai)</span>
+            <i data-lucide="chevron-down" class="w-4 h-4" style="color:var(--muted)"></i>
+          </summary>
+          <div class="px-4 pb-4 border-t pt-3" style="border-color:var(--border)">
+            <p class="text-sm mb-3" style="color:var(--muted)">
+              Create a torrent file from your model weights directory, then register it with
+              <code>category = edgeai</code> so Ocelot's per-category middleware applies.
+            </p>
+            <pre><code class="language-bash"># Create a torrent (using any BT client or mktorrent)
+mktorrent -l 24 -n llama3-8b-q4 \
+  -a http://YOUR_R730_IP:6969/PASSKEY/announce \
+  /data/models/llama3-8b-q4/
+
+# Register via Admin API
+curl -s -X POST http://localhost:8181/admin/torrent/add \
+  -H "Authorization: Bearer $OCELOT_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "info_hash":  "TORRENT_INFO_HASH_HEX",
+    "category":   "edgeai",
+    "name":       "llama3-8b-q4",
+    "ttl_seconds": 0
+  }'</code></pre>
+          </div>
+        </details>
+
+        <details class="card">
+          <summary class="flex items-center justify-between p-4 cursor-pointer hover:bg-white/5">
+            <span class="font-medium">Step 2 — Set up GPU worker passkeys</span>
+            <i data-lucide="chevron-down" class="w-4 h-4" style="color:var(--muted)"></i>
+          </summary>
+          <div class="px-4 pb-4 border-t pt-3" style="border-color:var(--border)">
+            <pre><code class="language-bash"># Create a user per GPU worker node (or per GPU, for per-GPU accounting)
+curl -s -X POST http://localhost:8181/admin/user/add \
+  -H "Authorization: Bearer $OCELOT_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"gpu-worker-01","can_leech":true,"can_seed":true}'
+
+# Response includes passkey:
+# {"passkey": "a1b2c3d4e5f6..."}
+
+# Workers announce to:
+# http://YOUR_TRACKER:6969/a1b2c3d4e5f6/announce?info_hash=...&event=started&...</code></pre>
+          </div>
+        </details>
+
+        <details class="card">
+          <summary class="flex items-center justify-between p-4 cursor-pointer hover:bg-white/5">
+            <span class="font-medium">Step 3 — Pull weights on GPU worker (aria2c example)</span>
+            <i data-lucide="chevron-down" class="w-4 h-4" style="color:var(--muted)"></i>
+          </summary>
+          <div class="px-4 pb-4 border-t pt-3" style="border-color:var(--border)">
+            <pre><code class="language-bash"># On each GPU worker node — pull model weights via the swarm
+# aria2c supports BitTorrent natively
+aria2c \
+  --seed-ratio=2.0 \
+  --seed-time=0 \
+  --dir=/data/models \
+  model.torrent
+
+# After download, load into V100 VRAM via vLLM
+vllm serve /data/models/llama3-8b-q4 \
+  --tensor-parallel-size 2 \   # span both V100s (NVLink or PCIe peer-to-peer)
+  --max-model-len 8192 \
+  --port 8000</code></pre>
+          </div>
+        </details>
+
+        <details class="card">
+          <summary class="flex items-center justify-between p-4 cursor-pointer hover:bg-white/5">
+            <span class="font-medium">Step 4 — Scale-out with /compute/scale</span>
+            <i data-lucide="chevron-down" class="w-4 h-4" style="color:var(--muted)"></i>
+          </summary>
+          <div class="px-4 pb-4 border-t pt-3" style="border-color:var(--border)">
+            <pre><code class="language-bash"># Orchestrator poll loop (bash example; use your own scheduler in prod)
+while true; do
+  RESP=$(curl -s http://localhost:8181/compute/scale \
+    -H "Authorization: Bearer $OCELOT_TOKEN")
+
+  SCALE_UP=$(echo "$RESP" | jq -r '.scale_up')
+  RATIO=$(echo "$RESP" | jq -r '.ratio')
+
+  echo "$(date) ratio=$RATIO scale_up=$SCALE_UP"
+
+  if [ "$SCALE_UP" = "true" ]; then
+    # Launch an additional GPU worker via your preferred method:
+    # - Kubernetes: kubectl scale deployment gpu-worker --replicas=+1
+    # - Nomad:      nomad job scale gpu-inference +1
+    # - Raw SSH:    ssh gpu-worker-0N "systemctl start inference-worker"
+    echo "Scaling up — ratio $RATIO exceeds threshold"
+  fi
+
+  sleep 30
+done</code></pre>
+          </div>
+        </details>
+
+        <details class="card">
+          <summary class="flex items-center justify-between p-4 cursor-pointer hover:bg-white/5">
+            <span class="font-medium">Step 5 — GPU container distribution (nvidia-container-toolkit)</span>
+            <i data-lucide="chevron-down" class="w-4 h-4" style="color:var(--muted)"></i>
+          </summary>
+          <div class="px-4 pb-4 border-t pt-3" style="border-color:var(--border)">
+            <p class="text-sm mb-3" style="color:var(--muted)">
+              Register CUDA container image layers as torrents under <code>category = container</code>.
+              Workers pull only the changed layers on each image update, cutting pull time from
+              minutes to seconds for large CUDA images.
+            </p>
+            <pre><code class="language-bash"># Export container layers as a torrent (example with docker save)
+docker save nvcr.io/nvidia/pytorch:24.01-py3 | \
+  gzip > pytorch-24.01.tar.gz
+mktorrent -n pytorch-24.01 -a http://TRACKER:6969/PASSKEY/announce pytorch-24.01.tar.gz
+
+# Register as container category
+curl -s -X POST http://localhost:8181/container/layer \
+  -H "Authorization: Bearer $OCELOT_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "info_hash":      "TORRENT_HEX",
+    "image_ref":      "nvcr.io/nvidia/pytorch:24.01-py3",
+    "layer_digest":   "sha256:abc123..."
+  }'
+
+# Workers pull and load:
+aria2c --dir=/tmp pytorch-24.01.torrent
+docker load &lt; /tmp/pytorch-24.01.tar.gz
+docker run --gpus all nvcr.io/nvidia/pytorch:24.01-py3 python -c "import torch; print(torch.cuda.is_available())"</code></pre>
+          </div>
+        </details>
+
+      </div>
+    </section>
+
+    <!-- ⑦ Compute API ─────────────────────────────────────────────────── -->
     <section id="api">
       <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
         <i data-lucide="terminal" class="w-5 h-5" style="color:var(--accent)"></i>
@@ -583,13 +968,10 @@ launchctl unload ~/Library/LaunchAgents/com.mgdavisxvs.ocelot.plist</code></pre>
       </h2>
       <p class="text-sm mb-4" style="color:var(--muted)">
         All Admin API calls require <code>Authorization: Bearer &lt;JWT&gt;</code>.
-        Obtain a token from your Gazelle site or issue one directly against
-        <code>POST /admin/token</code> with your <code>jwt_secret</code>.
       </p>
 
-      <!-- Auth -->
       <details class="card mb-3">
-        <summary class="flex items-center justify-between p-4 hover:bg-white/5">
+        <summary class="flex items-center justify-between p-4 hover:bg-white/5 cursor-pointer">
           <div class="flex items-center gap-3">
             <span class="badge badge-blue">POST</span>
             <code class="text-sm">/admin/token</code>
@@ -602,18 +984,12 @@ launchctl unload ~/Library/LaunchAgents/com.mgdavisxvs.ocelot.plist</code></pre>
   -H 'Content-Type: application/json' \
   -d '{"secret":"YOUR_JWT_SECRET"}' | jq .
 
-# Response
-{
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-}
-
 export OCELOT_TOKEN="eyJ..."</code></pre>
         </div>
       </details>
 
-      <!-- scale -->
       <details class="card mb-3">
-        <summary class="flex items-center justify-between p-4 hover:bg-white/5">
+        <summary class="flex items-center justify-between p-4 hover:bg-white/5 cursor-pointer">
           <div class="flex items-center gap-3">
             <span class="badge badge-green">GET</span>
             <code class="text-sm">/compute/scale</code>
@@ -623,39 +999,22 @@ export OCELOT_TOKEN="eyJ..."</code></pre>
         </summary>
         <div class="px-4 pb-4 border-t pt-3" style="border-color:var(--border)">
           <p class="text-sm mb-3" style="color:var(--muted)">
-            Returns <code>scale_up: true</code> when the swarm leecher/seeder ratio exceeds 4.0,
-            indicating demand is outpacing supply — your orchestrator should launch additional
-            worker peers.
+            Returns <code>scale_up: true</code> when leecher/seeder ratio &gt; 4.0.
+            On the R730 this maps directly to "spin another GPU worker."
           </p>
           <pre><code>curl -s http://localhost:8181/compute/scale \
   -H "Authorization: Bearer $OCELOT_TOKEN"
 
-# Response when demand is high
-{
-  "scale_up": true,
-  "ratio": 6.2,
-  "seeders": 12,
-  "leechers": 74
-}
+# High demand
+{"scale_up": true,  "ratio": 6.2, "seeders": 12, "leechers": 74}
 
-# Response when supply is adequate
-{
-  "scale_up": false,
-  "ratio": 1.8,
-  "seeders": 44,
-  "leechers": 80
-}</code></pre>
-          <p class="text-sm mt-3" style="color:var(--muted)">
-            <strong>Orchestrator integration pattern:</strong> poll every 30 s;
-            on <code>scale_up: true</code>, launch <code>ceil(ratio / 4) - 1</code>
-            additional seeder nodes targeting the highest-demand torrent hash.
-          </p>
+# Adequate supply
+{"scale_up": false, "ratio": 1.8, "seeders": 44, "leechers": 80}</code></pre>
         </div>
       </details>
 
-      <!-- eta -->
       <details class="card mb-3">
-        <summary class="flex items-center justify-between p-4 hover:bg-white/5">
+        <summary class="flex items-center justify-between p-4 hover:bg-white/5 cursor-pointer">
           <div class="flex items-center gap-3">
             <span class="badge badge-green">GET</span>
             <code class="text-sm">/compute/eta</code>
@@ -664,26 +1023,19 @@ export OCELOT_TOKEN="eyJ..."</code></pre>
           <i data-lucide="chevron-down" class="w-4 h-4" style="color:var(--muted)"></i>
         </summary>
         <div class="px-4 pb-4 border-t pt-3" style="border-color:var(--border)">
-          <pre><code>curl -s "http://localhost:8181/compute/eta?info_hash=TORRENT_HEX_HASH" \
+          <pre><code>curl -s "http://localhost:8181/compute/eta?info_hash=TORRENT_HEX" \
   -H "Authorization: Bearer $OCELOT_TOKEN"
 
-# Response
-{
-  "info_hash": "abc123...",
-  "eta_seconds": 42,
-  "pieces_remaining": 17,
-  "active_peers": 8
-}</code></pre>
+{"info_hash":"abc123...","eta_seconds":42,"pieces_remaining":17,"active_peers":8}</code></pre>
         </div>
       </details>
 
-      <!-- ci artifact register -->
       <details class="card mb-3">
-        <summary class="flex items-center justify-between p-4 hover:bg-white/5">
+        <summary class="flex items-center justify-between p-4 hover:bg-white/5 cursor-pointer">
           <div class="flex items-center gap-3">
             <span class="badge badge-blue">POST</span>
             <code class="text-sm">/ci/artifact/register</code>
-            <span class="text-sm" style="color:var(--muted)">UC-18: Register a CI artefact</span>
+            <span class="text-sm" style="color:var(--muted)">UC-18: Register CI / GPU build artefact</span>
           </div>
           <i data-lucide="chevron-down" class="w-4 h-4" style="color:var(--muted)"></i>
         </summary>
@@ -692,65 +1044,43 @@ export OCELOT_TOKEN="eyJ..."</code></pre>
   -H "Authorization: Bearer $OCELOT_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
-    "info_hash":  "deadbeef...",
-    "pipeline_id": "build-42",
-    "branch":     "main",
-    "ttl":        86400
+    "info_hash":   "deadbeef...",
+    "pipeline_id": "gpu-build-42",
+    "branch":      "main",
+    "ttl":         172800
   }'</code></pre>
         </div>
       </details>
 
-      <!-- container layer -->
       <details class="card mb-3">
-        <summary class="flex items-center justify-between p-4 hover:bg-white/5">
-          <div class="flex items-center gap-3">
-            <span class="badge badge-blue">POST</span>
-            <code class="text-sm">/container/layer</code>
-            <span class="text-sm" style="color:var(--muted)">UC-11: Register a container layer</span>
-          </div>
-          <i data-lucide="chevron-down" class="w-4 h-4" style="color:var(--muted)"></i>
-        </summary>
-        <div class="px-4 pb-4 border-t pt-3" style="border-color:var(--border)">
-          <pre><code>curl -s -X POST http://localhost:8181/container/layer \
-  -H "Authorization: Bearer $OCELOT_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "info_hash":  "sha256:abc...",
-    "image_ref":  "myapp:latest",
-    "layer_digest": "sha256:def..."
-  }'</code></pre>
-        </div>
-      </details>
-
-      <!-- edge rollout -->
-      <details class="card mb-3">
-        <summary class="flex items-center justify-between p-4 hover:bg-white/5">
+        <summary class="flex items-center justify-between p-4 hover:bg-white/5 cursor-pointer">
           <div class="flex items-center gap-3">
             <span class="badge badge-blue">POST</span>
             <code class="text-sm">/edge/rollout/start</code>
-            <span class="text-sm" style="color:var(--muted)">UC-20: Begin staged rollout</span>
+            <span class="text-sm" style="color:var(--muted)">UC-20: Canary GPU firmware / driver rollout</span>
           </div>
           <i data-lucide="chevron-down" class="w-4 h-4" style="color:var(--muted)"></i>
         </summary>
         <div class="px-4 pb-4 border-t pt-3" style="border-color:var(--border)">
-          <pre><code># Starts a 5-stage rollout: 5% → 20% → 50% → 80% → 100%
+          <pre><code># Roll out a new CUDA driver torrent to 5% of GPU workers first,
+# advancing automatically when anomaly rate stays below 4%.
 curl -s -X POST http://localhost:8181/edge/rollout/start \
   -H "Authorization: Bearer $OCELOT_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "info_hash": "deadbeef...",
     "stages":    [5, 20, 50, 80, 100],
-    "dwell_sec": 120
+    "dwell_sec": 180
   }'
 
-# Check rollout status
+# Check status
 curl -s "http://localhost:8181/edge/rollout/status?info_hash=deadbeef..." \
   -H "Authorization: Bearer $OCELOT_TOKEN"</code></pre>
         </div>
       </details>
     </section>
 
-    <!-- ⑦ Monitoring ─────────────────────────────────────────────────── -->
+    <!-- ⑧ Monitoring ─────────────────────────────────────────────────── -->
     <section id="monitoring">
       <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
         <i data-lucide="activity" class="w-5 h-5" style="color:var(--accent)"></i>
@@ -761,29 +1091,35 @@ curl -s "http://localhost:8181/edge/rollout/status?info_hash=deadbeef..." \
         <div class="card p-4">
           <h3 class="font-semibold mb-2 flex items-center gap-2">
             <i data-lucide="bar-chart-2" class="w-4 h-4" style="color:var(--green)"></i>
-            Prometheus Metrics
+            Prometheus Scrape Config
           </h3>
-          <p class="text-sm mb-2" style="color:var(--muted)">Exposed at <code>:9090/metrics</code> (configurable via <code>metrics_port</code>).</p>
-          <pre><code># Scrape config — prometheus.yml
-scrape_configs:
+          <pre><code>scrape_configs:
   - job_name: ocelot
     static_configs:
       - targets: ['localhost:9090']
+    scrape_interval: 15s
+
+  # R730 / V100 GPU metrics via DCGM exporter
+  - job_name: dcgm_gpu
+    static_configs:
+      - targets: ['R730_IP:9400']
     scrape_interval: 15s</code></pre>
         </div>
         <div class="card p-4">
           <h3 class="font-semibold mb-2 flex items-center gap-2">
             <i data-lucide="eye" class="w-4 h-4" style="color:var(--purple)"></i>
-            Key Metrics to Alert On
+            Key Alert Thresholds
           </h3>
           <table>
-            <thead><tr><th>Metric</th><th>Alert threshold</th></tr></thead>
+            <thead><tr><th>Metric</th><th>Alert when</th></tr></thead>
             <tbody>
-              <tr><td><code>ocelot_announces_total</code></td><td>rate drop &gt; 50% vs 5 min avg</td></tr>
-              <tr><td><code>ocelot_anomaly_detections_total</code></td><td>&gt; 10 / min</td></tr>
-              <tr><td><code>ocelot_db_queue_depth</code></td><td>&gt; 80% of <code>batch_buffer_cap</code></td></tr>
-              <tr><td><code>ocelot_circuit_breaker_state</code></td><td>== 2 (open) for &gt; 30 s</td></tr>
-              <tr><td><code>ocelot_seeders</code></td><td>&lt; <code>min_replicas</code> per torrent</td></tr>
+              <tr><td><code>ocelot_announces_total</code></td><td>rate drop &gt;50% vs 5 min avg</td></tr>
+              <tr><td><code>ocelot_db_queue_depth</code></td><td>&gt;80% of <code>batch_buffer_cap</code></td></tr>
+              <tr><td><code>ocelot_circuit_breaker_state</code></td><td>== 2 (open) for &gt;30 s</td></tr>
+              <tr><td><code>ocelot_seeders</code></td><td>&lt; <code>min_replicas</code></td></tr>
+              <tr><td><code>DCGM_FI_DEV_GPU_UTIL</code></td><td>&gt;95% sustained 5 min</td></tr>
+              <tr><td><code>DCGM_FI_DEV_FB_USED</code></td><td>&gt;14.5 GB (V100 16 GB)</td></tr>
+              <tr><td><code>DCGM_FI_DEV_GPU_TEMP</code></td><td>&gt;82 °C</td></tr>
             </tbody>
           </table>
         </div>
@@ -791,37 +1127,37 @@ scrape_configs:
 
       <div class="card p-4 mb-4">
         <h3 class="font-semibold mb-3">Quick health checks</h3>
-        <pre><code class="language-bash"># Stats endpoint (no auth)
+        <pre><code class="language-bash"># Ocelot tracker stats (no auth)
 curl -s http://localhost:6969/stats | jq .
 
-# Prometheus text
+# Ocelot Prometheus metrics
 curl -s http://localhost:9090/metrics | grep ocelot_
 
-# Swarm overview (requires JWT)
-curl -s http://localhost:8181/admin/stats \
-  -H "Authorization: Bearer $OCELOT_TOKEN" | jq .</code></pre>
+# GPU utilisation + memory (R730)
+nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu \
+           --format=csv,noheader
+
+# DCGM metrics sample (R730)
+curl -s http://localhost:9400/metrics | grep -E 'DCGM_FI_DEV_(GPU_UTIL|FB_USED|GPU_TEMP)'</code></pre>
       </div>
 
       <div class="card p-4">
-        <h3 class="font-semibold mb-3 flex items-center gap-2">
-          <i data-lucide="search" class="w-4 h-4" style="color:var(--accent)"></i>
-          Log pattern quick-reference
-        </h3>
+        <h3 class="font-semibold mb-3">Log pattern quick-reference</h3>
         <table>
           <thead><tr><th>Log fragment</th><th>Meaning</th></tr></thead>
           <tbody>
-            <tr><td><code>circuit breaker: state=open</code></td><td>SQLite write failures exceeded threshold; DB overloaded</td></tr>
-            <tr><td><code>SLA alert: no announce</code></td><td>A compute peer missed its SLA window — check network</td></tr>
-            <tr><td><code>preservation alert: replicas=1</code></td><td>Torrent is underseededed; risk of data loss</td></tr>
-            <tr><td><code>anomaly detected</code></td><td>Peer sent anomalous traffic; may indicate cheating client</td></tr>
-            <tr><td><code>rollout advanced</code></td><td>Edge rollout moved to next stage automatically</td></tr>
+            <tr><td><code>circuit breaker: state=open</code></td><td>SQLite write failures exceeded threshold</td></tr>
+            <tr><td><code>SLA alert: no announce</code></td><td>GPU worker missed SLA window — check OOM kill or crash</td></tr>
+            <tr><td><code>preservation alert: replicas=1</code></td><td>Model torrent down to one seeder — risk of loss</td></tr>
+            <tr><td><code>anomaly detected</code></td><td>Peer sent anomalous traffic — may be a misbehaving worker</td></tr>
+            <tr><td><code>rollout advanced</code></td><td>Edge rollout moved to next stage (anomaly gate passed)</td></tr>
             <tr><td><code>peer snapshot saved</code></td><td>Swarm state persisted; fast restart possible</td></tr>
           </tbody>
         </table>
       </div>
     </section>
 
-    <!-- ⑧ Compute Workflow ────────────────────────────────────────────── -->
+    <!-- ⑨ Workflow ────────────────────────────────────────────────────── -->
     <section id="workflow">
       <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
         <i data-lucide="git-branch" class="w-5 h-5" style="color:var(--accent)"></i>
@@ -840,7 +1176,7 @@ curl -s http://localhost:8181/admin/stats \
       </ol>
     </section>
 
-    <!-- ⑨ Troubleshooting ───────────────────────────────────────────── -->
+    <!-- ⑩ Troubleshooting ───────────────────────────────────────────── -->
     <section id="troubleshoot">
       <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
         <i data-lucide="wrench" class="w-5 h-5" style="color:var(--accent)"></i>
@@ -859,35 +1195,39 @@ curl -s http://localhost:8181/admin/stats \
       </div>
     </section>
 
-    <!-- ⑩ Platform Comparison ──────────────────────────────────────────── -->
+    <!-- ⑪ Platform Comparison ──────────────────────────────────────────── -->
     <section id="compare">
       <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
         <i data-lucide="sliders" class="w-5 h-5" style="color:var(--accent)"></i>
-        Platform Comparison at a Glance
+        Platform Comparison
       </h2>
       <div class="card overflow-x-auto">
         <table>
           <thead>
             <tr>
               <th>Parameter</th>
-              <th>R640 (enterprise)</th>
+              <th>R640 (tracker / general)</th>
+              <th style="color:var(--gpu)">R730 + 2×V100 (GPU fabric)</th>
               <th>M1 Mac Mini 8 GB</th>
             </tr>
           </thead>
           <tbody>
-            <tr><td><code>max_connections</code></td><td>2000</td><td>64</td></tr>
-            <tr><td><code>max_middlemen</code></td><td>200 000</td><td>15 000</td></tr>
-            <tr><td><code>batch_buffer_cap</code></td><td>32 768</td><td>2 048</td></tr>
-            <tr><td><code>rate_limit_rps</code></td><td>5 000</td><td>500</td></tr>
-            <tr><td><code>peers_timeout</code></td><td>7 200 s</td><td>3 600 s</td></tr>
-            <tr><td><code>sla_check_interval</code></td><td>30 s</td><td>60 s</td></tr>
-            <tr><td><code>min_replicas</code></td><td>5</td><td>2</td></tr>
-            <tr><td>Redis</td><td>Yes (dual-write)</td><td>No</td></tr>
-            <tr><td>OTel tracing</td><td>Yes</td><td>No (optional)</td></tr>
-            <tr><td>TLS</td><td>Let's Encrypt / manual</td><td>Manual or plaintext LAN</td></tr>
-            <tr><td>Steady-state RSS</td><td>~1–4 GB</td><td>180–220 MB</td></tr>
-            <tr><td>Recommended swarm size</td><td>50 000+ peers</td><td>500–2 000 peers</td></tr>
-            <tr><td>Service manager</td><td>systemd</td><td>launchd</td></tr>
+            <tr><td><code>max_connections</code></td><td>2 000</td><td>1 500</td><td>64</td></tr>
+            <tr><td><code>max_middlemen</code></td><td>200 000</td><td>120 000</td><td>15 000</td></tr>
+            <tr><td><code>batch_buffer_cap</code></td><td>32 768</td><td>16 384</td><td>2 048</td></tr>
+            <tr><td><code>rate_limit_rps</code></td><td>5 000</td><td>4 000</td><td>500</td></tr>
+            <tr><td><code>announce_interval</code></td><td>1 800 s</td><td>900 s (tighter GPU SLA)</td><td>1 800 s</td></tr>
+            <tr><td><code>peers_timeout</code></td><td>7 200 s</td><td>5 400 s</td><td>3 600 s</td></tr>
+            <tr><td><code>sla_check_interval</code></td><td>30 s</td><td>30 s</td><td>60 s</td></tr>
+            <tr><td><code>min_replicas</code></td><td>5</td><td>3</td><td>2</td></tr>
+            <tr><td><code>ci_artifact_ttl</code></td><td>86 400 s (24 h)</td><td>172 800 s (48 h)</td><td>14 400 s (4 h)</td></tr>
+            <tr><td>Redis</td><td>Yes</td><td>Yes</td><td>No</td></tr>
+            <tr><td>OTel tracing</td><td>Yes</td><td>Yes</td><td>Optional</td></tr>
+            <tr><td>GPU metrics</td><td>No</td><td>DCGM on :9400</td><td>No</td></tr>
+            <tr><td>Steady-state RSS</td><td>1–4 GB</td><td>800 MB–2 GB</td><td>180–220 MB</td></tr>
+            <tr><td>Swarm size (recommended)</td><td>50 000+ peers</td><td>10 000–50 000 peers</td><td>500–2 000 peers</td></tr>
+            <tr><td>Primary role</td><td>Central tracker + seeder</td><td>GPU seeder + inference node</td><td>Dev / edge tracker</td></tr>
+            <tr><td>Service manager</td><td>systemd</td><td>systemd</td><td>launchd</td></tr>
           </tbody>
         </table>
       </div>
@@ -909,114 +1249,126 @@ curl -s http://localhost:8181/admin/stats \
 
   function guide() {
     return {
-      buildTab: 'r640',
-      cfgTab:   'r640',
-      svcTab:   'r640',
+      buildTab: 'r730',
+      cfgTab:   'r730',
+      svcTab:   'r730',
       activeSection: 'concept',
 
       sections: [
-        { id:'concept',      label:'Concept',      icon:'info'         },
-        { id:'prereqs',      label:'Prerequisites', icon:'package'     },
-        { id:'build',        label:'Build',         icon:'hammer'       },
-        { id:'config',       label:'Config',        icon:'settings'     },
-        { id:'service',      label:'Service',       icon:'play-circle'  },
-        { id:'api',          label:'API',           icon:'terminal'     },
-        { id:'monitoring',   label:'Monitoring',    icon:'activity'     },
-        { id:'workflow',     label:'Workflow',      icon:'git-branch'   },
-        { id:'troubleshoot', label:'Troubleshoot',  icon:'wrench'       },
-        { id:'compare',      label:'Compare',       icon:'sliders'      },
+        { id:'concept',      label:'Concept',       icon:'info'          },
+        { id:'prereqs',      label:'Prerequisites',  icon:'package'      },
+        { id:'build',        label:'Build',          icon:'hammer'        },
+        { id:'config',       label:'Config',         icon:'settings'      },
+        { id:'service',      label:'Service',        icon:'play-circle'   },
+        { id:'gpu',          label:'GPU Workloads',  icon:'zap'           },
+        { id:'api',          label:'API',            icon:'terminal'      },
+        { id:'monitoring',   label:'Monitoring',     icon:'activity'      },
+        { id:'workflow',     label:'Workflow',       icon:'git-branch'    },
+        { id:'troubleshoot', label:'Troubleshoot',   icon:'wrench'        },
+        { id:'compare',      label:'Compare',        icon:'sliders'       },
       ],
 
       workflow: [
         {
-          title: 'Package your compute payload as a torrent',
-          desc: 'Create a <code>.torrent</code> file for your job binary, model weights, or dataset. '
-              + 'Set <code>category = compute</code> via the Admin API when adding it to Ocelot.',
+          title: 'Package your payload as a torrent',
+          desc:  'Create a <code>.torrent</code> file for your model weights, dataset, or binary. '
+               + 'Set <code>category = edgeai</code> (models) or <code>category = compute</code> '
+               + '(general jobs) when registering via the Admin API.',
         },
         {
           title: 'Register via Admin API',
-          desc: '<code>POST /admin/torrent/add</code> with <code>"category":"compute"</code> and '
-              + 'your <code>info_hash</code>. Ocelot begins tracking announce events immediately.',
+          desc:  '<code>POST /admin/torrent/add</code> with your <code>info_hash</code> and '
+               + '<code>category</code>. On the R730, the model is immediately available '
+               + 'for seeding at 10 GbE line rate.',
         },
         {
           title: 'Distribute worker passkeys',
-          desc: 'Each compute worker node needs a passkey. Issue them via '
-              + '<code>POST /admin/user/add</code>. Workers announce using '
-              + '<code>GET /:passkey/announce?info_hash=…</code>.',
+          desc:  'Issue one passkey per GPU worker via <code>POST /admin/user/add</code>. '
+               + 'Workers announce with <code>GET /:passkey/announce?info_hash=…</code>.',
         },
         {
-          title: 'Poll /compute/scale in your orchestrator',
-          desc: 'Every 30–60 s, call <code>GET /compute/scale</code>. '
-              + 'When <code>scale_up: true</code>, spin additional seeder workers. '
-              + 'When <code>ratio &lt; 1.5</code>, scale down to save resources.',
+          title: 'Workers pull weights via the swarm',
+          desc:  'Each GPU worker leeches the model torrent from the R730 (and from other workers '
+               + 'that have already finished downloading). Once complete, the worker itself '
+               + 'becomes a seeder, increasing aggregate upload bandwidth automatically.',
         },
         {
-          title: 'Monitor job ETA via /compute/eta',
-          desc: 'After seeding begins, poll <code>GET /compute/eta?info_hash=…</code> '
-              + 'to surface estimated completion time to your CI dashboard or runbook.',
+          title: 'Orchestrator polls /compute/scale every 30 s',
+          desc:  'When <code>scale_up: true</code>, launch additional GPU workers. '
+               + 'Each new worker both seeds to others and processes inference — '
+               + 'horizontal scale reduces both distribution time and inference latency.',
         },
         {
-          title: 'Collect Prometheus metrics',
-          desc: 'Scrape <code>:9090/metrics</code>. Graph <code>ocelot_announces_total</code> '
-              + 'and <code>ocelot_db_queue_depth</code>. Alert on queue saturation '
-              + '(&gt; 80% of <code>batch_buffer_cap</code>).',
+          title: 'Monitor /compute/eta for SLA tracking',
+          desc:  'Use <code>GET /compute/eta?info_hash=…</code> to surface expected '
+               + 'distribution completion time into your CI dashboard or runbook. '
+               + 'If ETA exceeds your SLA, the SLA monitor fires a log alert automatically.',
         },
         {
           title: 'Graceful shutdown preserves swarm state',
-          desc: 'On SIGTERM Ocelot flushes the write buffer, completes in-flight announces, '
-              + 'and serialises the entire swarm to <code>db_dir/swarm.snap</code>. '
-              + 'On restart the snapshot is replayed, peers rejoin within one announce cycle.',
+          desc:  'On SIGTERM, Ocelot flushes the write buffer, drains in-flight announces, '
+               + 'and serialises the swarm to <code>db_dir/swarm.snap</code>. '
+               + 'On restart, the snapshot replays so GPU workers rejoin within one announce cycle '
+               + 'without re-downloading the <code>info_hash</code> list.',
         },
       ],
 
       faq: [
         {
           q: 'Ocelot exits immediately with "database init" error',
-          a: 'The <code>db_dir</code> directory does not exist or is not writable. '
-           + 'Create it (<code>mkdir -p /var/lib/ocelot/db</code>) and ensure the '
-           + 'service user has write access (<code>chown ocelot:ocelot /var/lib/ocelot</code>).',
+          a: '<code>db_dir</code> does not exist or is not writable. '
+           + '<code>mkdir -p /var/lib/ocelot/db &amp;&amp; chown ocelot:ocelot /var/lib/ocelot</code>.',
         },
         {
-          q: '"too many open files" in the logs (R640)',
-          a: 'The process ulimit is too low. The systemd unit sets <code>LimitNOFILE=131072</code>. '
-           + 'Verify with <code>cat /proc/$(systemctl show ocelot -p MainPID --value)/limits | grep files</code>.',
+          q: 'nvidia-smi not found inside the ocelot service unit (R730)',
+          a: 'The service unit uses <code>ProtectSystem=strict</code>. '
+           + 'Add <code>ReadOnlyPaths=/usr/bin/nvidia-smi</code> to the <code>[Service]</code> block '
+           + 'if you need to shell out from a custom admin endpoint. '
+           + 'DCGM does not require <code>nvidia-smi</code> to export metrics.',
         },
         {
-          q: 'M1 build fails with "cgo: C compiler ... not found"',
-          a: 'Xcode Command Line Tools are required for CGo. Run <code>xcode-select --install</code> '
-           + 'and confirm with <code>xcrun --show-sdk-path</code>. '
-           + 'Then re-export <code>CGO_CFLAGS</code> and <code>CGO_LDFLAGS</code> pointing at Homebrew SQLite.',
+          q: 'V100 GPU is visible in nvidia-smi but DCGM shows no metrics',
+          a: 'DCGM requires the NVML driver to be fully initialised. '
+           + 'Confirm with <code>dcgmi discovery -l</code>. '
+           + 'If GPUs appear as "Not Supported", you are likely running the PCIe V100 with '
+           + 'a driver build that lacks MIG/NVSwitch — install the data centre driver '
+           + '(<code>ubuntu-drivers install nvidia:525-server</code>).',
         },
         {
-          q: 'RSS grows past 400 MB on the Mac Mini',
-          a: 'Reduce <code>max_middlemen</code> (try 8000) and lower <code>batch_buffer_cap</code> to 1024. '
-           + 'Each peer entry consumes ~1.5 KB; 15 000 peers ≈ 22 MB for the peer map alone, '
-           + 'but the SQLite page cache can grow unboundedly — set '
-           + '<code>SQLITE_MAX_PAGE_COUNT</code> via <code>PRAGMA</code> or cap the DB size.',
-        },
-        {
-          q: 'The Admin API returns 401 Unauthorized',
-          a: 'The JWT has expired (default 1-hour validity) or the <code>jwt_secret</code> in the config '
-           + 'does not match the one used to sign the token. Re-issue via <code>POST /admin/token</code>.',
-        },
-        {
-          q: 'Circuit breaker is open; all DB writes fail',
-          a: 'Five consecutive SQLite write failures tripped the breaker. Common causes on R640: '
-           + 'disk I/O saturation (check <code>iostat -dx 1</code>), WAL file too large '
-           + '(reduce <code>schedule_interval</code>), or filesystem full. '
-           + 'The breaker auto-resets after 30 s in half-open mode.',
+          q: 'GPU workers OOM-killed while leeching large model torrents',
+          a: 'The worker is holding too many open pieces in memory. '
+           + 'Limit torrent client memory: in aria2c, set <code>--disk-cache=512M</code>. '
+           + 'Alternatively, split the model into multiple smaller torrents (≤4 GB each) '
+           + 'so workers can load-and-start-inferencing in stages.',
         },
         {
           q: '/compute/scale always returns scale_up: false even under load',
-          a: 'Verify that the torrents are registered with <code>category = compute</code>. '
-           + 'The scale endpoint only counts peers on compute-category torrents. '
-           + 'Check with <code>GET /admin/torrent/list</code> and confirm the category field.',
+          a: 'Verify torrents are registered with <code>category = compute</code> or '
+           + '<code>category = edgeai</code>. '
+           + 'The scale endpoint only counts peers on those categories. '
+           + 'Check with <code>GET /admin/torrent/list</code>.',
+        },
+        {
+          q: '"too many open files" in logs (R640 / R730)',
+          a: 'The systemd unit sets <code>LimitNOFILE=131072</code>. '
+           + 'Verify: <code>cat /proc/$(systemctl show ocelot -p MainPID --value)/limits | grep files</code>.',
+        },
+        {
+          q: 'M1 build fails with "cgo: C compiler not found"',
+          a: '<code>xcode-select --install</code>, then re-export '
+           + '<code>CGO_CFLAGS</code> and <code>CGO_LDFLAGS</code> pointing at Homebrew SQLite.',
+        },
+        {
+          q: 'Circuit breaker is open; all DB writes fail',
+          a: 'Five consecutive SQLite write failures tripped the breaker. '
+           + 'Check disk I/O (<code>iostat -dx 1</code>), WAL file size, and filesystem space. '
+           + 'The breaker auto-resets after 30 s in half-open mode.',
         },
         {
           q: 'Peer snapshot fails to load on restart',
-          a: 'If the snapshot file is corrupt or from an incompatible version, Ocelot logs a warning '
-           + 'and starts with an empty swarm — this is recoverable. Delete <code>db_dir/swarm.snap</code> '
-           + 'to force a clean start; peers will re-announce within one <code>announce_interval</code>.',
+          a: 'If corrupt or from an incompatible version, Ocelot logs a warning and starts clean — '
+           + 'this is fully recoverable. Delete <code>db_dir/swarm.snap</code> to force a clean start; '
+           + 'GPU workers re-announce within one <code>announce_interval</code>.',
         },
       ],
     }
