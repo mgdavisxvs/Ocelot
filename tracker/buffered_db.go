@@ -153,6 +153,27 @@ func (b *BufferedDB) Flush() {
 	})
 }
 
+// Drain is a context-aware variant of Flush: it signals the drain goroutine to
+// stop and waits for it to exit, but honours ctx.Done() as a deadline so a
+// stuck flush cannot block shutdown indefinitely.
+//
+// Callers should prefer Drain over Flush when a shutdown timeout is needed
+// (e.g. main.go: Drain(ctx) where ctx has a 10-second deadline).
+// RULING-01 mitigation: non-halting flush goroutine cannot block graceful exit.
+func (b *BufferedDB) Drain(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		b.Flush()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // ── DatabaseInterface: announce-path writes (async) ──────────────────────────
 
 func (b *BufferedDB) RecordPeer(userID UserID, torrentID TorrentID, active int,

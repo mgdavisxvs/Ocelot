@@ -48,7 +48,7 @@ func InitTracing(serviceName string) (shutdown func(context.Context) error, err 
 			sdktrace.WithBatchTimeout(5*time.Second),
 		),
 		sdktrace.WithResource(res),
-		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(otelSampleRate()))),
+		sdktrace.WithSampler(sdktrace.ParentBased(newTailSampler(otelSampleRate()))),
 	)
 
 	otel.SetTracerProvider(tp)
@@ -65,4 +65,33 @@ func otelSampleRate() float64 {
 		}
 	}
 	return 0.1
+}
+
+// ── Tail-based sampler ────────────────────────────────────────────────────────
+//
+// newTailSampler returns a Sampler that always samples spans carrying an error
+// attribute (100%) and samples all other spans at okRate.
+//
+// RULING-07 mitigation: head-based uniform sampling at 10% loses all error
+// traces.  A tail sampler keeps every error for post-mortem analysis while
+// keeping the overall trace volume proportional to okRate for success paths.
+func newTailSampler(okRate float64) sdktrace.Sampler {
+	return tailSampler{okRate: okRate}
+}
+
+type tailSampler struct{ okRate float64 }
+
+func (s tailSampler) ShouldSample(p sdktrace.SamplingParameters) sdktrace.SamplingResult {
+	// Always sample if any attribute signals an error.
+	for _, attr := range p.Attributes {
+		if string(attr.Key) == "error" && attr.Value.AsBool() {
+			return sdktrace.SamplingResult{Decision: sdktrace.RecordAndSample}
+		}
+	}
+	// Delegate to ratio-based sampler for non-error spans.
+	return sdktrace.TraceIDRatioBased(s.okRate).ShouldSample(p)
+}
+
+func (s tailSampler) Description() string {
+	return fmt.Sprintf("TailSampler{errorRate=1.0,okRate=%.3f}", s.okRate)
 }

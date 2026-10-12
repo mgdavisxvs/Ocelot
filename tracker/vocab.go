@@ -188,6 +188,20 @@ func (v *VocabularyConfig) Validate() error {
 	if v.WireFormat.Format == "" {
 		v.WireFormat.Format = "json"
 	}
+	// RULING-06 / F-07: strict validation — unknown wire formats are rejected at
+	// load time so they produce an explicit error rather than a silent no-op route.
+	validFormats := map[string]bool{"bencode": true, "json": true, "msgpack": true}
+	if !validFormats[v.WireFormat.Format] {
+		return fmt.Errorf("vocab %q: unknown wire_format.format %q (must be bencode, json, or msgpack)",
+			v.Domain, v.WireFormat.Format)
+	}
+	if v.Auth.Strategy != "" {
+		validStrategies := map[string]bool{"prefix_trie": true, "jwt_claim": true, "none": true}
+		if !validStrategies[v.Auth.Strategy] {
+			return fmt.Errorf("vocab %q: unknown auth.strategy %q (must be prefix_trie, jwt_claim, or none)",
+				v.Domain, v.Auth.Strategy)
+		}
+	}
 	if v.Metrics.DomainLabel == "" {
 		v.Metrics.DomainLabel = v.Domain
 	}
