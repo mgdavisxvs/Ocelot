@@ -6,37 +6,37 @@ import (
 	"testing"
 )
 
-// ── PeerKey ───────────────────────────────────────────────────────────────────
+// ── PeerKeyPrime ─────────────────────────────────────────────────────────────
 
-func TestPeerKey_Length(t *testing.T) {
+func TestPeerKeyPrime_Length(t *testing.T) {
 	peerID := make([]byte, 20)
 	for i := range peerID {
 		peerID[i] = byte(i)
 	}
-	key := PeerKey(peerID, 1, 1)
+	key := PeerKeyPrime(peerID, 1, 1)
 	// 1 random byte + 4 user ID bytes + 20 peer ID bytes
 	if len(key) != 25 {
-		t.Fatalf("PeerKey length = %d, want 25", len(key))
+		t.Fatalf("PeerKeyPrime length = %d, want 25", len(key))
 	}
 }
 
-func TestPeerKey_Uniqueness(t *testing.T) {
+func TestPeerKeyPrime_Uniqueness(t *testing.T) {
 	peerID := make([]byte, 20)
-	k1 := PeerKey(peerID, 1, 1)
-	k2 := PeerKey(peerID, 2, 1) // different user
-	k3 := PeerKey(peerID, 1, 2) // different torrent (changes random byte index)
+	k1 := PeerKeyPrime(peerID, 1, 1)
+	k2 := PeerKeyPrime(peerID, 2, 1) // different user
+	k3 := PeerKeyPrime(peerID, 1, 2) // different torrent (changes random byte index)
 	if k1 == k2 {
-		t.Error("PeerKey: different userIDs produced same key")
+		t.Error("PeerKeyPrime: different userIDs produced same key")
 	}
 	_ = k3 // may or may not differ; just ensure no panic
 }
 
-func TestPeerKey_Deterministic(t *testing.T) {
+func TestPeerKeyPrime_Deterministic(t *testing.T) {
 	peerID := []byte("12345678901234567890")
-	k1 := PeerKey(peerID, 42, 7)
-	k2 := PeerKey(peerID, 42, 7)
+	k1 := PeerKeyPrime(peerID, 42, 7)
+	k2 := PeerKeyPrime(peerID, 42, 7)
 	if k1 != k2 {
-		t.Error("PeerKey is not deterministic for same inputs")
+		t.Error("PeerKeyPrime is not deterministic for same inputs")
 	}
 }
 
@@ -211,6 +211,37 @@ func TestUserList_Reset(t *testing.T) {
 	ul.Reset()
 	if ul.Size() != 0 {
 		t.Fatalf("size = %d after Reset, want 0", ul.Size())
+	}
+}
+
+func TestUserList_ForEach(t *testing.T) {
+	ul := NewUserList()
+	ul.Set("pk1", NewUser(1, true, false))
+	ul.Set("pk2", NewUser(2, false, true))
+	ul.Set("pk3", NewUser(3, true, true))
+
+	seen := map[string]bool{}
+	ul.ForEach(func(passkey string, _ *User) bool {
+		seen[passkey] = true
+		return true
+	})
+	if len(seen) != 3 {
+		t.Errorf("ForEach visited %d users, want 3", len(seen))
+	}
+}
+
+func TestUserList_ForEach_EarlyStop(t *testing.T) {
+	ul := NewUserList()
+	for i := 0; i < 5; i++ {
+		ul.Set(string(rune('a'+i)), NewUser(UserID(i+1), true, false))
+	}
+	count := 0
+	ul.ForEach(func(_ string, _ *User) bool {
+		count++
+		return count < 2
+	})
+	if count != 2 {
+		t.Errorf("ForEach stopped after %d iterations, want 2", count)
 	}
 }
 

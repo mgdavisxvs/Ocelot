@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mgdavisxvs/Ocelot/commons"
 	"github.com/mgdavisxvs/Ocelot/ml"
 )
 
@@ -30,12 +31,8 @@ type Server struct {
 	shutdownCancel context.CancelFunc
 	wg             sync.WaitGroup
 	stats          *Stats
-	pool           *WorkerPool // bounded goroutine pool for connection handlers
-
-	// adapters maps action verb → DomainAdapter for vocab-driven routing.
-	// Built via RegisterAdapter; the legacy BT routes remain as fast paths.
-	adaptersMu sync.RWMutex
-	adapters   map[string]DomainAdapter // key: action verb (e.g. "checkin")
+	adapters       []*ConfiguredAdapter
+	pool           *WorkerPool
 }
 
 // Config holds server and tracker configuration.
@@ -44,6 +41,8 @@ type Config struct {
 	AnnounceInterval  int
 	PeersTimeout      int
 	MaxMiddlemen      int
+	MaxConnections    int
+	MaxReadBuffer     int
 	NumWantLimit      int
 	KeepaliveTimeout  time.Duration
 	SitePassword      string
@@ -53,44 +52,32 @@ type Config struct {
 	ScheduleInterval  int
 	ReapPeersInterval int
 	GazelleURL        string
-	MarkovAPIURL      string // Markov engine HTTP API base URL (empty = disabled)
 	MetricsPort       string
-	// RateLimiter config — 0 disables rate limiting.
-	RateLimitRPS   int
-	RateLimitBurst int
-	// BatchBufferCap is the async write queue capacity for BufferedDB.
-	BatchBufferCap int
-	// TLS configuration — CertFile empty means plaintext.
-	TLS TLSConfig
-	// FreeleechPollSec is how often the freeleech poller fires (0 = disabled).
+	Readonly          bool
+
+	// Extended / merged-in fields
+	OTelEndpoint         string
+	BatchBufferCap       int
+	RateLimitRPS         int
+	RateLimitBurst       int
+	MarkovAPIURL         string
 	FreeleechPollSec     int
 	FreeleechNotifyHours int
-	// MaxReadBuffer is the per-connection read buffer size in bytes.
-	MaxReadBuffer int
-	// MaxRequestSize is the maximum acceptable HTTP Content-Length in bytes
-	// (0 = unlimited).
-	MaxRequestSize int
-	// RequestLogSize is the number of recent requests kept in the ring log.
-	RequestLogSize int
-	// DelReasonLifetime is how long (in seconds) deletion-reason records are
-	// retained before the scheduler purges them.
+	MaxRequestSize    int
+	RequestLogSize    int
 	DelReasonLifetime int
-	// Readonly disables all database writes when true.
-	Readonly bool
-	// AdminAPIPort is the address (e.g. ":8081") for the authenticated admin
-	// REST API server. Empty disables it.
-	AdminAPIPort string
-	// JWTSecret is the HMAC secret used to sign and validate admin JWT tokens.
-	JWTSecret []byte
-	// OTelEndpoint is the OTLP HTTP endpoint for distributed tracing.
-	// Empty disables tracing.
-	OTelEndpoint string
-	// MaxConnections is the maximum number of simultaneous TCP connections the
-	// listener will accept. 0 means unlimited.
-	MaxConnections int
-	// RedisAddr is an optional Redis server address for dual-write / caching.
-	// Empty disables Redis.
-	RedisAddr string
+	AdminAPIPort      string
+	JWTSecret         []byte
+	RedisAddr         string
+	TLS               TLSConfig
+
+	// Control API / admin fields
+	ControlAddr   string
+	ControlSecret string
+	TLSCertFile   string
+	TLSKeyFile    string
+	OpsAddr       string
+
 	// UC use-case config
 	LiveAnnounceInterval  int
 	LivePeersTimeout      int
@@ -107,10 +94,6 @@ type Config struct {
 
 func NewServer(config *Config, worker *Worker) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
-	poolCap := config.MaxMiddlemen
-	if poolCap <= 0 {
-		poolCap = 4096
-	}
 	return &Server{
 		worker:         worker,
 		config:         config,
@@ -118,97 +101,22 @@ func NewServer(config *Config, worker *Worker) *Server {
 		shutdownCtx:    ctx,
 		shutdownCancel: cancel,
 		stats:          worker.Stats,
-		adapters:       make(map[string]DomainAdapter),
-		pool:           NewWorkerPool(poolCap),
-	}
-}
-
-// RegisterAdapter registers a DomainAdapter for its EventAction (and QueryAction
-// if non-empty). Custom domains route through handleDomainRequest instead of
-// the legacy BitTorrent fast paths.
-func (s *Server) RegisterAdapter(a DomainAdapter) {
-	s.adaptersMu.Lock()
-	defer s.adaptersMu.Unlock()
-	s.adapters[a.EventAction()] = a
-	if q := a.QueryAction(); q != "" && q != a.EventAction() {
-		s.adapters[q] = a
 	}
 }
 
 func (s *Server) ListenAndServe() error {
-	ln, err := net.Listen("tcp", s.config.ListenAddr)
+	listener, err := net.Listen("tcp", s.config.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
-	return s.serve(ln)
-}
-
-// ListenAndServeTLS starts the tracker with TLS using the given cert and key
-// files.  The server's ListenAddr is used as the bind address.
-func (s *Server) ListenAndServeTLS(certFile, keyFile string) error {
-	ln, err := newTLSListener(s.config.ListenAddr, certFile, keyFile)
-	if err != nil {
-		return err
-	}
-	return s.serve(ln)
-}
-
-// ListenAndServeAutoTLS starts the tracker with Let's Encrypt-managed TLS.
-func (s *Server) ListenAndServeAutoTLS(domain, cacheDir string) error {
-	ln, err := newAutoTLSListener(s.config.ListenAddr, domain, cacheDir)
-	if err != nil {
-		return err
-	}
-	return s.serve(ln)
-}
-
-// limitedListener wraps a net.Listener and enforces a maximum connection count
-// via a semaphore channel.  When at capacity, Accept blocks until a slot opens.
-type limitedListener struct {
-	net.Listener
-	sem chan struct{}
-}
-
-func newLimitedListener(ln net.Listener, max int) *limitedListener {
-	return &limitedListener{Listener: ln, sem: make(chan struct{}, max)}
-}
-
-func (l *limitedListener) Accept() (net.Conn, error) {
-	l.sem <- struct{}{}
-	c, err := l.Listener.Accept()
-	if err != nil {
-		<-l.sem
-		return nil, err
-	}
-	return &limitedConn{Conn: c, release: func() { <-l.sem }}, nil
-}
-
-// limitedConn releases the semaphore slot when the connection is closed.
-type limitedConn struct {
-	net.Conn
-	release  func()
-	releaseOnce sync.Once
-}
-
-func (c *limitedConn) Close() error {
-	err := c.Conn.Close()
-	c.releaseOnce.Do(c.release)
-	return err
-}
-
-// serve runs the accept loop on an already-created listener.
-func (s *Server) serve(ln net.Listener) error {
-	if s.config.MaxConnections > 0 {
-		ln = newLimitedListener(ln, s.config.MaxConnections)
-	}
-	s.listener = ln
+	s.listener = listener
 
 	fmt.Printf("Ocelot tracker listening on %s (%s netpoller)\n",
 		s.config.ListenAddr, netpollerType())
 	fmt.Printf("GOMAXPROCS=%d\n", runtime.GOMAXPROCS(0))
 
 	for {
-		conn, err := ln.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			select {
 			case <-s.shutdownCtx.Done():
@@ -232,11 +140,7 @@ func (s *Server) serve(ln net.Listener) error {
 		s.stats.OpenedConnections.Add(1)
 
 		s.wg.Add(1)
-		if err := s.pool.Submit(func() { s.handleConnection(conn) }); err != nil {
-			// Pool was shut down — context cancelled.
-			s.wg.Done()
-			conn.Close()
-		}
+		go s.handleConnection(conn)
 	}
 }
 
@@ -256,11 +160,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 		tcpConn.SetKeepAlivePeriod(2 * time.Minute)
 	}
 
-	readBufSize := s.config.MaxReadBuffer
-	if readBufSize <= 0 {
-		readBufSize = 4096
+	readBuf := s.config.MaxReadBuffer
+	if readBuf <= 0 {
+		readBuf = 4096
 	}
-	reader := bufio.NewReaderSize(conn, readBufSize)
+	reader := bufio.NewReaderSize(conn, readBuf)
 	keepalive := s.config.KeepaliveTimeout > 0
 
 	for {
@@ -273,11 +177,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 			if err != io.EOF {
 				// timeout or malformed request — close silently
 			}
-			return
-		}
-
-		if s.config.MaxRequestSize > 0 && request.ContentLength > int64(s.config.MaxRequestSize) {
-			conn.Write([]byte("HTTP/1.1 413 Request Entity Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
 			return
 		}
 
@@ -304,13 +203,9 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool) {
-	start := time.Now()
-	httpStatus := 200
-	defer func() {
-		if s.worker.Metrics != nil {
-			s.worker.Metrics.RecordHTTPRequest(req.Method, req.URL.Path, httpStatus, time.Since(start))
-		}
-	}()
+	if s.worker.RateLimiter != nil && !s.worker.RateLimiter.Allow(clientIP.String()) {
+		return s.errorResponse("rate limit exceeded", true), true
+	}
 
 	httpClose := true
 	if s.config.KeepaliveTimeout > 0 {
@@ -318,24 +213,6 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 			httpClose = true
 		} else {
 			httpClose = strings.ToLower(req.Header.Get("Connection")) == "close"
-		}
-	}
-
-	// Per-IP rate limiting — checked before any authentication or routing.
-	if s.worker.RateLimiter != nil {
-		ipStr := ""
-		if clientIP != nil {
-			ipStr = clientIP.String()
-		}
-		if ipStr == "" {
-			ipStr = req.RemoteAddr
-		}
-		if !s.worker.RateLimiter.Allow(ipStr) {
-			httpStatus = 429
-			if s.worker.Metrics != nil {
-				s.worker.Metrics.RecordRateLimitExceeded(ipStr)
-			}
-			return s.rateLimitResponse(httpClose), httpClose
 		}
 	}
 
@@ -392,124 +269,20 @@ func (s *Server) handleRequest(req *http.Request, clientIP net.IP) ([]byte, bool
 		}
 		return s.errorResponse("Authentication failure", httpClose), httpClose
 
-	case "report":
-		if passkey == s.config.ReportPassword {
-			return s.handleReport(req, httpClose), httpClose
-		}
-		return s.errorResponse("Authentication failure", httpClose), httpClose
-
 	default:
-		// Try registered domain adapters before giving up.
-		s.adaptersMu.RLock()
-		adapter, ok := s.adapters[action]
-		s.adaptersMu.RUnlock()
-		if ok {
-			return s.handleDomainRequest(req, passkey, clientIP, httpClose, adapter), httpClose
-		}
 		return s.response("Nothing to see here", httpClose, false), httpClose
 	}
 }
 
-// handleDomainRequest dispatches to a DomainAdapter for non-BT domains.
-func (s *Server) handleDomainRequest(req *http.Request, passkey string, clientIP net.IP, httpClose bool, a DomainAdapter) []byte {
+func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.IP, httpClose bool) []byte {
 	user, ok := s.worker.Users.Get(passkey)
 	if !ok {
-		return a.FormatError("Passkey not found", httpClose)
-	}
-
-	opts := ClientOpts{
-		Passkey:   passkey,
-		UserAgent: req.Header.Get("User-Agent"),
-		ClientIP:  clientIP,
-	}
-
-	action := strings.TrimPrefix(req.URL.Path, "/")
-	parts := strings.SplitN(action, "/", 3)
-	verb := ""
-	if len(parts) >= 2 {
-		verb = parts[1]
-	}
-
-	if verb == a.QueryAction() && a.QueryAction() != "" {
-		keys, err := a.ParseQuery(req, opts)
-		if err != nil {
-			return a.FormatError(err.Error(), httpClose)
-		}
-		qresp := &QueryResponse{}
-		for _, key := range keys {
-			torrent, exists := s.worker.Torrents.Get(key)
-			if !exists {
-				continue
-			}
-			torrent.mu.RLock()
-			qresp.Entries = append(qresp.Entries, QueryEntry{
-				ResourceKey: key,
-				Providers:   int32(torrent.Seeders.Size()),
-				Consumers:   int32(torrent.Leechers.Size()),
-				Completed:   torrent.Completed,
-			})
-			torrent.mu.RUnlock()
-		}
-		return a.FormatQueryResponse(qresp, httpClose)
-	}
-
-	event, err := a.ParseEvent(req, opts)
-	if err != nil {
-		return a.FormatError(err.Error(), httpClose)
-	}
-
-	if !a.ValidateAgent(event.AgentID) {
-		return a.FormatError("agent not on allowlist", httpClose)
-	}
-
-	// Handle X-Forwarded-For override.
-	if event.IP == nil || event.IP.IsUnspecified() {
-		if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
-			if i := strings.Index(xff, ","); i > 0 {
-				event.IP = net.ParseIP(strings.TrimSpace(xff[:i]))
-			} else {
-				event.IP = net.ParseIP(xff)
-			}
-		}
-	}
-
-	announceReq := EventToAnnounceRequest(event, nil)
-	announceResp, err := s.worker.Announce(req.Context(), announceReq, user, clientIP, opts.UserAgent)
-	if err != nil {
-		return a.FormatError(err.Error(), httpClose)
-	}
-
-	s.stats.Announcements.Add(1)
-	return a.FormatEventResponse(EventResponseFromAnnounce(announceResp), httpClose)
-}
-
-func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.IP, httpClose bool) []byte {
-	_, span := TraceAnnounce(req.Context(),
-		req.URL.Query().Get("info_hash"),
-		req.URL.Query().Get("peer_id"),
-	)
-	defer span.End()
-
-	var user *User
-	var ok bool
-	if s.worker.UserCache != nil {
-		user, ok = s.worker.UserCache.Get(passkey)
-	}
-	if !ok {
-		user, ok = s.worker.Users.Get(passkey)
-		if ok && s.worker.UserCache != nil {
-			s.worker.UserCache.Set(passkey, user)
-		}
-	}
-	if !ok {
-		AddSpanError(req.Context(), ErrInvalidPasskey)
 		return s.errorResponse("Passkey not found", httpClose)
 	}
 
 	params := req.URL.Query()
 	announceReq, err := ParseAnnounceParams(params, clientIP)
 	if err != nil {
-		AddSpanError(req.Context(), err)
 		return s.errorResponse(err.Error(), httpClose)
 	}
 
@@ -524,9 +297,8 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 	}
 
 	userAgent := req.Header.Get("User-Agent")
-	announceResp, err := s.worker.Announce(req.Context(), announceReq, user, clientIP, userAgent)
+	announceResp, err := s.worker.Announce(req.Context(), announceReq, user, clientIP, userAgent, passkey)
 	if err != nil {
-		AddSpanError(req.Context(), err)
 		return s.errorResponse(err.Error(), httpClose)
 	}
 
@@ -534,22 +306,12 @@ func (s *Server) handleAnnounce(req *http.Request, passkey string, clientIP net.
 }
 
 func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool) []byte {
-	start := time.Now()
-	infoHashes := req.URL.Query()["info_hash"]
-	_, span := TraceScrape(req.Context(), infoHashes)
-	defer func() {
-		span.End()
-		if s.worker.Metrics != nil {
-			s.worker.Metrics.RecordScrape("ok", time.Since(start))
-		}
-	}()
-
 	_, ok := s.worker.Users.Get(passkey)
 	if !ok {
-		AddSpanError(req.Context(), ErrInvalidPasskey)
 		return s.errorResponse("Passkey not found", httpClose)
 	}
 
+	infoHashes := req.URL.Query()["info_hash"]
 	var b strings.Builder
 	b.WriteString("d5:filesd")
 
@@ -565,13 +327,8 @@ func (s *Server) handleScrape(req *http.Request, passkey string, httpClose bool)
 		torrent.mu.RUnlock()
 
 		b.WriteString(fmt.Sprintf("%d:%s", len(infoHash), infoHash))
-		b.WriteString(fmt.Sprintf("d8:completei%de10:incompletei%de10:downloadedi%de",
+		b.WriteString(fmt.Sprintf("d8:completei%de10:incompletei%de10:downloadedi%dee",
 			seeders, leechers, completed))
-		if s.worker.SwarmPredictor != nil {
-			hs := s.worker.SwarmPredictor.HealthScore(seeders, leechers)
-			b.WriteString(fmt.Sprintf("12:health_scorei%de", hs))
-		}
-		b.WriteString("e")
 	}
 	b.WriteString("ee")
 	return s.response(b.String(), httpClose, false)
@@ -625,43 +382,6 @@ func (s *Server) handleWhitelistAPI(httpClose bool) []byte {
 	return s.jsonResponse(jsonData, httpClose)
 }
 
-// handleReport processes peer-ban and anomaly-report callbacks from the site.
-// The calling site POSTs ?action=<ban|unban>&user_id=<id>&score=<float>.
-// A "ban" report bans the user in the in-memory Users list and notifies the
-// SiteComm layer. An "unban" report reverses that.
-func (s *Server) handleReport(req *http.Request, httpClose bool) []byte {
-	q := req.URL.Query()
-	action := q.Get("action")
-	userIDStr := q.Get("user_id")
-	scoreStr := q.Get("score")
-
-	if userIDStr == "" {
-		return s.errorResponse("missing user_id", httpClose)
-	}
-	uid, err := strconv.ParseInt(userIDStr, 10, 64)
-	if err != nil {
-		return s.errorResponse("invalid user_id", httpClose)
-	}
-
-	switch action {
-	case "ban":
-		s.worker.Users.SetBanned(UserID(uid), true)
-		if scoreStr != "" {
-			if score, err := strconv.ParseFloat(scoreStr, 64); err == nil {
-				s.worker.logSiteCommErr("report_anomaly", s.worker.SiteComm.ReportAnomaly(uid, score))
-			}
-		}
-		s.worker.logSiteCommErr("ban_user", s.worker.SiteComm.BanUser(uid))
-	case "unban":
-		s.worker.Users.SetBanned(UserID(uid), false)
-		s.worker.logSiteCommErr("unban_user", s.worker.SiteComm.UnbanUser(uid))
-	default:
-		return s.errorResponse("unknown action: expected ban or unban", httpClose)
-	}
-
-	return s.jsonResponse([]byte(`{"ok":true}`), httpClose)
-}
-
 // ── Response helpers ──────────────────────────────────────────────────────────
 
 func (s *Server) jsonResponse(content []byte, httpClose bool) []byte {
@@ -701,13 +421,6 @@ func (s *Server) bencodedAnnounceResponse(resp *AnnounceResponse, httpClose bool
 		b.Write(resp.Peers)
 	}
 
-	if len(resp.Peers6) > 0 {
-		b.WriteString("6:peers6")
-		b.WriteString(strconv.Itoa(len(resp.Peers6)))
-		b.WriteString(":")
-		b.Write(resp.Peers6)
-	}
-
 	if resp.Warning != "" {
 		b.WriteString("15:warning message")
 		b.WriteString(strconv.Itoa(len(resp.Warning)))
@@ -722,23 +435,6 @@ func (s *Server) bencodedAnnounceResponse(resp *AnnounceResponse, httpClose bool
 func (s *Server) errorResponse(msg string, httpClose bool) []byte {
 	resp := fmt.Sprintf("d14:failure reason%d:%se", len(msg), msg)
 	return s.response(resp, httpClose, false)
-}
-
-func (s *Server) rateLimitResponse(httpClose bool) []byte {
-	body := "d14:failure reason21:Rate limit exceedede"
-	var b strings.Builder
-	b.WriteString("HTTP/1.1 429 Too Many Requests\r\n")
-	b.WriteString("Content-Type: text/plain\r\n")
-	b.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(body)))
-	b.WriteString("Retry-After: 60\r\n")
-	if httpClose {
-		b.WriteString("Connection: close\r\n")
-	} else {
-		b.WriteString("Connection: keep-alive\r\n")
-	}
-	b.WriteString("\r\n")
-	b.WriteString(body)
-	return []byte(b.String())
 }
 
 func (s *Server) response(content string, httpClose bool, html bool) []byte {
@@ -801,6 +497,43 @@ func netpollerType() string {
 	}
 }
 
+// RegisterAdapter adds a domain adapter to the server's routing table.
+func (s *Server) RegisterAdapter(adapter *ConfiguredAdapter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adapters = append(s.adapters, adapter)
+}
+
+// ListenAndServeAutoTLS starts the tracker with automatic Let's Encrypt TLS.
+func (s *Server) ListenAndServeAutoTLS(domain, cacheDir string) error {
+	return s.startAutoTLS(domain)
+}
+
+// ListenAndServeTLS starts the tracker with manual TLS certificate files.
+func (s *Server) ListenAndServeTLS(certFile, keyFile string) error {
+	return s.startManualTLS(certFile, keyFile)
+}
+
+// SwarmHealthSummary returns the mean health score across all tracked swarms.
+// Returns -1 when no predictor is configured or no torrents exist.
+func (w *Worker) SwarmHealthSummary() int {
+	if w.SwarmPredictor == nil {
+		return -1
+	}
+	total, count := 0, 0
+	w.Torrents.ForEach(func(_ string, t *Torrent) bool {
+		t.mu.RLock()
+		total += w.SwarmPredictor.HealthScore(t.Seeders.Size(), t.Leechers.Size())
+		t.mu.RUnlock()
+		count++
+		return true
+	})
+	if count == 0 {
+		return -1
+	}
+	return total / count
+}
+
 func (s *Server) Shutdown() error {
 	s.shutdownCancel()
 	if s.listener != nil {
@@ -811,12 +544,10 @@ func (s *Server) Shutdown() error {
 		s.wg.Wait()
 		close(done)
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	select {
 	case <-done:
-		return s.pool.Shutdown(ctx)
-	case <-ctx.Done():
+		return nil
+	case <-time.After(30 * time.Second):
 		return fmt.Errorf("shutdown timeout")
 	}
 }
@@ -972,7 +703,7 @@ func (s *Server) StartAdminAPIServer(db *sql.DB) {
 		if s.worker.Detector != nil {
 			tc := s.worker.Detector.GetThresholds()
 			status.AnomalyThresholds = &anomalyThresholds{
-				MaxUploadSpeed:    tc.MaxUploadSpeed,
+				MaxUploadSpeed:    float64(tc.MaxUploadSpeed),
 				MaxAnnounceRate:   tc.MaxAnnounceRate,
 				MaxPortChanges:    tc.MaxPortChanges,
 				MinDownloadRatio:  tc.MinDownloadRatio,
@@ -1303,81 +1034,62 @@ type Worker struct {
 	CircuitBreak *CircuitBreaker
 	AuditLog     *AuditLogger
 	Metrics      *MetricsRecorder
-	Detector         BehaviorDetector      // per-peer behaviour anomaly detection; nil disables
-	ClientDetector   ClientDetector        // client-pattern check at announce entry; nil disables
-	SwarmPredictor   SwarmHealthInterface  // swarm health prediction; nil disables
-	PeerScorer       *ml.PeerScorer        // ML peer scoring; nil falls back to reservoir sampling
-	TorrentCache     *TorrentCache         // L1 cache for hot-torrent lookups; nil disables
-	UserCache        *UserCache            // L1 cache for passkey→user lookups; nil disables
-	Redis            *RedisBackend         // optional Redis dual-write backend; nil disables
-	reaper           *Reaper               // created by Start()
+	PeerScorer     *ml.PeerScorer   // nil = random selection via SelectPeersOptimized
+	BatchWriter    *BatchWriter     // nil = synchronous DB writes; non-nil = batched writes
+	Commons        CommonsInterface // optional: nil disables economic settlement
+
+	// ML / analytics subsystems (all optional; nil disables the feature)
+	Detector        BehaviorDetector
+	AnomalyDetector *ml.AnomalyDetector
+	ClientDetector  ClientDetector
+	SwarmPredictor  SwarmHealthInterface
+	TorrentCache   *TorrentCache
+	UserCache      *UserCache
+	Redis          *RedisBackend
+	Bus            *EventBus // internal event pub/sub; nil disables publishing
+	Admission      *SwarmAdmissionPolicy // nil = all peers admitted
+
+	reaper *Reaper // started/stopped by Start/Stop
 }
 
-// SwarmHealthInterface is the seam for swarm health prediction.
-type SwarmHealthInterface interface {
-	HealthScore(seeders, leechers int) int
-	PredictCompletionTime(seeders, leechers int, avgUploadSpeed, torrentSize float64) time.Duration
+// publish emits e to the internal EventBus if one is wired.
+func (w *Worker) publish(e BusEvent) {
+	if w.Bus != nil {
+		w.Bus.Publish(e)
+	}
 }
 
-// Start initialises subsystems that depend on Worker fields being populated:
-//   - RateLimiter (if RateLimitRPS > 0 and none was injected)
-//   - Reaper goroutine
+// Start launches background subsystems (reaper). It is idempotent.
 func (w *Worker) Start() {
-	if w.RateLimiter == nil && w.Config.RateLimitRPS > 0 {
-		burst := w.Config.RateLimitBurst
-		if burst <= 0 {
-			burst = w.Config.RateLimitRPS * 2
-		}
-		w.RateLimiter = NewRateLimiter(w.Config.RateLimitRPS, burst, 50_000)
+	if w.reaper == nil && w.Config != nil {
+		w.reaper = NewReaper(w.Torrents, w.Stats, w.Config.ReapPeersInterval, w.Config.PeersTimeout)
+		w.reaper.Start()
 	}
-
-	interval := w.Config.ReapPeersInterval
-	if interval <= 0 {
-		interval = 1800
-	}
-	timeout := w.Config.PeersTimeout
-	if timeout <= 0 {
-		timeout = 7200
-	}
-	w.reaper = NewReaper(w.Torrents, w.Stats, interval, timeout)
-	w.reaper.Start()
 }
 
-// SwarmHealthSummary returns the mean health score across all tracked torrents,
-// or -1 if no predictor is configured.
-func (w *Worker) SwarmHealthSummary() int {
-	if w.SwarmPredictor == nil {
-		return -1
-	}
-	total := 0
-	count := 0
-	w.Torrents.ForEach(func(_ string, t *Torrent) bool {
-		s := t.Seeders.Size()
-		l := t.Leechers.Size()
-		total += w.SwarmPredictor.HealthScore(s, l)
-		count++
-		return true
-	})
-	if count == 0 {
-		return -1
-	}
-	return total / count
-}
-
-// Stop shuts down the Reaper and flushes any buffered DB writes.
+// Stop halts background subsystems and flushes buffered DB writes.
 func (w *Worker) Stop() {
 	if w.reaper != nil {
 		w.reaper.Stop()
 	}
-	if bdb, ok := w.DB.(*BufferedDB); ok {
-		bdb.Flush()
+	if w.BatchWriter != nil {
+		w.BatchWriter.Stop()
 	}
+}
+
+// CommonsInterface is the subset of commons.ComputeCommons used by the tracker.
+// Defined as an interface to support mocking in tests.
+type CommonsInterface interface {
+	SettleAnnounce(stats *commons.AnnounceStats) error
+	EvaluatePeers(req *commons.AllocationRequest) *commons.AllocationDecision
+	SetUserPriority(userID uint32, pc commons.PriorityClass) error
+	SetUserBudget(userID, torrentID uint32, maxCredits int64) error
 }
 
 // DatabaseInterface abstracts all database operations used by the tracker.
 type DatabaseInterface interface {
 	// Announce-path writes
-	RecordPeer(userID UserID, torrentID TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string) error
+	RecordPeer(userID UserID, torrentID TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string, invalidIP bool) error
 	RecordPeerLight(userID UserID, torrentID TorrentID, announceTime, announces uint32, peerID string) error
 	RecordUserStats(userID UserID, uploaded, downloaded int64) error
 	RecordTorrent(torrentID TorrentID, seeders, leechers uint32, snatched int, balance int64) error
@@ -1387,15 +1099,20 @@ type DatabaseInterface interface {
 	// Admin writes
 	RecordTorrentHash(id TorrentID, infoHash string) error
 	RecordUserPasskey(id UserID, passkey string, canLeech, protectIP bool) error
+	DeleteTorrentHash(infoHash string) error
+	DeleteUserPasskey(passkey string) error
+	DeleteToken(userID UserID, torrentID TorrentID) error
 	AddWhitelistEntry(prefix string) error
 	RemoveWhitelistEntry(prefix string) error
-	DeleteToken(userID UserID, torrentID TorrentID) error
 
 	// State reload reads
 	LoadTorrents() ([]torrentLoadRow, error)
 	LoadUsers() ([]userLoadRow, error)
 	LoadWhitelist() ([]string, error)
 	LoadTokens() (map[string][]UserID, error)
+
+	// Markov integration
+	LoadRecommendedInterval(torrentID TorrentID) (int, bool)
 
 	// Maintenance
 	CheckpointWAL() error
@@ -1408,6 +1125,7 @@ type DatabaseInterface interface {
 type SiteCommInterface interface {
 	ExpireToken(torrentID TorrentID, userID UserID)
 	NotifyFreeleech(torrentID int64, hours int) error
+	GrantFreeleech(torrentID TorrentID)
 	ReportAnomaly(userID int64, score float64) error
 	UpdateStats(seeders, leechers, completed int64) error
 	BanUser(userID int64) error

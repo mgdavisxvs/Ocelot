@@ -14,6 +14,10 @@ type Chain struct {
 	decay  float64 // multiplied into counts on each Decay() call
 }
 
+// chainEpsilon is added to every cell in P() to guarantee ergodicity, preventing
+// the power-iteration solver (SeederPageRank) from diverging on near-absorbing states.
+const chainEpsilon = 1e-6
+
 // New creates a Chain with n states, Laplace-smoothed uniform prior, and
 // the given per-epoch decay factor (e.g. 0.995 for slow decay).
 func New(n int, decay float64) *Chain {
@@ -40,6 +44,10 @@ func (c *Chain) Observe(from, to int) {
 }
 
 // P returns the normalized n×n row-stochastic transition matrix.
+// A chainEpsilon floor is added to every cell after normalizing the observed
+// counts, then the row is renormalized. This guarantees the chain is ergodic
+// so that power-iteration solvers (SeederPageRank, fundamental matrix) always
+// converge — G-1/G-2 fix.
 func (c *Chain) P() [][]float64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -50,8 +58,15 @@ func (c *Chain) P() [][]float64 {
 		for j := range c.counts[i] {
 			sum += c.counts[i][j]
 		}
+		// Normalize counts, then inject epsilon floor.
+		var newSum float64
 		for j := range c.counts[i] {
-			p[i][j] = c.counts[i][j] / sum
+			p[i][j] = c.counts[i][j]/sum + chainEpsilon
+			newSum += p[i][j]
+		}
+		// Renormalize so the row sums to exactly 1.
+		for j := range p[i] {
+			p[i][j] /= newSum
 		}
 	}
 	return p

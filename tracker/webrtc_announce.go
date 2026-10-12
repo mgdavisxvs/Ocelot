@@ -64,7 +64,7 @@ func (s *Server) handleWebRTCAnnounce(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delegate to the standard announce path.
-	resp, err := s.worker.Announce(r.Context(), announceReq, user, clientIP, r.Header.Get("User-Agent"))
+	resp, err := s.worker.Announce(r.Context(), announceReq, user, clientIP, r.Header.Get("User-Agent"), "")
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"failure reason": err.Error()})

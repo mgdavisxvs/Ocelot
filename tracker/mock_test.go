@@ -3,6 +3,8 @@ package tracker
 import (
 	"sync"
 	"time"
+
+	"github.com/mgdavisxvs/Ocelot/commons"
 )
 
 // ── MockDB ────────────────────────────────────────────────────────────────────
@@ -13,6 +15,7 @@ type recordedPeer struct {
 	Uploaded, Downloaded, UpSpeed, DownSpeed, Left, Corrupt int64
 	AnnounceTime, Announces                              uint32
 	IP, PeerID, UserAgent                                string
+	InvalidIP                                            bool
 }
 
 type recordedPeerLight struct {
@@ -95,7 +98,7 @@ func (m *MockDB) reset() {
 
 func (m *MockDB) RecordPeer(userID UserID, torrentID TorrentID, active int,
 	uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64,
-	announceTime, announces uint32, ip, peerID, userAgent string) error {
+	announceTime, announces uint32, ip, peerID, userAgent string, invalidIP bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.ReturnErr != nil {
@@ -106,7 +109,7 @@ func (m *MockDB) RecordPeer(userID UserID, torrentID TorrentID, active int,
 		Uploaded: uploaded, Downloaded: downloaded, UpSpeed: upSpeed,
 		DownSpeed: downSpeed, Left: left, Corrupt: corrupt,
 		AnnounceTime: announceTime, Announces: announces,
-		IP: ip, PeerID: peerID, UserAgent: userAgent,
+		IP: ip, PeerID: peerID, UserAgent: userAgent, InvalidIP: invalidIP,
 	})
 	return nil
 }
@@ -193,6 +196,24 @@ func (m *MockDB) RecordUserPasskey(id UserID, passkey string, canLeech, protectI
 	return nil
 }
 
+func (m *MockDB) DeleteTorrentHash(infoHash string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ReturnErr
+}
+
+func (m *MockDB) DeleteUserPasskey(passkey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ReturnErr
+}
+
+func (m *MockDB) DeleteToken(_ UserID, _ TorrentID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ReturnErr
+}
+
 func (m *MockDB) AddWhitelistEntry(prefix string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -254,18 +275,14 @@ func (m *MockDB) CheckRotation() error {
 	return m.ReturnErr
 }
 
-func (m *MockDB) DeleteToken(userID UserID, torrentID TorrentID) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.ReturnErr
-}
-
 func (m *MockDB) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.CloseCount++
 	return m.ReturnErr
 }
+
+func (m *MockDB) LoadRecommendedInterval(_ TorrentID) (int, bool) { return 0, false }
 
 // ── MockSiteComm ──────────────────────────────────────────────────────────────
 
@@ -288,14 +305,90 @@ func (m *MockSiteComm) ExpireToken(torrentID TorrentID, userID UserID) {
 	m.Expired = append(m.Expired, tokenExpiry{TorrentID: UserID(torrentID), UserID: userID})
 }
 
-func (m *MockSiteComm) BanUser(_ int64) error                          { return nil }
-func (m *MockSiteComm) UnbanUser(_ int64) error                        { return nil }
-func (m *MockSiteComm) NotifyFreeleech(_ int64, _ int) error           { return nil }
-func (m *MockSiteComm) ReportAnomaly(_ int64, _ float64) error         { return nil }
-func (m *MockSiteComm) UpdateStats(_ int64, _ int64, _ int64) error    { return nil }
+func (m *MockSiteComm) BanUser(_ int64) error                       { return nil }
+func (m *MockSiteComm) UnbanUser(_ int64) error                     { return nil }
+func (m *MockSiteComm) NotifyFreeleech(_ int64, _ int) error        { return nil }
+func (m *MockSiteComm) GrantFreeleech(_ TorrentID)                  {}
+func (m *MockSiteComm) ReportAnomaly(_ int64, _ float64) error      { return nil }
+func (m *MockSiteComm) UpdateStats(_ int64, _ int64, _ int64) error { return nil }
 
 func (m *MockSiteComm) reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Expired = nil
+}
+
+// ── MockCommons ───────────────────────────────────────────────────────────────
+
+type settledPriority struct {
+	UserID uint32
+	PC     commons.PriorityClass
+}
+
+type settledBudget struct {
+	UserID, TorrentID uint32
+	MaxCredits        int64
+}
+
+// MockCommons implements CommonsInterface for tests.
+type MockCommons struct {
+	mu          sync.Mutex
+	Settled     []commons.AnnounceStats
+	Evaluated   []*commons.AllocationRequest
+	PrioritySet []settledPriority
+	BudgetSet   []settledBudget
+
+	// EvalDecision is returned by EvaluatePeers. When nil, a default accepted
+	// decision is constructed from the request's Candidates.
+	EvalDecision *commons.AllocationDecision
+	ReturnErr    error
+}
+
+func newMockCommons() *MockCommons { return &MockCommons{} }
+
+func (m *MockCommons) SettleAnnounce(stats *commons.AnnounceStats) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ReturnErr != nil {
+		return m.ReturnErr
+	}
+	m.Settled = append(m.Settled, *stats)
+	return nil
+}
+
+func (m *MockCommons) EvaluatePeers(req *commons.AllocationRequest) *commons.AllocationDecision {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Evaluated = append(m.Evaluated, req)
+	if m.EvalDecision != nil {
+		return m.EvalDecision
+	}
+	ranked := make([]*commons.SeederCandidate, len(req.Candidates))
+	copy(ranked, req.Candidates)
+	return &commons.AllocationDecision{
+		Accepted:      true,
+		RankedSeeders: ranked,
+	}
+}
+
+func (m *MockCommons) SetUserPriority(userID uint32, pc commons.PriorityClass) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ReturnErr != nil {
+		return m.ReturnErr
+	}
+	m.PrioritySet = append(m.PrioritySet, settledPriority{UserID: userID, PC: pc})
+	return nil
+}
+
+func (m *MockCommons) SetUserBudget(userID, torrentID uint32, maxCredits int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ReturnErr != nil {
+		return m.ReturnErr
+	}
+	m.BudgetSet = append(m.BudgetSet, settledBudget{
+		UserID: userID, TorrentID: torrentID, MaxCredits: maxCredits,
+	})
+	return nil
 }

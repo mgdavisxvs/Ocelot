@@ -1,29 +1,44 @@
 {
-  "_comment": "ocelot-markov configuration — copy to ocelot-markov.conf and fill in credentials",
+  "_comment": "ocelot-markov configuration — copy to ocelot-markov.conf and edit db_path",
 
-  "db_host": "127.0.0.1",
-  "db_port": 3306,
-  "db_name": "gazelle",
-  "db_user": "",
-  "db_pass": "",
+  "db_path": "/var/lib/ocelot/ocelot-2026-09.db",
 
   "decay_factor": 0.995,
   "decay_every_n_polls": 60,
+  "smoothing_alpha": 1.0,
 
   "poll_interval_sec": 60,
   "persist_interval_sec": 300,
   "path_history_len": 10,
 
+  "_comment_model_clock": "Fixed observation timestep independent of announce/poll frequency. Forecasts are computed in units of model_clock_sec steps.",
+  "model_clock_sec": 900,
+
   "announce_interval_sec": 1800,
   "peers_timeout_sec": 7200,
 
-  "forecast_steps_24h": 1440,
-  "forecast_steps_72h": 4320,
+  "_comment_announce_bounds": "Adaptive announce interval bounds and hysteresis. min/max clamp the Markov-recommended interval; hysteresis_factor (0–1) is the fractional change required to update.",
+  "min_announce_interval_sec": 600,
+  "max_announce_interval_sec": 3600,
+  "hysteresis_factor": 0.1,
+
+  "_comment_forecasts": "Steps are model_clock_sec steps. At 900s clock: 1h=4, 6h=24, 24h=96, 72h=288.",
+  "forecast_steps_1h": 4,
+  "forecast_steps_6h": 24,
+  "forecast_steps_24h": 96,
+  "forecast_steps_72h": 288,
 
   "fraud_threshold_sigma": 3.0,
   "fraud_path_min_len": 4,
 
+  "success_threshold_bytes": 1024,
+
   "freeleech_top_n": 20,
+
+  "_comment_shadow": "Shadow mode: true (recommended default) = forecasts recorded but NOT applied to tracker behavior. Set false only after validating predictive performance.",
+  "shadow_mode": true,
+
+  "model_schema_version": 1,
 
   "listen_addr": ":9090"
 }

@@ -1,13 +1,15 @@
-# Ocelot config file
-# Lines starting with a # are ignored
-# A # anywhere else is treated like any other character
+# Ocelot config file (Go edition)
+# Lines starting with # are ignored.
+# Copy to ocelot.conf and edit before running.
+# See deploy/ocelot.conf.example for full documentation of every key.
 
 listen_port         = 34000
+udp_listen_port     = 34000
+
 max_connections     = 128
 max_middlemen       = 20000
 max_read_buffer     = 4096
 connection_timeout  = 10
-# Keepalive is mostly useful if the tracker runs behind reverse proxies
 keepalive_timeout   = 0
 
 announce_interval   = 1800
@@ -15,12 +17,7 @@ max_request_size    = 4096
 numwant_limit       = 50
 request_log_size    = 500
 
-mysql_host          = 
-mysql_username      = 
-mysql_password      = 
-mysql_db            = 
-
-# The passwords must be 32 characters and match the Gazelle config
+# Passwords must be exactly 32 characters and match the Gazelle config.
 report_password     = 00000000000000000000000000000000
 site_password       = 00000000000000000000000000000000
 
@@ -30,3 +27,20 @@ reap_peers_interval = 1800
 schedule_interval   = 3
 
 readonly            = false
+
+# SQLite shard directory (replaces MySQL)
+db_dir              = ./data/db
+
+# Optional: Gazelle callback base URL for token expiry
+# gazelle_url       = https://example.com
+
+# Prometheus /metrics, /health, and /events SSE endpoint
+metrics_addr        = 127.0.0.1:6880
+
+# TLS — uncomment one block:
+# Option A: your own cert
+# tls_cert_file     = /etc/ocelot/tls/cert.pem
+# tls_key_file      = /etc/ocelot/tls/key.pem
+# Option B: Let's Encrypt autocert
+# tls_auto          = true
+# tls_domain        = tracker.example.com

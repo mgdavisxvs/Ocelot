@@ -7,7 +7,7 @@ import (
 )
 
 // UpsertChainCounts persists all counts for the named chain in a single
-// REPLACE INTO batch (max 1000 rows per call to bound query size).
+// INSERT OR REPLACE INTO batch (max 1000 rows per call to bound query size).
 func (d *DB) UpsertChainCounts(ctx context.Context, chainName string, counts [][]float64) error {
 	tx, err := d.pool.BeginTx(ctx, nil)
 	if err != nil {
@@ -16,7 +16,7 @@ func (d *DB) UpsertChainCounts(ctx context.Context, chainName string, counts [][
 	defer tx.Rollback() //nolint:errcheck
 
 	stmt, err := tx.PrepareContext(ctx,
-		`REPLACE INTO markov_chain_counts (chain_name, from_state, to_state, count) VALUES (?,?,?,?)`)
+		`INSERT OR REPLACE INTO markov_chain_counts (chain_name, from_state, to_state, count) VALUES (?,?,?,?)`)
 	if err != nil {
 		return fmt.Errorf("prepare: %w", err)
 	}
@@ -51,7 +51,7 @@ func (d *DB) UpsertPeerStates(ctx context.Context, recs []PeerStateRecord) error
 	defer tx.Rollback() //nolint:errcheck
 
 	stmt, err := tx.PrepareContext(ctx,
-		`REPLACE INTO markov_peer_states (torrent_id, uid, state, observed_at) VALUES (?,?,?,?)`)
+		`INSERT OR REPLACE INTO markov_peer_states (torrent_id, uid, state, observed_at) VALUES (?,?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -91,7 +91,7 @@ func (d *DB) UpsertTorrentStates(ctx context.Context, recs []TorrentStateRecord)
 	defer tx.Rollback() //nolint:errcheck
 
 	stmt, err := tx.PrepareContext(ctx,
-		`REPLACE INTO markov_torrent_states (torrent_id, state, observed_at) VALUES (?,?,?)`)
+		`INSERT OR REPLACE INTO markov_torrent_states (torrent_id, state, observed_at) VALUES (?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -124,7 +124,7 @@ func (d *DB) UpsertUserStates(ctx context.Context, recs []UserStateRecord) error
 	defer tx.Rollback() //nolint:errcheck
 
 	stmt, err := tx.PrepareContext(ctx,
-		`REPLACE INTO markov_user_states (uid, state, path_json, observed_at) VALUES (?,?,?,?)`)
+		`INSERT OR REPLACE INTO markov_user_states (uid, state, path_json, observed_at) VALUES (?,?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -164,7 +164,7 @@ func (d *DB) UpsertPredictions(ctx context.Context, recs []TorrentPredictionReco
 	defer tx.Rollback() //nolint:errcheck
 
 	stmt, err := tx.PrepareContext(ctx, `
-		REPLACE INTO markov_predictions
+		INSERT OR REPLACE INTO markov_predictions
 			(torrent_id, health_state, pi_json, pi_24h_json, pi_72h_json,
 			 dead_prob_24h, dead_prob_72h, expected_dead_hours,
 			 entropy, recommended_interval, updated_at)
@@ -206,7 +206,7 @@ func (d *DB) UpsertUserAnomalies(ctx context.Context, recs []UserAnomalyRecord) 
 	defer tx.Rollback() //nolint:errcheck
 
 	stmt, err := tx.PrepareContext(ctx, `
-		REPLACE INTO markov_user_anomaly
+		INSERT OR REPLACE INTO markov_user_anomaly
 			(uid, anomaly_score, path_log_likelihood, flagged, updated_at)
 		VALUES (?,?,?,?,?)`)
 	if err != nil {
@@ -251,7 +251,7 @@ func (d *DB) UpsertFreeleechCandidates(ctx context.Context, recs []FreeleechCand
 	}
 
 	stmt, err := tx.PrepareContext(ctx, `
-		REPLACE INTO markov_freeleech_candidates
+		INSERT OR REPLACE INTO markov_freeleech_candidates
 			(torrent_id, priority_score, dead_prob_72h, recommended, updated_at)
 		VALUES (?,?,?,?,?)`)
 	if err != nil {

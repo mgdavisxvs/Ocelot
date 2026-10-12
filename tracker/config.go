@@ -30,30 +30,37 @@ type FileConfig struct {
 	ScheduleInterval  int
 	Readonly          bool
 	DBDir             string
-	GazelleURL           string // optional Gazelle callback endpoint
-	MarkovAPIURL         string // optional Markov engine HTTP API base URL, e.g. "http://127.0.0.1:9090"
-	FreeleechPollSec     int    // how often (seconds) to poll /freeleech; 0 = disabled
-	FreeleechNotifyHours int    // freeleech duration (hours) passed to NotifyFreeleech
-	MetricsPort          string // Prometheus metrics listen address, e.g. ":9090"
-	// Rate limiting (0 = disabled)
-	RateLimitRPS   int
-	RateLimitBurst int
-	// Async write queue capacity for BufferedDB (0 = default 4096)
-	BatchBufferCap int
-	// TLS — leave CertFile empty to disable TLS.
+	GazelleURL        string // optional Gazelle callback endpoint
+	MetricsPort       string // Prometheus metrics listen address, e.g. ":9090"
+
+	// VirtualServer subsystem fields
+	VSEnabled        bool
+	VSPort           string // VS HTTP API listen address, e.g. ":9091"
+	VSAdminKey       string // bearer token for VS API auth
+	VSDBPath         string // path to vs.db (default data/db/vs.db)
+	VSReconcileEvery int    // reconciler tick interval in seconds (default 15)
+
+	// Optional / advanced fields
+	OTelEndpoint         string // OpenTelemetry collector endpoint
+	BatchBufferCap       int    // capacity of the async DB write queue
+	RateLimitRPS         int    // per-IP rate limit (requests/sec); 0 = disabled
+	RateLimitBurst       int    // burst allowance for the rate limiter
+	MarkovAPIURL         string // Markov engine HTTP API base URL
+	FreeleechPollSec     int    // freeleech candidate poll interval (seconds)
+	FreeleechNotifyHours int    // hours ahead to notify freeleech window
+	RedisAddr            string // Redis address for optional dual-write backend
+
+	// TLS
 	TLSCertFile string
 	TLSKeyFile  string
 	TLSAutoTLS  bool
 	TLSDomain   string
 	TLSCacheDir string
+
 	// Admin REST API (JWT-protected)
 	AdminAPIPort string
 	JWTSecret    string
-	// OTel OTLP endpoint, e.g. "localhost:4318" (empty = tracing disabled)
-	OTelEndpoint string
-	// RedisAddr is the Redis server address for optional dual-write / caching
-	// e.g. "localhost:6379" (empty = Redis disabled)
-	RedisAddr string
+
 	// UC use-case config fields
 	LiveAnnounceInterval  int     // announce interval override for live streams (default 10)
 	LivePeersTimeout      int     // peer timeout for live streams (default 45)
@@ -86,15 +93,20 @@ func DefaultFileConfig() *FileConfig {
 		PeersTimeout:      7200,
 		DelReasonLifetime: 86400,
 		ReapPeersInterval: 1800,
-		ScheduleInterval:  300, // 5-minute WAL checkpoint interval
+		ScheduleInterval:  3,
 		Readonly:          false,
-		DBDir:                "./data/db",
-		FreeleechPollSec:     300,
-		FreeleechNotifyHours: 24,
-		MetricsPort:          ":9090",
+		DBDir:             "./data/db",
+		MetricsPort:       ":9090",
+		VSEnabled:         false,
+		VSPort:            ":9091",
+		VSAdminKey:        "",
+		VSDBPath:          "data/db/vs.db",
+		VSReconcileEvery:  15,
+		BatchBufferCap:    4096,
 		RateLimitRPS:      100,
 		RateLimitBurst:    200,
-		BatchBufferCap:    4096,
+		FreeleechPollSec:     300,
+		FreeleechNotifyHours: 24,
 		LiveAnnounceInterval:  10,
 		LivePeersTimeout:      45,
 		MinReplicas:           3,
@@ -110,7 +122,6 @@ func DefaultFileConfig() *FileConfig {
 }
 
 // ParseFlags processes CLI arguments and returns the config file path.
-// Supports the same -c flag as the original C++ binary.
 func ParseFlags() string {
 	path := flag.String("c", "ocelot.conf", "path to config file")
 	flag.Parse()
@@ -125,7 +136,7 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cfg, nil // use defaults when file is absent
+			return cfg, nil
 		}
 		return nil, fmt.Errorf("open config %s: %w", path, err)
 	}
@@ -183,20 +194,34 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.DBDir = val
 		case "gazelle_url":
 			cfg.GazelleURL = val
+		case "metrics_port":
+			cfg.MetricsPort = val
+		case "vs_enabled":
+			cfg.VSEnabled = val == "true"
+		case "vs_port":
+			cfg.VSPort = val
+		case "vs_admin_key":
+			cfg.VSAdminKey = val
+		case "vs_db_path":
+			cfg.VSDBPath = val
+		case "vs_reconcile_every":
+			cfg.VSReconcileEvery = parseIntVal(val, cfg.VSReconcileEvery)
+		case "otel_endpoint":
+			cfg.OTelEndpoint = val
+		case "batch_buffer_cap":
+			cfg.BatchBufferCap = parseIntVal(val, cfg.BatchBufferCap)
+		case "rate_limit_rps":
+			cfg.RateLimitRPS = parseIntVal(val, cfg.RateLimitRPS)
+		case "rate_limit_burst":
+			cfg.RateLimitBurst = parseIntVal(val, cfg.RateLimitBurst)
 		case "markov_api_url":
 			cfg.MarkovAPIURL = val
 		case "freeleech_poll_sec":
 			cfg.FreeleechPollSec = parseIntVal(val, cfg.FreeleechPollSec)
 		case "freeleech_notify_hours":
 			cfg.FreeleechNotifyHours = parseIntVal(val, cfg.FreeleechNotifyHours)
-		case "metrics_port":
-			cfg.MetricsPort = val
-		case "rate_limit_rps":
-			cfg.RateLimitRPS = parseIntVal(val, cfg.RateLimitRPS)
-		case "rate_limit_burst":
-			cfg.RateLimitBurst = parseIntVal(val, cfg.RateLimitBurst)
-		case "batch_buffer_cap":
-			cfg.BatchBufferCap = parseIntVal(val, cfg.BatchBufferCap)
+		case "redis_addr":
+			cfg.RedisAddr = val
 		case "tls_cert_file":
 			cfg.TLSCertFile = val
 		case "tls_key_file":
@@ -211,10 +236,6 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 			cfg.AdminAPIPort = val
 		case "jwt_secret":
 			cfg.JWTSecret = val
-		case "otel_endpoint":
-			cfg.OTelEndpoint = val
-		case "redis_addr":
-			cfg.RedisAddr = val
 		case "live_announce_interval":
 			cfg.LiveAnnounceInterval = parseIntVal(val, cfg.LiveAnnounceInterval)
 		case "live_peers_timeout":
@@ -253,36 +274,34 @@ func ParseConfigFile(path string) (*FileConfig, error) {
 func (fc *FileConfig) ToTrackerConfig() *Config {
 	readTimeout := time.Duration(fc.ConnectionTimeout) * time.Second
 	return &Config{
-		ListenAddr:           fmt.Sprintf(":%d", fc.ListenPort),
-		AnnounceInterval:     fc.AnnounceInterval,
-		PeersTimeout:         fc.PeersTimeout,
-		MaxMiddlemen:         fc.MaxMiddlemen,
-		NumWantLimit:         fc.NumWantLimit,
-		KeepaliveTimeout:     time.Duration(fc.KeepaliveTimeout) * time.Second,
-		SitePassword:         fc.SitePassword,
-		ReportPassword:       fc.ReportPassword,
-		ReadTimeout:          readTimeout,
-		WriteTimeout:         readTimeout,
-		ScheduleInterval:     fc.ScheduleInterval,
-		ReapPeersInterval:    fc.ReapPeersInterval,
-		GazelleURL:           fc.GazelleURL,
-		MarkovAPIURL:         fc.MarkovAPIURL,
-		MetricsPort:          fc.MetricsPort,
+		ListenAddr:        fmt.Sprintf(":%d", fc.ListenPort),
+		AnnounceInterval:  fc.AnnounceInterval,
+		PeersTimeout:      fc.PeersTimeout,
+		MaxMiddlemen:      fc.MaxMiddlemen,
+		MaxConnections:    fc.MaxConnections,
+		MaxReadBuffer:     fc.MaxReadBuffer,
+		NumWantLimit:      fc.NumWantLimit,
+		KeepaliveTimeout:  time.Duration(fc.KeepaliveTimeout) * time.Second,
+		SitePassword:      fc.SitePassword,
+		ReportPassword:    fc.ReportPassword,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      readTimeout,
+		MetricsPort:       fc.MetricsPort,
+		GazelleURL:        fc.GazelleURL,
+		ScheduleInterval:  fc.ScheduleInterval,
+		ReapPeersInterval: fc.ReapPeersInterval,
+		DelReasonLifetime: fc.DelReasonLifetime,
+		Readonly:          fc.Readonly,
+		OTelEndpoint:         fc.OTelEndpoint,
+		BatchBufferCap:       fc.BatchBufferCap,
 		RateLimitRPS:         fc.RateLimitRPS,
 		RateLimitBurst:       fc.RateLimitBurst,
-		BatchBufferCap:       fc.BatchBufferCap,
+		MarkovAPIURL:         fc.MarkovAPIURL,
 		FreeleechPollSec:     fc.FreeleechPollSec,
 		FreeleechNotifyHours: fc.FreeleechNotifyHours,
-		MaxReadBuffer:        fc.MaxReadBuffer,
-		MaxRequestSize:       fc.MaxRequestSize,
-		RequestLogSize:       fc.RequestLogSize,
-		DelReasonLifetime:    fc.DelReasonLifetime,
-		Readonly:             fc.Readonly,
+		RedisAddr:            fc.RedisAddr,
 		AdminAPIPort:         fc.AdminAPIPort,
 		JWTSecret:            []byte(fc.JWTSecret),
-		OTelEndpoint:         fc.OTelEndpoint,
-		MaxConnections:       fc.MaxConnections,
-		RedisAddr:            fc.RedisAddr,
 		LiveAnnounceInterval:  fc.LiveAnnounceInterval,
 		LivePeersTimeout:      fc.LivePeersTimeout,
 		MinReplicas:           fc.MinReplicas,

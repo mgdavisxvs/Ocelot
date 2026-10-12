@@ -1,8 +1,16 @@
 package tracker
 
 import (
+	"time"
+
 	"github.com/mgdavisxvs/Ocelot/ml"
 )
+
+// SwarmHealthInterface abstracts swarm health prediction.
+type SwarmHealthInterface interface {
+	PredictCompletionTime(seeders, leechers int, avgUploadSpeed, torrentSize float64) time.Duration
+	HealthScore(seeders, leechers int) int
+}
 
 // NewSwarmHealthPredictor returns a SwarmHealthInterface backed by the ml
 // package's heuristic predictor.

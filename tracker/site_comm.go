@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+// siteCommMaxRetries is the total number of attempts (initial + retries) for
+// HTTP callbacks to Gazelle. Tests may lower this to zero delay.
+var siteCommMaxRetries = 3
+
+// siteCommBaseDelay is the initial wait between retries; doubles on each attempt.
+// Tests set this to 0 to avoid sleeping.
+var siteCommBaseDelay = 200 * time.Millisecond
+
 // GazelleSiteComm sends authenticated HTTP callbacks to the Gazelle web app,
 // replacing the C++ site_comm class (site_comm.cpp).
 type GazelleSiteComm struct {
@@ -91,29 +99,38 @@ func (g *GazelleSiteComm) UnbanUser(userID int64) error {
 	return g.post(params)
 }
 
+func (g *GazelleSiteComm) GrantFreeleech(torrentID TorrentID) {
+	params := url.Values{
+		"action":    {"grant_freeleech"},
+		"torrentid": {fmt.Sprintf("%d", torrentID)},
+	}
+	_ = g.post(params)
+}
+
 func (g *GazelleSiteComm) post(params url.Values) error {
 	params.Set("password", g.password)
-	return RetryWithBackoff(func() error {
+	var lastErr error
+	for attempt := 0; attempt < siteCommMaxRetries; attempt++ {
+		if attempt > 0 && siteCommBaseDelay > 0 {
+			time.Sleep(siteCommBaseDelay * time.Duration(uint(1)<<uint(attempt-1)))
+		}
 		resp, err := g.client.PostForm(g.baseURL, params)
 		if err != nil {
-			return err
+			lastErr = err
+			continue // retry on network error
 		}
-		defer resp.Body.Close()
 		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
 		if resp.StatusCode >= 500 {
-			// 5xx → transient; 4xx → permanent (bad request/auth)
-			return fmt.Errorf("HTTP %d from Gazelle", resp.StatusCode)
+			lastErr = fmt.Errorf("HTTP %d from Gazelle", resp.StatusCode)
+			continue // retry on 5xx (transient server error)
 		}
 		if resp.StatusCode >= 400 {
-			return fmt.Errorf("HTTP %d from Gazelle", resp.StatusCode)
+			return fmt.Errorf("HTTP %d from Gazelle", resp.StatusCode) // 4xx: permanent, no retry
 		}
 		return nil
-	}, RetryConfig{
-		MaxRetries:  2,
-		InitialWait: 200 * time.Millisecond,
-		MaxWait:     2 * time.Second,
-		Multiplier:  2.0,
-	})
+	}
+	return lastErr
 }
 
 // NoOpSiteComm is used when no Gazelle URL is configured.
@@ -146,4 +163,15 @@ func (n *NoOpSiteComm) BanUser(userID int64) error {
 func (n *NoOpSiteComm) UnbanUser(userID int64) error {
 	log.Printf("site_comm (noop): unban_user user=%d", userID)
 	return nil
+}
+
+func (n *NoOpSiteComm) GrantFreeleech(torrentID TorrentID) {
+	log.Printf("site_comm (noop): grant_freeleech torrent=%d", torrentID)
+}
+
+// logSiteCommErr logs err with a context label if err is non-nil.
+func (w *Worker) logSiteCommErr(label string, err error) {
+	if err != nil {
+		log.Printf("site_comm %s: %v", label, err)
+	}
 }

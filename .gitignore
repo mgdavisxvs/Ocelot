@@ -2,3 +2,5 @@
 build/
 ocelot
 .claude/
+coverage.out
+*.out

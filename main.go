@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/mgdavisxvs/Ocelot/tracker"
+	vsconfig "github.com/mgdavisxvs/Ocelot/virtualserver/config"
+	"github.com/mgdavisxvs/Ocelot/virtualserver"
 )
 
 func main() {
@@ -266,12 +268,32 @@ func main() {
 		}
 	}()
 
-	// ── Domain adapters ───────────────────────────────────────────────────────
-	// Load vocab JSON files from a domains/ subdirectory (relative to CWD).
-	// Adapters with action names that collide with the BT fast-paths are skipped
-	// to prevent accidentally shadowing announce/scrape.
+	// ── HTTP Server ───────────────────────────────────────────────────────────
 	server := tracker.NewServer(config, worker)
-	server.StartAdminAPIServer(rawDB.CurrentDB())
+
+	// Start VirtualServer subsystem if enabled
+	vsCfg := vsconfig.VSConfig{
+		Enabled:        false, // set via ocelot.conf vs_enabled=true
+		Port:           ":9091",
+		AdminKey:       "",
+		DBPath:         "data/db/vs.db",
+		ReconcileEvery: 15 * time.Second,
+		MaxBodyBytes:   1 << 20,
+		RequestTimeout: 30 * time.Second,
+	}
+	var vs *virtualserver.VirtualServer
+	if vs, err = virtualserver.New(vsCfg, db); err != nil {
+		log.Fatalf("VirtualServer init error: %v", err)
+	}
+	if vs != nil {
+		if err := vs.Start(); err != nil {
+			log.Fatalf("VirtualServer start error: %v", err)
+		}
+		log.Printf("VirtualServer started on %s", vsCfg.Port)
+	}
+
+	// Print statistics periodically (moved below server creation; see line 309)
+
 
 	btBuiltins := map[string]bool{
 		"announce": true, "scrape": true, "update": true,
@@ -333,6 +355,14 @@ func main() {
 	markovCancel() // stop freeleech poller and adaptive threshold goroutines
 	ucCancel()     // stop UC background monitors and cleanup goroutine
 
+	fmt.Println("\n🛑 Shutting down gracefully...")
+	if vs != nil {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutCancel()
+		if err := vs.Stop(shutCtx); err != nil {
+			log.Printf("VirtualServer shutdown error: %v", err)
+		}
+	}
 	if err := server.Shutdown(); err != nil {
 		log.Printf("server shutdown: %v", err)
 	}

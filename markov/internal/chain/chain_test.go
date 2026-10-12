@@ -15,10 +15,12 @@ func TestObserveAndNormalize(t *testing.T) {
 	// Row 0: 2 observations to state 1, 1 to state 2, plus Laplace prior (1 each)
 	// counts: [1, 3, 2], sum=6
 	want0to1 := 3.0 / 6.0
-	if math.Abs(p[0][1]-want0to1) > 1e-9 {
-		t.Errorf("P[0][1] = %v, want %v", p[0][1], want0to1)
+	// Epsilon regularization (chainEpsilon) shifts each cell by ~1e-6 before
+	// renormalization, so we allow 1e-4 instead of exact equality.
+	if math.Abs(p[0][1]-want0to1) > 1e-4 {
+		t.Errorf("P[0][1] = %v, want ~%v (±1e-4)", p[0][1], want0to1)
 	}
-	// Each row must sum to 1.
+	// Each row must sum to 1 (renormalization guarantees this exactly).
 	for i, row := range p {
 		var sum float64
 		for _, v := range row {

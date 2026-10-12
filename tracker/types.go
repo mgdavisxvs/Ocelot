@@ -36,22 +36,7 @@ type Peer struct {
 	IPPort          []byte // Compact 6-byte format: 4-byte IPv4 + 2-byte port
 	Visible         bool
 	InvalidIP       bool
-	ConnectionTimes []time.Time // timestamps of each announce; used for rapid-reconnect detection
-}
-
-// PeerKey generates a unique, randomized key for a peer.
-// Randomization distributes peers across hash buckets for better map performance,
-// matching the C++ worker.cpp:315 logic.
-func PeerKey(peerID []byte, userID UserID, torrentID TorrentID) string {
-	randomByte := peerID[12+(torrentID&7)]
-	key := make([]byte, 1+4+len(peerID))
-	key[0] = randomByte
-	key[1] = byte(userID >> 24)
-	key[2] = byte(userID >> 16)
-	key[3] = byte(userID >> 8)
-	key[4] = byte(userID)
-	copy(key[5:], peerID)
-	return string(key)
+	ConnectionTimes []time.Time // Recent connection timestamps for anomaly detection
 }
 
 // CompactIPPort creates the 6-byte compact peer format (BEP 23).
@@ -122,16 +107,17 @@ type Torrent struct {
 	Completed          uint32
 	Balance            int64
 	FreeType           FreeType
-	Size               int64 // total torrent size in bytes; used by anomaly detection
-	LastFlushed        time.Time
-	Seeders            *PeerList
-	Leechers           *PeerList
-	LastSelectedSeeder string
+	MinReplicas        uint32    // minimum seeder count for health enforcement; 0 = disabled
+	LastFlushed  time.Time
+	Seeders      *PeerList
+	Leechers     *PeerList
 	TokenedUsers       map[UserID]struct{}
+	LastSelectedSeeder string
 	Category           TorrentCategory // per-category middleware dispatch
 	RolloutPct         uint8           // staged rollout gate (0 = gate disabled, 100 = full)
 	TTLSeconds         int             // time-to-live in seconds (0 = immortal)
 	CreatedAt          time.Time       // creation timestamp for TTL calculation
+	Size               int64           // torrent size in bytes; 0 = unknown
 }
 
 func NewTorrent(id TorrentID) *Torrent {
@@ -208,6 +194,40 @@ func (tl *TorrentList) ForEach(fn func(hash string, t *Torrent) bool) {
 	}
 }
 
+// ForEachBatch iterates torrents in batches, releasing the read lock between each batch.
+// This bounds the lock-hold duration to O(batchSize) rather than O(n) on large lists.
+func (tl *TorrentList) ForEachBatch(batchSize int, fn func(hash string, t *Torrent) bool) {
+	tl.mu.RLock()
+	keys := make([]string, 0, len(tl.torrents))
+	for k := range tl.torrents {
+		keys = append(keys, k)
+	}
+	tl.mu.RUnlock()
+
+	for i := 0; i < len(keys); i += batchSize {
+		end := i + batchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		tl.mu.RLock()
+		cont := true
+		for _, k := range keys[i:end] {
+			t, ok := tl.torrents[k]
+			if !ok {
+				continue
+			}
+			if !fn(k, t) {
+				cont = false
+				break
+			}
+		}
+		tl.mu.RUnlock()
+		if !cont {
+			break
+		}
+	}
+}
+
 // Reset clears all torrents. Used during full list reloads.
 func (tl *TorrentList) Reset() {
 	tl.mu.Lock()
@@ -261,27 +281,36 @@ func (ul *UserList) ForEach(fn func(passkey string, u *User) bool) {
 	}
 }
 
-// Reset clears all users. Used during full list reloads.
-func (ul *UserList) Reset() {
-	ul.mu.Lock()
-	defer ul.mu.Unlock()
-	ul.users = make(map[string]*User)
+// GetByID returns the first user matching the given UserID.
+// Linear scan — only use off the hot path (e.g. fraud enforcement).
+func (ul *UserList) GetByID(id UserID) (*User, bool) {
+	ul.mu.RLock()
+	defer ul.mu.RUnlock()
+	for _, u := range ul.users {
+		if u.ID == id {
+			return u, true
+		}
+	}
+	return nil, false
 }
 
-// SetBanned marks a user as banned (banned=true) or reinstates them (banned=false).
-// A banned user has CanLeech cleared and Deleted set; both are reversed on unban.
-// The user is looked up by numeric ID — O(n) scan, acceptable for low-frequency
-// admin operations.
+// SetBanned marks or unmarks a user as banned by setting/clearing the Deleted flag.
 func (ul *UserList) SetBanned(id UserID, banned bool) {
 	ul.mu.RLock()
 	defer ul.mu.RUnlock()
 	for _, u := range ul.users {
 		if u.ID == id {
 			u.Deleted.Store(banned)
-			u.CanLeech.Store(!banned)
 			return
 		}
 	}
+}
+
+// Reset clears all users. Used during full list reloads.
+func (ul *UserList) Reset() {
+	ul.mu.Lock()
+	defer ul.mu.Unlock()
+	ul.users = make(map[string]*User)
 }
 
 // Stats tracks global tracker statistics using atomics — no mutex required.
@@ -296,41 +325,32 @@ type Stats struct {
 	Scrapes           atomic.Uint64
 	BytesRead         atomic.Uint64
 	BytesWritten      atomic.Uint64
-	// EvictedPeers is incremented by the Reaper each time a stale peer is removed.
-	EvictedPeers atomic.Uint64
-	// AnomalyDetections is incremented each time the BehaviorDetector fires.
+	EvictedPeers      atomic.Uint64
 	AnomalyDetections atomic.Uint64
 	StartTime         time.Time
+
+	// ML security counters — incremented when anomaly/client detectors fire.
+	ClientRejections  atomic.Uint64 // known_malicious_client, suspicious_client_id_pattern
+	AnomalyRejections atomic.Uint64 // ratio_cheating, impossible_upload_speed, ddos_pattern, …
 }
 
 // Whitelist is a concurrent-safe list of allowed BitTorrent client peer_id prefixes.
 type Whitelist struct {
 	mu       sync.RWMutex
 	prefixes []string
-	trie     *WhitelistTrie // O(k) lookup; rebuilt whenever prefixes change
 }
 
 func NewWhitelist() *Whitelist {
 	return &Whitelist{prefixes: make([]string, 0)}
 }
 
-// rebuildTrie rebuilds the trie from the current prefixes slice.
-// Must be called with wl.mu held for writing.
-func (wl *Whitelist) rebuildTrie() {
-	wl.trie = BuildTrieFromSlice(wl.prefixes)
-}
-
 // IsAllowed returns true if the peer_id matches any whitelisted prefix,
 // or if the whitelist is empty (allow-all mode).
-// Uses the O(k) trie when available; falls back to linear scan.
 func (wl *Whitelist) IsAllowed(peerID []byte) bool {
 	wl.mu.RLock()
 	defer wl.mu.RUnlock()
 	if len(wl.prefixes) == 0 {
 		return true
-	}
-	if wl.trie != nil {
-		return wl.trie.IsAllowed(peerID)
 	}
 	peerIDStr := string(peerID)
 	for _, prefix := range wl.prefixes {
@@ -351,7 +371,6 @@ func (wl *Whitelist) Add(prefix string) {
 		}
 	}
 	wl.prefixes = append(wl.prefixes, prefix)
-	wl.rebuildTrie()
 }
 
 // Remove deletes a prefix from the whitelist.
@@ -365,7 +384,6 @@ func (wl *Whitelist) Remove(prefix string) {
 		}
 	}
 	wl.prefixes = out
-	wl.rebuildTrie()
 }
 
 // Reset replaces the entire prefix list atomically.
@@ -377,7 +395,6 @@ func (wl *Whitelist) Reset(prefixes []string) {
 	} else {
 		wl.prefixes = prefixes
 	}
-	wl.rebuildTrie()
 }
 
 // GetAll returns a snapshot of the current prefix list.

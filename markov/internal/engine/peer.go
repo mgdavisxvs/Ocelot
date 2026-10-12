@@ -24,9 +24,9 @@ type PeerEngine struct {
 	distributions map[int64][]float64 // current π per torrent_id
 }
 
-func newPeerEngine(decay float64) *PeerEngine {
+func newPeerEngine(decay, alpha float64) *PeerEngine {
 	return &PeerEngine{
-		globalChain:   chain.New(chain.NumPeerStates, decay),
+		globalChain:   chain.NewWithSmoothing(chain.NumPeerStates, decay, alpha),
 		lastState:     make(map[peerKey]int),
 		lastStateAt:   make(map[peerKey]int64),
 		distributions: make(map[int64][]float64),
@@ -47,11 +47,12 @@ func (pe *PeerEngine) loadStoredStates(recs []db.StoredPeerState) {
 // loadChainCounts restores persisted chain counts.
 func (pe *PeerEngine) loadChainCounts(rows []db.ChainCountRow) {
 	n := chain.NumPeerStates
+	alpha := pe.globalChain.Smoothing()
 	counts := make([][]float64, n)
 	for i := range counts {
 		counts[i] = make([]float64, n)
 		for j := range counts[i] {
-			counts[i][j] = 1.0 // Laplace prior
+			counts[i][j] = alpha
 		}
 	}
 	for _, r := range rows {
@@ -163,26 +164,14 @@ func (pe *PeerEngine) distribution(torrentID int64) []float64 {
 }
 
 // adaptiveInterval computes the recommended announce interval given the
-// current peer distribution entropy. baseInterval is in seconds.
-// Returns a value in [baseInterval/2, baseInterval].
-func (pe *PeerEngine) adaptiveInterval(torrentID int64, baseInterval int) int {
+// current peer distribution entropy, bounded by [minInterval, maxInterval]
+// with hysteresis. This ONLY changes the recommend interval — never the model clock.
+func (pe *PeerEngine) adaptiveInterval(torrentID int64, minInterval, maxInterval int, hysteresis float64) int {
 	pi := pe.distribution(torrentID)
 	h := chain.Entropy(pi)
 	maxH := chain.MaxEntropy(chain.NumPeerStates)
-	certainty := 1.0
-	if maxH > 0 {
-		certainty = 1.0 - h/maxH
-	}
-	// High certainty (stable) → longer interval; low certainty → shorter.
-	interval := float64(baseInterval) * (0.5 + 0.5*certainty)
-	iv := int(interval)
-	if iv < baseInterval/2 {
-		iv = baseInterval / 2
-	}
-	if iv > baseInterval {
-		iv = baseInterval
-	}
-	return iv
+	// UMM-05: peer engine uses no evidence gating (effSamples=0, minEvidence=0).
+	return boundedAdaptiveInterval(h, maxH, minInterval, maxInterval, 0, hysteresis, 0, 0)
 }
 
 // snapshotStates returns all current peer states for DB persistence.

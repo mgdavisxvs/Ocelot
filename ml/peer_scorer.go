@@ -84,7 +84,10 @@ func (ps *PeerScorer) SelectBest(peers []*PeerInfo, requesterIP net.IP, numWant 
 	return result
 }
 
-// PeerInfo holds extended peer information for ML scoring
+// PeerInfo holds extended peer information for ML scoring.
+// IPPort is a pre-computed compact BEP 23 / BEP 7 byte slice (6 or 18 bytes)
+// copied from the Peer under the torrent lock so that scoring can proceed
+// without holding the lock.
 type PeerInfo struct {
 	IP                net.IP
 	Port              uint16
@@ -94,6 +97,7 @@ type PeerInfo struct {
 	LastAnnounce      time.Time
 	CompletedSessions int
 	TotalSessions     int
+	IPPort            []byte
 }
 
 // Helper functions

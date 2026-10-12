@@ -22,6 +22,10 @@ type Engine struct {
 	snatchWatermark int64
 
 	pollCount int // incremented on each poll; used for decay scheduling
+
+	// EventBus publishing — both optional; nil disables Redis event publishing.
+	eventPub        *EventPublisher
+	baseIntervalSec int
 }
 
 // New creates and initializes an Engine, loading persisted state from the DB.
@@ -242,6 +246,10 @@ func (e *Engine) persist(ctx context.Context) {
 		slog.Error("UpsertFreeleechCandidates", "err", err)
 	}
 
+	// Publish events to Redis for tracker EventBus consumption.
+	e.publishAnomalyEvents(ctx, anomalies)
+	e.publishPredictionEvents(predictions, candidates)
+
 	slog.Info("persist complete",
 		"predictions", len(predictions),
 		"anomalies", len(anomalyRecs),
@@ -345,4 +353,10 @@ func (e *Engine) UserChainP() [][]float64 {
 // TorrentChainP returns the current torrent health transition matrix.
 func (e *Engine) TorrentChainP() [][]float64 {
 	return e.torrents.globalChain.P()
+}
+
+// SeederPageRank scores all tracked users by their seeder contribution quality
+// using the Markov chain's stationary distribution. dampingFactor should be 0.85.
+func (e *Engine) SeederPageRank(dampingFactor float64) []SeederPageRankResult {
+	return e.users.computeSeederPageRank(dampingFactor, 50)
 }

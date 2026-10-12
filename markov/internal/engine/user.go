@@ -182,6 +182,128 @@ func (ue *UserEngine) computeAnomalies(threshold float64, minPathLen int) []Anom
 	return results
 }
 
+// SeederPageRankResult holds the PageRank score for one user in the seeder graph.
+type SeederPageRankResult struct {
+	UID   int64
+	Score float64
+	State int
+}
+
+// seederStateWeight maps user health states to their seeder contribution quality.
+var seederStateWeight = [chain.NumUserStates]float64{
+	1.0, // HEALTHY: full contribution
+	0.6, // WARNING: reduced contribution
+	0.2, // PROBATION: minimal contribution
+	0.0, // BANNED: no contribution
+	0.9, // FREELEECH: high contribution (active user)
+}
+
+// computeSeederPageRank scores users by their seeder contribution quality using
+// the Markov chain's stationary distribution weighted by per-user path health.
+// dampingFactor is the standard PageRank damping (0.85 is canonical).
+// iterations controls power-iteration convergence (50 is sufficient for 5 states).
+func (ue *UserEngine) computeSeederPageRank(dampingFactor float64, iterations int) []SeederPageRankResult {
+	ue.mu.RLock()
+	paths := make(map[int64][]int, len(ue.pathHistory))
+	states := make(map[int64]int, len(ue.lastState))
+	for uid, p := range ue.pathHistory {
+		c := make([]int, len(p))
+		copy(c, p)
+		paths[uid] = c
+	}
+	for uid, s := range ue.lastState {
+		states[uid] = s
+	}
+	counts := ue.globalChain.Counts()
+	ue.mu.RUnlock()
+
+	n := chain.NumUserStates
+
+	// Row-normalise transition counts → probability matrix P.
+	P := make([][]float64, n)
+	for i := range P {
+		P[i] = make([]float64, n)
+		rowSum := 0.0
+		for j := range P[i] {
+			rowSum += counts[i][j]
+		}
+		if rowSum > 0 {
+			for j := range P[i] {
+				P[i][j] = counts[i][j] / rowSum
+			}
+		} else {
+			P[i][i] = 1.0 // absorbing state
+		}
+	}
+
+	// Power iteration for stationary distribution π.
+	pi := make([]float64, n)
+	for i := range pi {
+		pi[i] = 1.0 / float64(n)
+	}
+	next := make([]float64, n)
+	for iter := 0; iter < iterations; iter++ {
+		for j := range next {
+			next[j] = 0
+		}
+		for i := 0; i < n; i++ {
+			for j := 0; j < n; j++ {
+				next[j] += pi[i] * P[i][j]
+			}
+		}
+		pi, next = next, pi
+	}
+
+	// Score each user: stationary probability of their current state ×
+	// time-averaged path health score, modulated by damping factor.
+	results := make([]SeederPageRankResult, 0, len(states))
+	uniform := (1 - dampingFactor) / float64(n)
+
+	for uid, path := range paths {
+		state, ok := states[uid]
+		if !ok || len(path) == 0 {
+			continue
+		}
+		var healthSum float64
+		for _, s := range path {
+			if s >= 0 && s < n {
+				healthSum += seederStateWeight[s]
+			}
+		}
+		pathHealthScore := healthSum / float64(len(path))
+
+		score := uniform + dampingFactor*pi[state]*pathHealthScore
+		results = append(results, SeederPageRankResult{
+			UID:   uid,
+			Score: score,
+			State: state,
+		})
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+	return results
+}
+
+// percentile returns the p-th percentile (0.0–1.0) of a float64 slice.
+// The slice is sorted in place. p=0.5 gives the median.
+func percentile(vals []float64, p float64) float64 {
+	if len(vals) == 0 {
+		return 0
+	}
+	sort.Float64s(vals)
+	n := float64(len(vals))
+	idx := p * (n - 1)
+	lo := int(idx)
+	hi := lo + 1
+	if hi >= len(vals) {
+		return vals[len(vals)-1]
+	}
+	frac := idx - float64(lo)
+	return vals[lo]*(1-frac) + vals[hi]*frac
+}
+
 // snapshotStates returns all current user states for DB persistence.
 func (ue *UserEngine) snapshotStates(nowUnix int64) []db.UserStateRecord {
 	ue.mu.RLock()
@@ -200,6 +322,18 @@ func (ue *UserEngine) snapshotStates(nowUnix int64) []db.UserStateRecord {
 			PathJSON:   pathJSON,
 			ObservedAt: nowUnix,
 		})
+	}
+	return out
+}
+
+// userStates returns a snapshot copy of uid → ratio state for all tracked users.
+// Used by buildSeederAssignments for eligibility scoring without holding the lock.
+func (ue *UserEngine) userStates() map[int64]int {
+	ue.mu.RLock()
+	defer ue.mu.RUnlock()
+	out := make(map[int64]int, len(ue.lastState))
+	for uid, s := range ue.lastState {
+		out[uid] = s
 	}
 	return out
 }

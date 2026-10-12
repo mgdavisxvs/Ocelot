@@ -11,10 +11,5 @@
             </p>
         </div>
     </footer>
-
-    <!-- Initialize Lucide Icons -->
-    <script>
-        lucide.createIcons();
-    </script>
 </body>
 </html>

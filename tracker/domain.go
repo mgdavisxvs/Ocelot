@@ -44,9 +44,9 @@ type Delta struct {
 	Corrupt   int64 // corrupt data detected
 }
 
-// Event is the generic equivalent of AnnounceRequest.
+// DomainEvent is the generic equivalent of AnnounceRequest.
 // Every domain maps its wire format into this struct.
-type Event struct {
+type DomainEvent struct {
 	ResourceKey string    // info_hash or domain equivalent
 	AgentID     []byte    // peer_id or domain equivalent (opaque token)
 	Port        uint16    // listen port
@@ -120,8 +120,8 @@ type DomainAdapter interface {
 	// (e.g. "scrape"). Empty string disables query handling.
 	QueryAction() string
 
-	// ParseEvent converts an HTTP request into a domain-neutral Event.
-	ParseEvent(req *http.Request, opts ClientOpts) (*Event, error)
+	// ParseEvent converts an HTTP request into a domain-neutral DomainEvent.
+	ParseEvent(req *http.Request, opts ClientOpts) (*DomainEvent, error)
 
 	// ParseQuery converts an HTTP request into resource keys to query.
 	ParseQuery(req *http.Request, opts ClientOpts) ([]string, error)

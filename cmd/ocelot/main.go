@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -9,6 +8,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mgdavisxvs/Ocelot/commons"
+	"github.com/mgdavisxvs/Ocelot/ml"
 	"github.com/mgdavisxvs/Ocelot/tracker"
 )
 
@@ -46,7 +47,7 @@ func main() {
 	// BatchWriterDB routes hot-path announce writes through the async queue
 	// (QueuePeerAnnounce / QueueTorrentUpdate) and delegates everything else to
 	// the underlying SQLiteShardManager.
-	batchWriter := tracker.NewBatchWriter(db.CurrentDB(), 100, 5*time.Second)
+	batchWriter := tracker.NewBatchWriter(db, 100, 5*time.Second)
 	defer batchWriter.Stop()
 	batchWriterDB := tracker.NewBatchWriterDB(db, batchWriter)
 
@@ -97,47 +98,48 @@ func main() {
 		log.Println("No gazelle_url configured; token expiry callbacks disabled")
 	}
 
-	// ── Anomaly detection + adaptive threshold poller [ML-01] ────────────────
-	markovCtx, markovCancel := context.WithCancel(context.Background())
-	anomalyDetector, rawDetector := tracker.NewAnomalyDetectorPair()
-
-	if config.MarkovAPIURL != "" {
-		markovClient := tracker.NewMarkovClient(config.MarkovAPIURL)
-		log.Printf("Markov API client configured: %s", config.MarkovAPIURL)
-		tracker.AdaptiveThresholdPoller(markovCtx, markovClient, rawDetector,
-			config.FreeleechPollSec)
-		log.Println("adaptive threshold poller started")
+	// ── Compute Commons ───────────────────────────────────────────────────────
+	commonsDB := db.CurrentDB()
+	if err := commons.InitSchema(commonsDB); err != nil {
+		log.Printf("Warning: commons schema init failed: %v", err)
+	}
+	if err := commons.UpsertDefaultPrices(commonsDB); err != nil {
+		log.Printf("Warning: commons default prices upsert failed: %v", err)
+	}
+	cc, err := commons.New(commonsDB, nil)
+	if err != nil {
+		log.Printf("Warning: compute commons init failed (economic settlement disabled): %v", err)
+		cc = nil
+	} else {
+		log.Println("Compute Commons economic settlement enabled")
 	}
 
 	// ── Worker ────────────────────────────────────────────────────────────────
 	worker := &tracker.Worker{
-		Config:         config,
-		DB:             batchWriterDB, // hot-path writes routed through BatchWriterDB
-		SiteComm:       siteComm,
-		Torrents:       torrents,
-		Users:          users,
-		Whitelist:      whitelist,
-		Stats:          stats,
-		RateLimiter:    rateLimiter,
-		CircuitBreak:   circuitBreaker,
-		AuditLog:       auditLog,
-		Metrics:        metrics,
-		Detector:       anomalyDetector,
-		ClientDetector: tracker.NewClientDetector(),
-		SwarmPredictor: tracker.NewSwarmHealthPredictor(),
-		PeerScorer:     tracker.NewPeerScorer(),
-		TorrentCache:   tracker.NewTorrentCache(5 * time.Minute),
-		UserCache:      tracker.NewUserCache(5 * time.Minute),
+		Config:       config,
+		DB:           batchWriterDB,
+		SiteComm:     siteComm,
+		Torrents:     torrents,
+		Users:        users,
+		Whitelist:    whitelist,
+		Stats:        stats,
+		RateLimiter:  rateLimiter,
+		CircuitBreak: circuitBreaker,
+		AuditLog:     auditLog,
+		Metrics:      metrics,
+		PeerScorer:   ml.NewPeerScorer(),
+		BatchWriter:  batchWriter,
+		Commons:      cc,
 	}
 
 	// ── Background subsystems ─────────────────────────────────────────────────
-	reaper := tracker.NewReaper(torrents, stats, config.ReapPeersInterval, config.PeersTimeout)
+	reaper := tracker.NewReaper(torrents, stats, fc.ReapPeersInterval, config.PeersTimeout)
 	reaper.Start()
 	defer reaper.Stop()
 
-	scheduler := tracker.NewScheduler(db, config.ScheduleInterval, config.DelReasonLifetime)
-	scheduler.Start()
-	defer scheduler.Stop()
+	dbMaintainer := tracker.NewDBMaintainer(db, config.ScheduleInterval)
+	dbMaintainer.Start()
+	defer dbMaintainer.Stop()
 
 	// ── Signal handlers ───────────────────────────────────────────────────────
 	sigCh := make(chan os.Signal, 1)
@@ -224,7 +226,6 @@ func main() {
 
 	<-shutdownCh
 	log.Println("Shutdown signal received — draining connections...")
-	markovCancel()
 	if err := server.Shutdown(); err != nil {
 		log.Printf("Shutdown error: %v", err)
 	}

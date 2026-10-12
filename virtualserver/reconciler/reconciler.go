@@ -1,0 +1,932 @@
+package reconciler
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/mgdavisxvs/Ocelot/virtualserver/adapter"
+	"github.com/mgdavisxvs/Ocelot/virtualserver/domain"
+	vsmetrics "github.com/mgdavisxvs/Ocelot/virtualserver/metrics"
+	"github.com/mgdavisxvs/Ocelot/virtualserver/scheduler"
+	"github.com/mgdavisxvs/Ocelot/virtualserver/storage"
+	"github.com/mgdavisxvs/Ocelot/virtualserver/store"
+)
+
+const (
+	defaultInterval      = 15 * time.Second
+	retryBaseDelay       = 2 * time.Second
+	defaultNodeTTL       = 90 * time.Second
+	degradedFailTimeout  = 5 * time.Minute
+)
+
+// StoreInterface is the subset of VSStore the reconciler requires.
+type StoreInterface interface {
+	ListInstances(ctx context.Context, stateFilter string) ([]domain.ServiceInstance, error)
+	ListNodes(ctx context.Context, stateFilter string) ([]domain.Node, error)
+	GetInstance(ctx context.Context, id string) (*domain.ServiceInstance, error)
+	GetService(ctx context.Context, id int64) (*domain.Service, error)
+	UpdateInstanceState(ctx context.Context, id string, to domain.InstanceState) error
+	AssignNode(ctx context.Context, instanceID, nodeID string) error
+	AllocateResources(ctx context.Context, instanceID, nodeID string, cpuThreads int, ramMiB int64, gpuDeviceIndex *int) error
+	GetActiveAllocation(ctx context.Context, instanceID string) (*store.Allocation, error)
+	ReleaseAllocation(ctx context.Context, instanceID string) error
+	IncrementRetryCount(ctx context.Context, instanceID string) error
+	UpdateRuntimeHandle(ctx context.Context, instanceID string, handle map[string]string) error
+	WriteAuditLog(ctx context.Context, action, resourceType, resourceID, ipAddr string, success bool, errMsg string) error
+
+	// Node lifecycle
+	UpdateNodeState(ctx context.Context, id string, to domain.NodeState) error
+
+	// Service / instance creation (desired-count reconciliation)
+	ListServices(ctx context.Context, namespace string) ([]domain.Service, error)
+	CreateInstance(ctx context.Context, serviceID int64, vsPath domain.VSPath) (string, error)
+	ListInstancesByService(ctx context.Context, serviceID int64) ([]domain.ServiceInstance, error)
+
+	// Volume methods
+	ListVolumesByState(ctx context.Context, state domain.VolumeState) ([]domain.Volume, error)
+	GetVolume(ctx context.Context, id string) (*domain.Volume, error)
+	GetVolumeByName(ctx context.Context, namespace, name string) (*domain.Volume, error)
+	UpdateVolumeState(ctx context.Context, id string, to domain.VolumeState) error
+	UpdateVolumeHandle(ctx context.Context, id string, handle map[string]string) error
+	UpdateVolumeBoundNode(ctx context.Context, id, nodeID string) error
+	UpdateVolumeFailure(ctx context.Context, id, reason string) error
+	DeleteVolume(ctx context.Context, id string) error
+	BindMount(ctx context.Context, m domain.VolumeMount) (int64, error)
+	UpdateMountState(ctx context.Context, id int64, to domain.VolumeMountState) error
+	ListMountsByInstance(ctx context.Context, instanceID string) ([]domain.VolumeMount, error)
+	ListActiveMountsByVolume(ctx context.Context, volumeID string) ([]domain.VolumeMount, error)
+}
+
+// ArtifactCatalog is the narrow interface bridging the reconciler to artifact availability.
+type ArtifactCatalog interface {
+	Lookup(ctx context.Context, infoHash string) (domain.ArtifactStatus, error)
+}
+
+// VSReconciler drives instances from declared → running and handles failure recovery.
+// Only one reconciler loop runs at a time (overlap guard via runningMu).
+type VSReconciler struct {
+	store        StoreInterface
+	adapters     map[string]adapter.BackendAdapter
+	classDrivers map[string]storage.StorageDriver // class name → driver
+	sched        *scheduler.Scheduler
+	catalog      ArtifactCatalog
+	interval     time.Duration
+	nodeTTL      time.Duration
+
+	runningMu sync.Mutex
+
+	stop chan struct{}
+	done chan struct{}
+}
+
+// Config holds VSReconciler construction parameters.
+type Config struct {
+	Store        StoreInterface
+	Adapters     map[string]adapter.BackendAdapter
+	ClassDrivers map[string]storage.StorageDriver
+	Sched        *scheduler.Scheduler
+	Catalog      ArtifactCatalog
+	Interval     time.Duration
+	// NodeTTL is the heartbeat absence duration after which a ready node is marked degraded.
+	// Defaults to 90 s if zero. Nodes that have never sent a heartbeat are not expired.
+	NodeTTL time.Duration
+}
+
+// New creates a VSReconciler. Interval defaults to 15 s if zero.
+func New(cfg Config) *VSReconciler {
+	interval := cfg.Interval
+	if interval <= 0 {
+		interval = defaultInterval
+	}
+	nodeTTL := cfg.NodeTTL
+	if nodeTTL <= 0 {
+		nodeTTL = defaultNodeTTL
+	}
+	drivers := cfg.ClassDrivers
+	if drivers == nil {
+		drivers = map[string]storage.StorageDriver{}
+	}
+	return &VSReconciler{
+		store:        cfg.Store,
+		adapters:     cfg.Adapters,
+		classDrivers: drivers,
+		sched:        cfg.Sched,
+		catalog:      cfg.Catalog,
+		interval:     interval,
+		nodeTTL:      nodeTTL,
+		stop:         make(chan struct{}),
+		done:         make(chan struct{}),
+	}
+}
+
+// Start begins the reconciliation loop in a background goroutine.
+func (r *VSReconciler) Start() {
+	go r.loop()
+}
+
+// Stop signals the reconciler to halt and waits for it to exit.
+func (r *VSReconciler) Stop(ctx context.Context) error {
+	close(r.stop)
+	select {
+	case <-r.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *VSReconciler) loop() {
+	defer close(r.done)
+	ticker := time.NewTicker(r.interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.stop:
+			return
+		case <-ticker.C:
+			r.tryRun()
+		}
+	}
+}
+
+// tryRun executes one reconciliation pass if no other pass is running.
+func (r *VSReconciler) tryRun() {
+	if !r.runningMu.TryLock() {
+		return // previous loop still in progress; skip this tick
+	}
+	defer r.runningMu.Unlock()
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*r.interval)
+	defer cancel()
+
+	err := r.reconcile(ctx)
+	vsmetrics.ReconcilerDuration.Observe(time.Since(start).Seconds())
+	if err != nil {
+		vsmetrics.ReconcilerLoops.WithLabelValues("error").Inc()
+	} else {
+		vsmetrics.ReconcilerLoops.WithLabelValues("ok").Inc()
+	}
+}
+
+// Reconcile runs a single full reconciliation pass across all instance states.
+// It is exported for use in integration tests and external tooling.
+func (r *VSReconciler) Reconcile(ctx context.Context) error {
+	return r.reconcile(ctx)
+}
+
+// reconcile is the internal single-pass implementation.
+func (r *VSReconciler) reconcile(ctx context.Context) error {
+	// C2: expire nodes whose heartbeat has gone silent.
+	if err := r.reconcileNodeHeartbeats(ctx); err != nil {
+		r.store.WriteAuditLog(ctx, "node_ttl_error", "node", "", "", false, err.Error()) //nolint:errcheck
+	}
+
+	if err := r.reconcileVolumes(ctx); err != nil {
+		// Non-fatal: log and continue with instance reconciliation.
+		r.store.WriteAuditLog(ctx, "volume_reconcile_error", "volume", "", "", false, err.Error()) //nolint:errcheck
+	}
+
+	// C4: create instances missing from the desired count.
+	if err := r.reconcileDesiredCount(ctx); err != nil {
+		r.store.WriteAuditLog(ctx, "desired_count_error", "service", "", "", false, err.Error()) //nolint:errcheck
+	}
+
+	nodes, err := r.store.ListNodes(ctx, "")
+	if err != nil {
+		return fmt.Errorf("list nodes: %w", err)
+	}
+
+	// Populate ActiveInstances for load-aware scheduling (ExistingLoadPenalty score).
+	if allInsts, err := r.store.ListInstances(ctx, ""); err == nil {
+		activePerNode := make(map[string]int, len(nodes))
+		for _, inst := range allInsts {
+			if !domain.IsTerminalInstanceState(inst.State) && inst.NodeID != "" {
+				activePerNode[inst.NodeID]++
+			}
+		}
+		for i := range nodes {
+			nodes[i].ActiveInstances = activePerNode[nodes[i].ID]
+		}
+	}
+
+	declared, err := r.store.ListInstances(ctx, string(domain.InstanceDeclared))
+	if err != nil {
+		return fmt.Errorf("list declared: %w", err)
+	}
+	for i := range declared {
+		if err := r.scheduleInstance(ctx, &declared[i], nodes); err != nil {
+			r.store.WriteAuditLog(ctx, "schedule_failed", "instance", declared[i].ID, "", false, err.Error()) //nolint:errcheck
+		}
+	}
+
+	scheduled, err := r.store.ListInstances(ctx, string(domain.InstanceScheduled))
+	if err != nil {
+		return fmt.Errorf("list scheduled: %w", err)
+	}
+	for i := range scheduled {
+		if err := r.provisionInstance(ctx, &scheduled[i]); err != nil {
+			r.store.WriteAuditLog(ctx, "provision_failed", "instance", scheduled[i].ID, "", false, err.Error()) //nolint:errcheck
+		}
+	}
+
+	provisioning, err := r.store.ListInstances(ctx, string(domain.InstanceProvisioning))
+	if err != nil {
+		return fmt.Errorf("list provisioning: %w", err)
+	}
+	for i := range provisioning {
+		if err := r.startInstance(ctx, &provisioning[i]); err != nil {
+			r.store.WriteAuditLog(ctx, "start_failed", "instance", provisioning[i].ID, "", false, err.Error()) //nolint:errcheck
+		}
+	}
+
+	failed, err := r.store.ListInstances(ctx, string(domain.InstanceFailed))
+	if err != nil {
+		return fmt.Errorf("list failed: %w", err)
+	}
+	for i := range failed {
+		r.handleFailedInstance(ctx, &failed[i])
+	}
+
+	// C3: monitor running instances, recover degraded ones, drain stopping ones.
+	r.reconcileRunningInstances(ctx)
+	r.reconcileDegradedInstances(ctx)
+	r.reconcileStoppingInstances(ctx)
+
+	return nil
+}
+
+func (r *VSReconciler) scheduleInstance(ctx context.Context, inst *domain.ServiceInstance, nodes []domain.Node) error {
+	svc, err := r.store.GetService(ctx, inst.ServiceID)
+	if err != nil {
+		return fmt.Errorf("get service %d: %w", inst.ServiceID, err)
+	}
+
+	var eligible []domain.Node
+	for _, n := range nodes {
+		if n.State == domain.NodeReady {
+			eligible = append(eligible, n)
+		}
+	}
+
+	// HC-08: if any local-class volume declares a BoundNodeID, constrain eligible nodes to that one.
+	if pinnedNodeID := r.localVolumePinnedNode(ctx, svc.Manifest); pinnedNodeID != "" {
+		var pinned []domain.Node
+		for _, n := range eligible {
+			if n.ID == pinnedNodeID {
+				pinned = append(pinned, n)
+				break
+			}
+		}
+		eligible = pinned
+	}
+
+	decision, err := r.sched.Schedule(ctx, svc.Manifest, eligible, r.catalog)
+	if err != nil {
+		return fmt.Errorf("schedule instance %s: %w", inst.ID, err)
+	}
+
+	if err := r.store.AssignNode(ctx, inst.ID, decision.SelectedNodeID); err != nil {
+		return fmt.Errorf("assign node: %w", err)
+	}
+
+	spec := svc.Manifest.Spec
+
+	// Find the first eligible GPU device on the selected node (if GPU required).
+	var gpuIdx *int
+	if spec.Resources.GPU.Required {
+		for _, n := range eligible {
+			if n.ID == decision.SelectedNodeID {
+				eligible := n.EligibleGPUs(spec.Resources.GPU.MinVRAMMiB)
+				if len(eligible) > 0 {
+					idx := eligible[0].Index
+					gpuIdx = &idx
+				}
+				break
+			}
+		}
+	}
+
+	if err := r.store.AllocateResources(ctx, inst.ID, decision.SelectedNodeID,
+		spec.Resources.CPUThreads, spec.Resources.RAMMiB, gpuIdx); err != nil {
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceDeclared) //nolint:errcheck
+		return fmt.Errorf("allocate resources: %w", err)
+	}
+
+	vsmetrics.PlacementDecisions.WithLabelValues("scheduled").Inc()
+	r.store.WriteAuditLog(ctx, "scheduled", "instance", inst.ID, "", true, //nolint:errcheck
+		fmt.Sprintf("node=%s score=%.3f", decision.SelectedNodeID, decision.Score))
+	return nil
+}
+
+func (r *VSReconciler) provisionInstance(ctx context.Context, inst *domain.ServiceInstance) error {
+	svc, err := r.store.GetService(ctx, inst.ServiceID)
+	if err != nil {
+		return err
+	}
+
+	ad, ok := r.adapters[svc.Manifest.Spec.Runtime]
+	if !ok {
+		return fmt.Errorf("no adapter registered for runtime %q", svc.Manifest.Spec.Runtime)
+	}
+
+	if err := r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceProvisioning); err != nil {
+		return err
+	}
+
+	alloc, _ := r.store.GetActiveAllocation(ctx, inst.ID)
+	req := adapter.ProvisionRequest{
+		InstanceID: inst.ID,
+		NodeID:     inst.NodeID,
+		Manifest:   svc.Manifest,
+	}
+	if alloc != nil {
+		req.Allocation = adapter.Allocation{
+			CPUThreads:     alloc.CPUThreads,
+			RAMMiB:         alloc.RAMMiB,
+			GPUDeviceIndex: alloc.GPUDeviceIndex,
+		}
+	}
+
+	// Resolve and mount volumes declared in the service manifest.
+	resolvedMounts, mountIDs, err := r.resolveMounts(ctx, svc.Manifest, inst.ID, inst.NodeID)
+	if err != nil {
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceFailed) //nolint:errcheck
+		return fmt.Errorf("resolve mounts: %w", err)
+	}
+	req.Mounts = resolvedMounts
+	_ = mountIDs // mount IDs tracked in DB; not needed by the adapter
+
+	t0 := time.Now()
+	handle, err := ad.Provision(ctx, req)
+	vsmetrics.AdapterDuration.WithLabelValues(ad.Name(), "provision").Observe(time.Since(t0).Seconds())
+	if err != nil {
+		vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "provision", "error").Inc()
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceFailed) //nolint:errcheck
+		vsmetrics.InstancesTotal.WithLabelValues(string(domain.InstanceFailed)).Inc()
+		return fmt.Errorf("provision: %w", err)
+	}
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "provision", "ok").Inc()
+
+	r.store.UpdateRuntimeHandle(ctx, inst.ID, handle.Data)                                                         //nolint:errcheck
+	r.store.WriteAuditLog(ctx, "provisioned", "instance", inst.ID, "", true, fmt.Sprintf("adapter=%s", ad.Name())) //nolint:errcheck
+	return nil
+}
+
+func (r *VSReconciler) startInstance(ctx context.Context, inst *domain.ServiceInstance) error {
+	svc, err := r.store.GetService(ctx, inst.ServiceID)
+	if err != nil {
+		return err
+	}
+
+	ad, ok := r.adapters[svc.Manifest.Spec.Runtime]
+	if !ok {
+		return fmt.Errorf("no adapter registered for runtime %q", svc.Manifest.Spec.Runtime)
+	}
+
+	if err := r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceStarting); err != nil {
+		return err
+	}
+
+	handle := adapter.RuntimeHandle{
+		AdapterName: ad.Name(),
+		InstanceID:  inst.ID,
+		Data:        inst.RuntimeHandle,
+	}
+
+	t0 := time.Now()
+	err = ad.Start(ctx, handle)
+	vsmetrics.AdapterDuration.WithLabelValues(ad.Name(), "start").Observe(time.Since(t0).Seconds())
+	if err != nil {
+		vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "start", "error").Inc()
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceFailed) //nolint:errcheck
+		vsmetrics.InstancesTotal.WithLabelValues(string(domain.InstanceFailed)).Inc()
+		return fmt.Errorf("start: %w", err)
+	}
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "start", "ok").Inc()
+
+	r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceRunning) //nolint:errcheck
+	vsmetrics.InstancesTotal.WithLabelValues(string(domain.InstanceRunning)).Inc()
+	r.store.WriteAuditLog(ctx, "started", "instance", inst.ID, "", true, "") //nolint:errcheck
+	return nil
+}
+
+// localVolumePinnedNode returns the BoundNodeID if any local-class volume in the manifest
+// has been bound to a specific node (HC-08 enforcement). Returns "" if unconstrained.
+func (r *VSReconciler) localVolumePinnedNode(ctx context.Context, manifest domain.ServiceManifest) string {
+	for _, m := range manifest.Spec.Mounts {
+		vol, err := r.store.GetVolumeByName(ctx, manifest.Metadata.Namespace, m.VolumeName)
+		if err != nil || vol == nil {
+			continue
+		}
+		drv, ok := r.classDrivers[vol.Manifest.Spec.Class]
+		if !ok || drv.Name() != "local" {
+			continue
+		}
+		if vol.BoundNodeID != "" {
+			return vol.BoundNodeID
+		}
+	}
+	return ""
+}
+
+// resolveMounts calls Mount on each volume declared in the service manifest and records
+// the mount in the store. Returns adapter.ResolvedMount slices and the DB mount IDs.
+func (r *VSReconciler) resolveMounts(ctx context.Context, manifest domain.ServiceManifest, instanceID, nodeID string) ([]adapter.ResolvedMount, []int64, error) {
+	var resolved []adapter.ResolvedMount
+	var ids []int64
+
+	for _, decl := range manifest.Spec.Mounts {
+		vol, err := r.store.GetVolumeByName(ctx, manifest.Metadata.Namespace, decl.VolumeName)
+		if err != nil {
+			return nil, nil, fmt.Errorf("volume %q not found: %w", decl.VolumeName, err)
+		}
+		if vol.State != domain.VolumeReady && vol.State != domain.VolumeBound {
+			return nil, nil, fmt.Errorf("volume %q is not ready (state=%s)", decl.VolumeName, vol.State)
+		}
+
+		drv, ok := r.classDrivers[vol.Manifest.Spec.Class]
+		if !ok {
+			return nil, nil, fmt.Errorf("no driver registered for class %q", vol.Manifest.Spec.Class)
+		}
+
+		t0 := time.Now()
+		mp, err := drv.Mount(ctx, storage.MountRequest{
+			VolumeID:   vol.ID,
+			NodeID:     nodeID,
+			Handle:     vol.DriverHandle,
+			TargetPath: decl.TargetPath,
+			ReadOnly:   decl.ReadOnly,
+		})
+		vsmetrics.VolumeOperations.WithLabelValues(drv.Name(), "mount", outcomeStr(err)).Inc()
+		_ = t0
+		if err != nil {
+			return nil, nil, fmt.Errorf("mount volume %q: %w", vol.ID, err)
+		}
+
+		mountID, err := r.store.BindMount(ctx, domain.VolumeMount{
+			VolumeID:   vol.ID,
+			InstanceID: instanceID,
+			TargetPath: decl.TargetPath,
+			ReadOnly:   decl.ReadOnly,
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("bind mount record: %w", err)
+		}
+		r.store.UpdateMountState(ctx, mountID, domain.MountActive) //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "mount_active", "volume", vol.ID, "", true, //nolint:errcheck
+			fmt.Sprintf("instance=%s target=%s mode=%s", instanceID, decl.TargetPath, vol.Manifest.Spec.AccessMode))
+
+		if vol.BoundNodeID == "" && drv.Name() == "local" {
+			r.store.UpdateVolumeBoundNode(ctx, vol.ID, nodeID) //nolint:errcheck
+		}
+		if vol.State == domain.VolumeReady {
+			r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeBound) //nolint:errcheck
+			volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeReady, domain.VolumeBound)
+		}
+
+		resolved = append(resolved, adapter.ResolvedMount{
+			HostPath:   mp.HostPath,
+			TargetPath: decl.TargetPath,
+			ReadOnly:   decl.ReadOnly,
+		})
+		ids = append(ids, mountID)
+	}
+	return resolved, ids, nil
+}
+
+// volumeStateTransition updates the VolumeCount gauge atomically: decrements the old
+// state label and increments the new one so the gauge stays accurate as a live count.
+func volumeStateTransition(class string, from, to domain.VolumeState) {
+	vsmetrics.VolumeCount.WithLabelValues(class, string(from)).Dec()
+	vsmetrics.VolumeCount.WithLabelValues(class, string(to)).Inc()
+}
+
+// reconcileVolumes drives all volume lifecycle passes in order:
+//  1. declared  → provisioning → ready
+//  2. releasing → (driver.Delete) → released
+//  3. bound     → quota check   → quota_exceeded (or back to bound)
+func (r *VSReconciler) reconcileVolumes(ctx context.Context) error {
+	declared, err := r.store.ListVolumesByState(ctx, domain.VolumeDeclared)
+	if err != nil {
+		return fmt.Errorf("list declared volumes: %w", err)
+	}
+	for i := range declared {
+		if err := r.provisionVolume(ctx, &declared[i]); err != nil {
+			r.store.WriteAuditLog(ctx, "volume_provision_failed", "volume", declared[i].ID, "", false, err.Error()) //nolint:errcheck
+		}
+	}
+
+	if err := r.reconcileReleasingVolumes(ctx); err != nil {
+		r.store.WriteAuditLog(ctx, "volume_release_error", "volume", "", "", false, err.Error()) //nolint:errcheck
+	}
+
+	r.reconcileQuotaCheck(ctx)
+	return nil
+}
+
+// reconcileReleasingVolumes calls the storage driver to delete the backing storage for
+// every volume in the releasing state, then transitions to released and removes the DB row.
+// Volumes with no driver handle (declared but never provisioned) skip the driver call.
+func (r *VSReconciler) reconcileReleasingVolumes(ctx context.Context) error {
+	releasing, err := r.store.ListVolumesByState(ctx, domain.VolumeReleasing)
+	if err != nil {
+		return fmt.Errorf("list releasing volumes: %w", err)
+	}
+	for i := range releasing {
+		vol := &releasing[i]
+		if len(vol.DriverHandle) > 0 {
+			drv, ok := r.classDrivers[vol.Manifest.Spec.Class]
+			if !ok {
+				r.store.UpdateVolumeFailure(ctx, vol.ID, fmt.Sprintf("no driver for class %q", vol.Manifest.Spec.Class)) //nolint:errcheck
+				continue
+			}
+			err := drv.Delete(ctx, vol.DriverHandle)
+			vsmetrics.VolumeOperations.WithLabelValues(drv.Name(), "delete", outcomeStr(err)).Inc()
+			if err != nil {
+				r.store.UpdateVolumeFailure(ctx, vol.ID, err.Error()) //nolint:errcheck
+				continue
+			}
+			r.store.WriteAuditLog(ctx, "volume_released", "volume", vol.ID, "", true, //nolint:errcheck
+				fmt.Sprintf("class=%s driver=%s", vol.Manifest.Spec.Class, drv.Name()))
+		}
+		r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeReleased) //nolint:errcheck
+		volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeReleasing, domain.VolumeReleased)
+		vsmetrics.VolumeCapacityMiB.WithLabelValues(vol.Manifest.Spec.Class).Sub(float64(vol.Manifest.Spec.CapacityMiB))
+		r.store.DeleteVolume(ctx, vol.ID) //nolint:errcheck
+	}
+	return nil
+}
+
+// reconcileQuotaCheck calls driver.Stat for each bound volume and transitions to
+// quota_exceeded when UsedMiB >= CapacityMiB. Transitions back to bound when the
+// volume drops below quota (e.g. after data removal).
+func (r *VSReconciler) reconcileQuotaCheck(ctx context.Context) {
+	bound, _ := r.store.ListVolumesByState(ctx, domain.VolumeBound)
+	exceeded, _ := r.store.ListVolumesByState(ctx, domain.VolumeQuotaExceeded)
+	candidates := append(bound, exceeded...)
+
+	for i := range candidates {
+		vol := &candidates[i]
+		drv, ok := r.classDrivers[vol.Manifest.Spec.Class]
+		if !ok {
+			continue
+		}
+		stat, err := drv.Stat(ctx, vol.DriverHandle)
+		vsmetrics.VolumeOperations.WithLabelValues(drv.Name(), "stat", outcomeStr(err)).Inc()
+		if err != nil || !stat.Available {
+			continue
+		}
+		vsmetrics.VolumeUsedMiB.WithLabelValues(vol.Manifest.Spec.Class).Set(float64(stat.UsedMiB))
+
+		overQuota := vol.Manifest.Spec.CapacityMiB > 0 && stat.UsedMiB >= vol.Manifest.Spec.CapacityMiB
+		switch {
+		case overQuota && vol.State == domain.VolumeBound:
+			if err := r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeQuotaExceeded); err == nil {
+				volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeBound, domain.VolumeQuotaExceeded)
+				r.store.WriteAuditLog(ctx, "volume_quota_exceeded", "volume", vol.ID, "", false, //nolint:errcheck
+					fmt.Sprintf("used=%dMiB capacity=%dMiB", stat.UsedMiB, vol.Manifest.Spec.CapacityMiB))
+			}
+		case !overQuota && vol.State == domain.VolumeQuotaExceeded:
+			if err := r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeBound); err == nil {
+				volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeQuotaExceeded, domain.VolumeBound)
+			}
+		}
+	}
+}
+
+// provisionVolume calls the storage driver Create for a declared volume.
+func (r *VSReconciler) provisionVolume(ctx context.Context, vol *domain.Volume) error {
+	drv, ok := r.classDrivers[vol.Manifest.Spec.Class]
+	if !ok {
+		return fmt.Errorf("no driver registered for class %q", vol.Manifest.Spec.Class)
+	}
+
+	if err := r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeProvisioning); err != nil {
+		return fmt.Errorf("set provisioning: %w", err)
+	}
+	volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeDeclared, domain.VolumeProvisioning)
+
+	handle, err := drv.Create(ctx, vol.Manifest.Metadata.Namespace, vol.Manifest.Metadata.Name, vol.Manifest.Spec)
+	vsmetrics.VolumeOperations.WithLabelValues(drv.Name(), "create", outcomeStr(err)).Inc()
+	if err != nil {
+		r.store.UpdateVolumeFailure(ctx, vol.ID, err.Error()) //nolint:errcheck
+		volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeProvisioning, domain.VolumeFailed)
+		return fmt.Errorf("driver create: %w", err)
+	}
+
+	r.store.UpdateVolumeHandle(ctx, vol.ID, handle)                     //nolint:errcheck
+	r.store.UpdateVolumeState(ctx, vol.ID, domain.VolumeReady)          //nolint:errcheck
+	volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeProvisioning, domain.VolumeReady)
+	vsmetrics.VolumeCapacityMiB.WithLabelValues(vol.Manifest.Spec.Class).Add(float64(vol.Manifest.Spec.CapacityMiB))
+	r.store.WriteAuditLog(ctx, "volume_provisioned", "volume", vol.ID, "", true, //nolint:errcheck
+		fmt.Sprintf("class=%s driver=%s", vol.Manifest.Spec.Class, drv.Name()))
+	return nil
+}
+
+// teardownMounts releases all active mounts held by an instance. For each active
+// mount it calls driver.Unmount, marks the mount released in the store, and
+// transitions the volume from bound → ready when no other instance holds it.
+func (r *VSReconciler) teardownMounts(ctx context.Context, instanceID string) {
+	mounts, err := r.store.ListMountsByInstance(ctx, instanceID)
+	if err != nil {
+		return
+	}
+	for _, m := range mounts {
+		if m.State != domain.MountActive && m.State != domain.MountPending {
+			continue
+		}
+		r.store.UpdateMountState(ctx, m.ID, domain.MountReleased) //nolint:errcheck
+
+		vol, err := r.store.GetVolume(ctx, m.VolumeID)
+		if err != nil || vol == nil {
+			continue
+		}
+		drv, ok := r.classDrivers[vol.Manifest.Spec.Class]
+		if ok {
+			mp := storage.MountPoint{HostPath: vol.DriverHandle["path"], ReadOnly: m.ReadOnly}
+			umErr := drv.Unmount(ctx, mp)
+			vsmetrics.VolumeOperations.WithLabelValues(drv.Name(), "unmount", outcomeStr(umErr)).Inc()
+		}
+
+		// Transition bound→ready when this was the last active mount.
+		if vol.State == domain.VolumeBound {
+			active, aerr := r.store.ListActiveMountsByVolume(ctx, m.VolumeID)
+			if aerr == nil && len(active) == 0 {
+				if err := r.store.UpdateVolumeState(ctx, m.VolumeID, domain.VolumeReady); err == nil {
+					volumeStateTransition(vol.Manifest.Spec.Class, domain.VolumeBound, domain.VolumeReady)
+				}
+			}
+		}
+		r.store.WriteAuditLog(ctx, "mount_released", "volume", m.VolumeID, "", true, //nolint:errcheck
+			fmt.Sprintf("instance=%s mount=%d", instanceID, m.ID))
+	}
+}
+
+func outcomeStr(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	return "error"
+}
+
+// ── C2: node heartbeat TTL expiry ─────────────────────────────────────────────
+
+// reconcileNodeHeartbeats marks ready nodes degraded when no heartbeat has
+// been received within nodeTTL. Nodes that have never sent a heartbeat
+// (LastHeartbeat == nil) are left alone — they may be newly registered.
+func (r *VSReconciler) reconcileNodeHeartbeats(ctx context.Context) error {
+	nodes, err := r.store.ListNodes(ctx, string(domain.NodeReady))
+	if err != nil {
+		return fmt.Errorf("list ready nodes: %w", err)
+	}
+	now := time.Now()
+	for _, n := range nodes {
+		if n.LastHeartbeat == nil {
+			continue // never sent a heartbeat yet; don't expire
+		}
+		if now.Sub(*n.LastHeartbeat) <= r.nodeTTL {
+			continue
+		}
+		if err := r.store.UpdateNodeState(ctx, n.ID, domain.NodeDegraded); err != nil {
+			r.store.WriteAuditLog(ctx, "node_ttl_expire_failed", "node", n.ID, "", false, err.Error()) //nolint:errcheck
+			continue
+		}
+		r.store.WriteAuditLog(ctx, "node_degraded_ttl", "node", n.ID, "", false, //nolint:errcheck
+			fmt.Sprintf("no heartbeat for >%s last=%s", r.nodeTTL, n.LastHeartbeat.Format(time.RFC3339)))
+	}
+	return nil
+}
+
+// ── C4: desired-count reconciliation ─────────────────────────────────────────
+
+// reconcileDesiredCount ensures that each service has at least DesiredCount
+// non-terminal instances. Missing instances are created in declared state so
+// the normal scheduling pipeline picks them up on the next pass.
+func (r *VSReconciler) reconcileDesiredCount(ctx context.Context) error {
+	svcs, err := r.store.ListServices(ctx, "")
+	if err != nil {
+		return fmt.Errorf("list services: %w", err)
+	}
+	for _, svc := range svcs {
+		if svc.DesiredCount <= 0 {
+			continue
+		}
+		insts, err := r.store.ListInstancesByService(ctx, svc.ID)
+		if err != nil {
+			continue
+		}
+		active := 0
+		for _, inst := range insts {
+			if !domain.IsTerminalInstanceState(inst.State) {
+				active++
+			}
+		}
+		needed := svc.DesiredCount - active
+		nextSlot := len(insts) // use total (including terminal) to avoid VSPath collisions
+		for idx := 0; idx < needed; idx++ {
+			vsPath := domain.VSPath{
+				Namespace: svc.Manifest.Metadata.Namespace,
+				Service:   svc.Manifest.Metadata.Name,
+				Instance:  fmt.Sprintf("%d", nextSlot+idx),
+			}
+			id, err := r.store.CreateInstance(ctx, svc.ID, vsPath)
+			if err != nil {
+				r.store.WriteAuditLog(ctx, "create_instance_failed", "service", //nolint:errcheck
+					fmt.Sprintf("%d", svc.ID), "", false, err.Error())
+				continue
+			}
+			r.store.WriteAuditLog(ctx, "instance_created", "instance", id, "", true, //nolint:errcheck
+				fmt.Sprintf("service=%d desired=%d active=%d", svc.ID, svc.DesiredCount, active))
+		}
+	}
+	return nil
+}
+
+// ── C3: adapter lifecycle passes ─────────────────────────────────────────────
+
+// reconcileRunningInstances calls Inspect on every running instance. A process
+// that has exited is transitioned to failed immediately. A healthy but
+// unhealthy-check instance is transitioned to degraded.
+func (r *VSReconciler) reconcileRunningInstances(ctx context.Context) {
+	running, err := r.store.ListInstances(ctx, string(domain.InstanceRunning))
+	if err != nil {
+		return
+	}
+	for i := range running {
+		r.inspectInstance(ctx, &running[i])
+	}
+}
+
+func (r *VSReconciler) inspectInstance(ctx context.Context, inst *domain.ServiceInstance) {
+	svc, err := r.store.GetService(ctx, inst.ServiceID)
+	if err != nil {
+		return
+	}
+	ad, ok := r.adapters[svc.Manifest.Spec.Runtime]
+	if !ok {
+		return
+	}
+	handle := adapter.RuntimeHandle{AdapterName: ad.Name(), InstanceID: inst.ID, Data: inst.RuntimeHandle}
+
+	status, err := ad.Inspect(ctx, handle)
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "inspect", outcomeStr(err)).Inc()
+	if err != nil || !status.Running {
+		r.teardownMounts(ctx, inst.ID)
+		r.store.ReleaseAllocation(ctx, inst.ID)                                         //nolint:errcheck
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceFailed)                //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "instance_process_exited", "instance", inst.ID, "", false, //nolint:errcheck
+			fmt.Sprintf("adapter=%s running=false", ad.Name()))
+		return
+	}
+
+	health, err := ad.Health(ctx, handle)
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "health", outcomeStr(err)).Inc()
+	if err != nil || !health.Healthy {
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceDegraded) //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "instance_degraded", "instance", inst.ID, "", false, //nolint:errcheck
+			fmt.Sprintf("health=%v msg=%s", health.Healthy, health.Message))
+	}
+}
+
+// reconcileDegradedInstances re-checks health of degraded instances. Recovered
+// instances return to running; instances degraded beyond degradedFailTimeout are
+// failed so the restart policy can decide what happens next.
+func (r *VSReconciler) reconcileDegradedInstances(ctx context.Context) {
+	degraded, err := r.store.ListInstances(ctx, string(domain.InstanceDegraded))
+	if err != nil {
+		return
+	}
+	for i := range degraded {
+		r.handleDegradedInstance(ctx, &degraded[i])
+	}
+}
+
+func (r *VSReconciler) handleDegradedInstance(ctx context.Context, inst *domain.ServiceInstance) {
+	svc, err := r.store.GetService(ctx, inst.ServiceID)
+	if err != nil {
+		return
+	}
+	ad, ok := r.adapters[svc.Manifest.Spec.Runtime]
+	if !ok {
+		return
+	}
+	handle := adapter.RuntimeHandle{AdapterName: ad.Name(), InstanceID: inst.ID, Data: inst.RuntimeHandle}
+
+	health, err := ad.Health(ctx, handle)
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "health", outcomeStr(err)).Inc()
+	if err == nil && health.Healthy {
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceRunning) //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "instance_recovered", "instance", inst.ID, "", true, "") //nolint:errcheck
+		return
+	}
+
+	if time.Since(inst.UpdatedAt) > degradedFailTimeout {
+		r.teardownMounts(ctx, inst.ID)
+		r.store.ReleaseAllocation(ctx, inst.ID)            //nolint:errcheck
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceFailed) //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "instance_degraded_timeout", "instance", inst.ID, "", false, //nolint:errcheck
+			fmt.Sprintf("degraded for >%s", degradedFailTimeout))
+	}
+}
+
+// reconcileStoppingInstances drives instances in the stopping state through
+// Stop → Destroy → terminated, releasing all resources.
+func (r *VSReconciler) reconcileStoppingInstances(ctx context.Context) {
+	stopping, err := r.store.ListInstances(ctx, string(domain.InstanceStopping))
+	if err != nil {
+		return
+	}
+	for i := range stopping {
+		r.stopInstance(ctx, &stopping[i])
+	}
+}
+
+func (r *VSReconciler) stopInstance(ctx context.Context, inst *domain.ServiceInstance) {
+	svc, err := r.store.GetService(ctx, inst.ServiceID)
+	if err != nil {
+		return
+	}
+	ad, ok := r.adapters[svc.Manifest.Spec.Runtime]
+	if !ok {
+		return
+	}
+	handle := adapter.RuntimeHandle{AdapterName: ad.Name(), InstanceID: inst.ID, Data: inst.RuntimeHandle}
+
+	t0 := time.Now()
+	stopErr := ad.Stop(ctx, handle, adapter.StopGraceful)
+	vsmetrics.AdapterDuration.WithLabelValues(ad.Name(), "stop").Observe(time.Since(t0).Seconds())
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "stop", outcomeStr(stopErr)).Inc()
+
+	destroyErr := ad.Destroy(ctx, handle) // best-effort cleanup regardless of stop outcome
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "destroy", outcomeStr(destroyErr)).Inc()
+
+	r.teardownMounts(ctx, inst.ID)
+	r.store.ReleaseAllocation(ctx, inst.ID)                                    //nolint:errcheck
+	r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceTerminated)       //nolint:errcheck
+	r.store.WriteAuditLog(ctx, "instance_stopped", "instance", inst.ID, "", true, //nolint:errcheck
+		fmt.Sprintf("adapter=%s stop_err=%v", ad.Name(), stopErr))
+}
+
+// destroyInstance calls Destroy on the adapter for an instance that is being
+// permanently terminated. Errors are logged but do not block termination.
+func (r *VSReconciler) destroyInstance(ctx context.Context, svc *domain.Service, inst *domain.ServiceInstance) {
+	if svc == nil || len(inst.RuntimeHandle) == 0 {
+		return
+	}
+	ad, ok := r.adapters[svc.Manifest.Spec.Runtime]
+	if !ok {
+		return
+	}
+	handle := adapter.RuntimeHandle{AdapterName: ad.Name(), InstanceID: inst.ID, Data: inst.RuntimeHandle}
+	if err := ad.Destroy(ctx, handle); err != nil {
+		r.store.WriteAuditLog(ctx, "destroy_failed", "instance", inst.ID, "", false, err.Error()) //nolint:errcheck
+	}
+	vsmetrics.AdapterOperations.WithLabelValues(ad.Name(), "destroy", outcomeStr(nil)).Inc()
+}
+
+func (r *VSReconciler) handleFailedInstance(ctx context.Context, inst *domain.ServiceInstance) {
+	svc, err := r.store.GetService(ctx, inst.ServiceID)
+	if err != nil {
+		return
+	}
+
+	policy := svc.Manifest.Spec.Restart
+
+	if policy.Policy == "never" || (policy.Policy != "on-failure" && policy.Policy != "always") {
+		// Permanently terminal: clean up adapter resources before marking terminated.
+		r.destroyInstance(ctx, svc, inst)
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceTerminated) //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "terminated_no_restart", "instance", inst.ID, "", true, //nolint:errcheck
+			fmt.Sprintf("policy=%s", policy.Policy))
+		return
+	}
+
+	// maxAttempts=0 means unlimited; any positive value caps retries.
+	maxAttempts := policy.MaximumAttempts
+	if maxAttempts > 0 && inst.RetryCount >= maxAttempts {
+		r.destroyInstance(ctx, svc, inst)
+		r.store.UpdateInstanceState(ctx, inst.ID, domain.InstanceTerminated) //nolint:errcheck
+		r.store.WriteAuditLog(ctx, "abandoned", "instance", inst.ID, "", false, //nolint:errcheck
+			fmt.Sprintf("retries=%d max=%d policy=%s", inst.RetryCount, maxAttempts, policy.Policy))
+		return
+	}
+
+	// Exponential backoff: retryBaseDelay * 2^retryCount
+	delay := retryBaseDelay
+	for i := 0; i < inst.RetryCount && i < 6; i++ {
+		delay *= 2
+	}
+	if time.Since(inst.UpdatedAt) < delay {
+		return // too soon; next loop will check again
+	}
+
+	r.teardownMounts(ctx, inst.ID)
+	r.store.ReleaseAllocation(ctx, inst.ID)                                      //nolint:errcheck
+	r.store.IncrementRetryCount(ctx, inst.ID)                                    //nolint:errcheck
+	r.store.WriteAuditLog(ctx, "retry_scheduled", "instance", inst.ID, "", true, //nolint:errcheck
+		fmt.Sprintf("attempt=%d", inst.RetryCount+1))
+}

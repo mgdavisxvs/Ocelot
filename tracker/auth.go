@@ -81,7 +81,12 @@ func CreateAPIKey(db *sql.DB, userID int, permissions []string, expiresAt *time.
 		VALUES (?, ?, ?, ?, ?, 0)`
 
 	permJSON := strings.Join(permissions, ",")
-	_, err := db.Exec(query, keyHash, userID, permJSON, time.Now().Unix(), expiresAt)
+	var expiresUnix *int64
+	if expiresAt != nil {
+		t := expiresAt.Unix()
+		expiresUnix = &t
+	}
+	_, err := db.Exec(query, keyHash, userID, permJSON, time.Now().Unix(), expiresUnix)
 	if err != nil {
 		return "", ErrDatabaseQuery.WithError(err)
 	}
@@ -98,11 +103,12 @@ func ValidateAPIKey(db *sql.DB, apiKey string) (*APIKey, error) {
 
 	var ak APIKey
 	var permStr string
+	var createdUnix int64
 	var expiresUnix, lastUsedUnix *int64
 
 	err := db.QueryRow(query, keyHash).Scan(
 		&ak.ID, &ak.UserID, &permStr,
-		&ak.CreatedAt, &expiresUnix, &lastUsedUnix, &ak.Revoked,
+		&createdUnix, &expiresUnix, &lastUsedUnix, &ak.Revoked,
 	)
 
 	if err == sql.ErrNoRows {
@@ -111,6 +117,8 @@ func ValidateAPIKey(db *sql.DB, apiKey string) (*APIKey, error) {
 	if err != nil {
 		return nil, ErrDatabaseQuery.WithError(err)
 	}
+
+	ak.CreatedAt = time.Unix(createdUnix, 0)
 
 	if ak.Revoked {
 		return nil, ErrUnauthorized.WithDetail("API key has been revoked")
@@ -137,17 +145,18 @@ func hashAPIKey(key string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// generateRandomKey generates a cryptographically random API key.
+// generateRandomKey generates a cryptographically random API key of the given length.
 func generateRandomKey(length int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	buf := make([]byte, length)
-	if _, err := rand.Read(buf); err != nil {
+	b := make([]byte, length)
+	raw := make([]byte, length)
+	if _, err := rand.Read(raw); err != nil {
 		panic("crypto/rand unavailable: " + err.Error())
 	}
-	for i, b := range buf {
-		buf[i] = charset[int(b)%len(charset)]
+	for i, v := range raw {
+		b[i] = charset[int(v)%len(charset)]
 	}
-	return string(buf)
+	return string(b)
 }
 
 // AuthMiddleware validates JWT or API key authentication

@@ -13,6 +13,7 @@ import (
 	"github.com/mgdavisxvs/ocelot/markov/internal/config"
 	"github.com/mgdavisxvs/ocelot/markov/internal/db"
 	"github.com/mgdavisxvs/ocelot/markov/internal/engine"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -26,6 +27,13 @@ func main() {
 	if err != nil {
 		slog.Error("load config", "path", *cfgPath, "err", err)
 		os.Exit(1)
+	}
+	// Environment variable overrides for Redis (secrets must not live in config file).
+	if v := os.Getenv("REDIS_URL"); v != "" {
+		cfg.RedisURL = v
+	}
+	if v := os.Getenv("REDIS_PASSWORD"); v != "" {
+		cfg.RedisPassword = v
 	}
 	slog.Info("config loaded",
 		"poll_interval_sec", cfg.PollIntervalSec,
@@ -43,6 +51,23 @@ func main() {
 	if err != nil {
 		slog.Error("init engine", "err", err)
 		os.Exit(1)
+	}
+
+	// Wire Redis EventPublisher if configured — publishes anomaly/freeleech/interval events
+	// to the tracker's in-process EventBus via Redis Pub/Sub.
+	if cfg.RedisURL != "" {
+		opts, parseErr := redis.ParseURL(cfg.RedisURL)
+		if parseErr != nil {
+			// Treat as bare host:port.
+			opts = &redis.Options{Addr: cfg.RedisURL}
+		}
+		if cfg.RedisPassword != "" {
+			opts.Password = cfg.RedisPassword
+		}
+		rdb := redis.NewClient(opts)
+		pub := engine.NewEventPublisher(rdb)
+		eng.WireEventPublisher(pub, cfg.AnnounceIntervalSec)
+		slog.Info("EventPublisher wired", "redis_url", cfg.RedisURL)
 	}
 
 	apiServer := api.New(cfg.ListenAddr, eng)

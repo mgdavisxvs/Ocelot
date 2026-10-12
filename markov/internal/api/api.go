@@ -31,6 +31,7 @@ func New(addr string, eng *engine.Engine) *Server {
 	mux.HandleFunc("/torrent/", s.handleTorrent)
 	mux.HandleFunc("/user/", s.handleUser)
 	mux.HandleFunc("/freeleech", s.handleFreeleech)
+	mux.HandleFunc("/seeder/pagerank", s.handleSeederPageRank)
 	s.server = &http.Server{
 		Addr:         addr,
 		Handler:      mux,
@@ -170,6 +171,32 @@ func (s *Server) handleFreeleech(w http.ResponseWriter, r *http.Request) {
 			"torrent_id":     c.TorrentID,
 			"priority_score": c.PriorityScore,
 			"dead_prob_72h":  c.DeadProb72h,
+		}
+	}
+	jsonOK(w, rows)
+}
+
+// handleSeederPageRank returns all tracked users ranked by seeder contribution
+// quality. Uses the Markov stationary distribution × path health score.
+// Optional query param: damping (float, default 0.85).
+func (s *Server) handleSeederPageRank(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	damping := 0.85
+	if v := r.URL.Query().Get("damping"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f < 1 {
+			damping = f
+		}
+	}
+	results := s.eng.SeederPageRank(damping)
+	rows := make([]map[string]any, len(results))
+	for i, r := range results {
+		rows[i] = map[string]any{
+			"uid":   r.UID,
+			"score": r.Score,
+			"state": chain.UserStateNames[r.State],
 		}
 	}
 	jsonOK(w, rows)

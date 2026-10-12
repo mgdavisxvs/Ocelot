@@ -12,34 +12,62 @@ const (
 	NumPeerStates = 5
 )
 
-// User ratio health bands, derived from users_main.Uploaded/Downloaded.
+// User ratio bands — pure accounting state from upload/download ratio.
+//
+// UMM-01: These states model ONLY ratio dynamics. Account status (enabled/
+// disabled) and accounting mode (normal/freeleech/tokened) are orthogonal
+// dimensions tracked as per-observation metadata and MUST NOT pollute the
+// chain state. Conflating policy outcomes (Banned/Disabled) or accounting
+// regimes (Freeleech) with ratio dynamics produces a chain that partially
+// models administrative decisions rather than actual user behavior, which
+// corrupts every forecast and anomaly score derived from it.
 const (
-	UserHealthy    = 0 // ratio >= 0.6
-	UserWarning    = 1 // 0.4 <= ratio < 0.6
-	UserProbation  = 2 // 0.1 <= ratio < 0.4
-	UserBanned     = 3 // can_leech = '0' or ratio < 0.1
-	UserFreeleech  = 4 // has active users_freeleeches row
-	NumUserStates  = 5
+	UserSurplus       = 0 // ratio >= 2.0 (strong contributor)
+	UserHealthy       = 1 // 0.6 <= ratio < 2.0
+	UserMarginal      = 2 // 0.3 <= ratio < 0.6
+	UserDeficit       = 3 // 0.1 <= ratio < 0.3
+	UserSevereDeficit = 4 // ratio < 0.1 or no download data
+	NumUserStates     = 5
 )
 
-// Torrent swarm health bands, derived from torrents.Seeders / Leechers.
+// UserAccountingMode classifies the accounting regime active for a user.
+// This is orthogonal to ratio state — it is observation metadata, not a
+// Markov chain state.
+type UserAccountingMode int
+
 const (
-	TorrentThriving  = 0 // Seeders >= 10, S/L >= 2.0
-	TorrentHealthy   = 1 // Seeders >= 3,  S/L >= 0.5
-	TorrentAtRisk    = 2 // Seeders 1–2
-	TorrentDying     = 3 // Seeders = 0, Leechers > 0
-	TorrentDead      = 4 // Seeders = 0, Leechers = 0 (absorbing)
-	NumTorrentStates = 5
+	AccountingNormal    UserAccountingMode = iota // standard ratio tracking
+	AccountingFreeleech                           // users_freeleeches row active
+	AccountingTokened                             // per-torrent freeleech token
+)
+
+// Torrent swarm health bands.
+//
+// UMM-03: TorrentUnavailable (state 4, seeders=0 AND leechers=0) is NOT an
+// absorbing state. A torrent is "unavailable" when no complete source is
+// observed, but it CAN revive when a seeder re-announces. The absorbing-state
+// property applies only to models where revival is definitionally impossible
+// (e.g. administrative termination). Operators who need a hard terminal state
+// must apply that policy externally — this layer observes empirical reality,
+// which includes spontaneous revival from cache seeds, re-uploads, and
+// magnet-link resurrectors.
+const (
+	TorrentThriving    = 0 // Seeders >= 10, S/L >= 2.0
+	TorrentHealthy     = 1 // Seeders >= 3,  S/L >= 0.5
+	TorrentAtRisk      = 2 // Seeders 1–2
+	TorrentDying       = 3 // Seeders = 0, Leechers > 0 (no complete source)
+	TorrentUnavailable = 4 // Seeders = 0, Leechers = 0 (currently empty; can revive)
+	NumTorrentStates   = 5
 )
 
 var PeerStateNames = [NumPeerStates]string{
 	"LEECHING", "SEEDING", "DORMANT", "SNATCHED", "DEAD",
 }
 var UserStateNames = [NumUserStates]string{
-	"HEALTHY", "WARNING", "PROBATION", "BANNED", "FREELEECH",
+	"SURPLUS", "HEALTHY", "MARGINAL", "DEFICIT", "SEVERE_DEFICIT",
 }
 var TorrentStateNames = [NumTorrentStates]string{
-	"THRIVING", "HEALTHY", "AT_RISK", "DYING", "DEAD",
+	"THRIVING", "HEALTHY", "AT_RISK", "DYING", "UNAVAILABLE",
 }
 
 // MaxEntropy returns the theoretical maximum Shannon entropy for n equiprobable states.
@@ -51,7 +79,7 @@ func MaxEntropy(n int) float64 {
 func TorrentHealthState(seeders, leechers int64) int {
 	switch {
 	case seeders == 0 && leechers == 0:
-		return TorrentDead
+		return TorrentUnavailable
 	case seeders == 0:
 		return TorrentDying
 	case seeders <= 2:
@@ -66,31 +94,33 @@ func TorrentHealthState(seeders, leechers int64) int {
 	}
 }
 
-// UserRatioState computes the ratio band from upload/download totals.
-// canLeech = false means ratio-banned; hasFreeleech = true takes priority.
-func UserRatioState(uploaded, downloaded int64, canLeech, hasFreeleech bool) int {
-	if hasFreeleech {
-		return UserFreeleech
-	}
-	if !canLeech {
-		return UserBanned
-	}
+// UserRatioState computes the pure ratio band from upload/download totals.
+//
+// UMM-01: canLeech and hasFreeleech are intentionally NOT parameters. canLeech
+// is a policy outcome derived from ratio; hasFreeleech is an accounting mode.
+// Neither belongs in the chain state. Callers must track UserAccountingMode
+// separately and skip freeleech users from chain observations (see
+// UserEngine.observe). This ensures the chain models ratio dynamics rather than
+// Ocelot's enforcement decisions.
+func UserRatioState(uploaded, downloaded int64) int {
 	if downloaded == 0 {
 		if uploaded > 0 {
-			return UserHealthy
+			return UserSurplus
 		}
-		return UserWarning // new user, no activity
+		return UserSevereDeficit // new user, no activity data
 	}
 	ratio := float64(uploaded) / float64(downloaded)
 	switch {
+	case ratio >= 2.0:
+		return UserSurplus
 	case ratio >= 0.6:
 		return UserHealthy
-	case ratio >= 0.4:
-		return UserWarning
+	case ratio >= 0.3:
+		return UserMarginal
 	case ratio >= 0.1:
-		return UserProbation
+		return UserDeficit
 	default:
-		return UserBanned
+		return UserSevereDeficit
 	}
 }
 

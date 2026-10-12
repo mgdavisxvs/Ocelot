@@ -11,10 +11,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const (
-	MaxDBSize          = 84 * 1024 * 1024 * 1024 // 84 GB per shard
-	WALCheckpointPages = 1000
-)
+const WALCheckpointPages = 1000
+
+// MaxDBSize is the per-shard file size limit. Declared as a var so tests can
+// lower it temporarily to exercise the rotation path without creating 84 GB files.
+var MaxDBSize int64 = 84 * 1024 * 1024 * 1024
 
 // torrentLoadRow is the data transfer object for restoring a torrent from DB.
 type torrentLoadRow struct {
@@ -161,6 +162,9 @@ func (sm *SQLiteShardManager) closeCurrentDB() error {
 }
 
 func (sm *SQLiteShardManager) initSchema(db *sql.DB) error {
+	// Migration: add invalid_ip column for existing databases (idempotent — error ignored).
+	db.Exec(`ALTER TABLE peers ADD COLUMN invalid_ip INTEGER DEFAULT 0`) //nolint:errcheck
+
 	_, err := db.Exec(`
 	CREATE TABLE IF NOT EXISTS peers (
 		user_id INTEGER NOT NULL,
@@ -178,6 +182,7 @@ func (sm *SQLiteShardManager) initSchema(db *sql.DB) error {
 		peer_id BLOB DEFAULT '',
 		useragent TEXT DEFAULT '',
 		last_announce INTEGER DEFAULT 0,
+		invalid_ip INTEGER DEFAULT 0,
 		PRIMARY KEY (user_id, torrent_id)
 	) WITHOUT ROWID;
 
@@ -238,7 +243,6 @@ func (sm *SQLiteShardManager) initSchema(db *sql.DB) error {
 		prefix TEXT NOT NULL UNIQUE
 	);
 
-	-- Administrative action audit trail.
 	CREATE TABLE IF NOT EXISTS audit_log (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		timestamp INTEGER NOT NULL,
@@ -255,20 +259,6 @@ func (sm *SQLiteShardManager) initSchema(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id);
 	CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
 	CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_log(resource_type, resource_id);
-
-	-- API key authentication.
-	CREATE TABLE IF NOT EXISTS api_keys (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		key_hash TEXT NOT NULL UNIQUE,
-		user_id INTEGER NOT NULL,
-		permissions TEXT NOT NULL,
-		created_at INTEGER NOT NULL,
-		expires_at INTEGER,
-		last_used_at INTEGER,
-		revoked BOOLEAN DEFAULT 0
-	);
-	CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
-	CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
 	`)
 	return err
 }
@@ -280,14 +270,14 @@ func (sm *SQLiteShardManager) prepareStatements() error {
 	var err error
 
 	sm.stmtPeer, err = sm.currentDB.Prepare(`
-	INSERT INTO peers (user_id,torrent_id,active,uploaded,downloaded,upspeed,downspeed,remaining,corrupt,timespent,announces,ip,peer_id,useragent,last_announce)
-	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	INSERT INTO peers (user_id,torrent_id,active,uploaded,downloaded,upspeed,downspeed,remaining,corrupt,timespent,announces,ip,peer_id,useragent,last_announce,invalid_ip)
+	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 	ON CONFLICT(user_id,torrent_id) DO UPDATE SET
 		active=excluded.active, uploaded=excluded.uploaded, downloaded=excluded.downloaded,
 		upspeed=excluded.upspeed, downspeed=excluded.downspeed, remaining=excluded.remaining,
 		corrupt=excluded.corrupt, timespent=excluded.timespent, announces=excluded.announces,
 		ip=excluded.ip, peer_id=excluded.peer_id, useragent=excluded.useragent,
-		last_announce=excluded.last_announce`)
+		last_announce=excluded.last_announce, invalid_ip=excluded.invalid_ip`)
 	if err != nil {
 		return fmt.Errorf("prepare peer stmt: %w", err)
 	}
@@ -366,12 +356,32 @@ func (sm *SQLiteShardManager) getDBSize(path string) (int64, error) {
 
 // ── Write operations ──────────────────────────────────────────────────────────
 
-func (sm *SQLiteShardManager) RecordPeer(userID UserID, torrentID TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string) error {
+func (sm *SQLiteShardManager) RecordPeer(userID UserID, torrentID TorrentID, active int, uploaded, downloaded, upSpeed, downSpeed, left, corrupt int64, announceTime, announces uint32, ip, peerID, userAgent string, invalidIP bool) error {
 	sm.mu.RLock()
 	stmt := sm.stmtPeer
 	sm.mu.RUnlock()
-	_, err := stmt.Exec(userID, torrentID, active, uploaded, downloaded, upSpeed, downSpeed, left, corrupt, announceTime, announces, ip, peerID, userAgent, time.Now().Unix())
+	invalidIPInt := 0
+	if invalidIP {
+		invalidIPInt = 1
+	}
+	_, err := stmt.Exec(userID, torrentID, active, uploaded, downloaded, upSpeed, downSpeed, left, corrupt, announceTime, announces, ip, peerID, userAgent, time.Now().Unix(), invalidIPInt)
 	return err
+}
+
+// LoadRecommendedInterval returns the Markov-predicted announce interval for a torrent.
+// Returns (0, false) when no prediction row exists yet.
+func (sm *SQLiteShardManager) LoadRecommendedInterval(torrentID TorrentID) (int, bool) {
+	sm.mu.RLock()
+	db := sm.currentDB
+	sm.mu.RUnlock()
+	var interval int
+	err := db.QueryRow(
+		`SELECT recommended_interval FROM markov_predictions WHERE torrent_id=?`,
+		int64(torrentID)).Scan(&interval)
+	if err != nil {
+		return 0, false
+	}
+	return interval, true
 }
 
 func (sm *SQLiteShardManager) RecordPeerLight(userID UserID, torrentID TorrentID, announceTime, announces uint32, peerID string) error {
@@ -442,6 +452,33 @@ func (sm *SQLiteShardManager) RecordUserPasskey(id UserID, passkey string, canLe
 	return err
 }
 
+// DeleteToken removes a freeleech token for a user+torrent pair.
+func (sm *SQLiteShardManager) DeleteToken(userID UserID, torrentID TorrentID) error {
+	sm.mu.RLock()
+	db := sm.currentDB
+	sm.mu.RUnlock()
+	_, err := db.Exec(`DELETE FROM tokens WHERE user_id = ? AND torrent_id = ?`, userID, torrentID)
+	return err
+}
+
+// DeleteTorrentHash removes a torrent's info_hash mapping from persistence.
+func (sm *SQLiteShardManager) DeleteTorrentHash(infoHash string) error {
+	sm.mu.RLock()
+	db := sm.currentDB
+	sm.mu.RUnlock()
+	_, err := db.Exec(`DELETE FROM torrent_hashes WHERE info_hash = ?`, infoHash)
+	return err
+}
+
+// DeleteUserPasskey removes a user's passkey from persistence.
+func (sm *SQLiteShardManager) DeleteUserPasskey(passkey string) error {
+	sm.mu.RLock()
+	db := sm.currentDB
+	sm.mu.RUnlock()
+	_, err := db.Exec(`DELETE FROM user_passkeys WHERE passkey = ?`, passkey)
+	return err
+}
+
 // AddWhitelistEntry adds a peer_id prefix to the persisted whitelist.
 func (sm *SQLiteShardManager) AddWhitelistEntry(prefix string) error {
 	sm.mu.RLock()
@@ -457,15 +494,6 @@ func (sm *SQLiteShardManager) RemoveWhitelistEntry(prefix string) error {
 	db := sm.currentDB
 	sm.mu.RUnlock()
 	_, err := db.Exec(`DELETE FROM whitelist WHERE prefix = ?`, prefix)
-	return err
-}
-
-// DeleteToken removes a freeleech token row when it has been consumed.
-func (sm *SQLiteShardManager) DeleteToken(userID UserID, torrentID TorrentID) error {
-	sm.mu.RLock()
-	db := sm.currentDB
-	sm.mu.RUnlock()
-	_, err := db.Exec(`DELETE FROM tokens WHERE user_id = ? AND torrent_id = ?`, userID, torrentID)
 	return err
 }
 
@@ -659,4 +687,12 @@ func (sm *SQLiteShardManager) Close() error {
 	}
 	fmt.Println("All databases closed.")
 	return nil
+}
+
+// PrimaryDB returns the current active shard's *sql.DB for use by subsystems
+// (e.g. AuditLogger) that require direct SQL access to the primary shard.
+func (sm *SQLiteShardManager) PrimaryDB() *sql.DB {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.currentDB
 }

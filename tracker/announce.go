@@ -8,7 +8,8 @@ import (
 	"strconv"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
+	"github.com/mgdavisxvs/Ocelot/commons"
+	"github.com/mgdavisxvs/Ocelot/ml"
 )
 
 // AnnounceRequest represents a parsed BitTorrent announce request.
@@ -35,70 +36,57 @@ type AnnounceResponse struct {
 	MinInterval int32
 	Complete    int32  // number of seeders
 	Incomplete  int32  // number of leechers
-	Peers       []byte // IPv4 compact format: 6 bytes per peer
-	Peers6      []byte // IPv6 compact format: 18 bytes per peer (BEP 7)
+	Peers       []byte // compact format: 6 bytes per peer
 	Warning     string
-}
-
-// buildCompactIPPort returns the 6-byte IPv4 or 18-byte IPv6 compact peer
-// encoding. Returns nil when the address cannot be represented.
-func buildCompactIPPort(ip net.IP, port uint16) []byte {
-	if compact := CompactIPPort(ip, port); compact != nil {
-		return compact // IPv4
-	}
-	return CompactIPv6Port(ip, port) // IPv6 (may also be nil on bad input)
 }
 
 // Announce handles a BitTorrent announce request.
 // Go equivalent of worker::announce() (worker.cpp:266-735).
-func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User, clientIP net.IP, userAgent string) (*AnnounceResponse, error) {
+func (w *Worker) Announce(_ context.Context, req *AnnounceRequest, user *User, clientIP net.IP, userAgent, passkey string) (*AnnounceResponse, error) {
 	now := time.Now()
-	announceStart := now
 
-	// errAnnounce records the error metric then returns nil,err — used at every
-	// early-exit so announce error paths are visible in Prometheus.
-	errAnnounce := func(format string, args ...any) (*AnnounceResponse, error) {
-		err := fmt.Errorf(format, args...)
-		if w.Metrics != nil {
-			w.Metrics.RecordAnnounce(req.Event, "error", time.Since(announceStart))
-		}
-		return nil, err
+	// Admission policy: if set, check whether this passkey is allowed to join the swarm.
+	if w.Admission != nil && !w.Admission.IsAdmitted(req.InfoHash, passkey) {
+		return nil, fmt.Errorf("not admitted to swarm")
 	}
 
 	if !req.Compact {
-		return errAnnounce("your client does not support compact announces")
+		return nil, fmt.Errorf("your client does not support compact announces")
 	}
 	if len(req.PeerID) != 20 {
-		return errAnnounce("invalid peer ID")
+		return nil, fmt.Errorf("invalid peer ID")
 	}
 	if !w.Whitelist.IsAllowed(req.PeerID) {
-		return errAnnounce("your client is not on the whitelist")
+		return nil, fmt.Errorf("your client is not on the whitelist")
 	}
 
+	// Client anomaly detection: peer_id and user-agent pattern checks.
 	if w.ClientDetector != nil {
-		if bad, reason := w.ClientDetector.DetectClientAnomaly(string(req.PeerID), userAgent); bad {
-			return errAnnounce("client rejected: %s", reason)
+		if flagged, reason := w.ClientDetector.DetectClientAnomaly(string(req.PeerID), userAgent); flagged {
+			return nil, fmt.Errorf("client rejected: %s", reason)
 		}
 	}
 
-	var torrent *Torrent
-	var ok bool
-	if w.TorrentCache != nil {
-		torrent, ok = w.TorrentCache.Get(req.InfoHash)
-	}
-	if !ok {
-		torrent, ok = w.Torrents.Get(req.InfoHash)
-		if ok && w.TorrentCache != nil {
-			w.TorrentCache.Set(req.InfoHash, torrent)
+	// Behavior anomaly detection: ratio and speed checks on cumulative announce values.
+	if w.AnomalyDetector != nil {
+		b := &ml.PeerBehavior{
+			Uploaded:   req.Uploaded,
+			Downloaded: req.Downloaded,
+			FirstSeen:  now,
+		}
+		if flagged, reason := w.AnomalyDetector.DetectAnomaly(b); flagged {
+			return nil, fmt.Errorf("announce rejected: %s", reason)
 		}
 	}
+
+	torrent, ok := w.Torrents.Get(req.InfoHash)
 	if !ok {
-		return errAnnounce("unregistered torrent")
+		return nil, fmt.Errorf("unregistered torrent")
 	}
 
 	// Per-category middleware gate (UC use cases)
 	if err := runCategoryMiddleware(req, torrent, user); err != nil {
-		return errAnnounce("%s", err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 
 	peerKey := PeerKeyPrime(req.PeerID, user.ID, torrent.ID)
@@ -178,7 +166,6 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 		peer.Downloaded = req.Downloaded
 		peer.Corrupt = req.Corrupt
 		peer.Announces = 1
-		peer.ConnectionTimes = []time.Time{now}
 		peerChanged = true
 	} else if req.Uploaded < peer.Uploaded || req.Downloaded < peer.Downloaded {
 		peer.Announces++
@@ -229,24 +216,43 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 			default:
 				if hasToken {
 					expireToken = true
-					w.DB.RecordToken(user.ID, torrent.ID, downloadedChange)
+					if err := w.dbExec(func() error {
+						return w.DB.RecordToken(user.ID, torrent.ID, downloadedChange)
+					}); err != nil {
+						GetDefaultLogger().Error("RecordToken failed", err)
+					}
 					downloadedChange = 0
 				}
 			}
 
 			if uploadedChange > 0 || downloadedChange > 0 {
-				w.DB.RecordUserStats(user.ID, uploadedChange, downloadedChange)
+				if err := w.dbExec(func() error {
+					return w.DB.RecordUserStats(user.ID, uploadedChange, downloadedChange)
+				}); err != nil {
+					GetDefaultLogger().Error("RecordUserStats failed", err)
+				}
+
+				// Async economic settlement — non-blocking on the announce critical path.
+				if w.Commons != nil {
+					ul, dl := uploadedChange, downloadedChange
+					cStats := &commons.AnnounceStats{
+						UserID:              uint32(user.ID),
+						TorrentID:           uint32(torrent.ID),
+						EffectiveUploaded:   ul,
+						EffectiveDownloaded: dl,
+						Seeders:             torrent.Seeders.Size(),
+						Leechers:            torrent.Leechers.Size(),
+						IsSeeder:            req.Left == 0,
+						IsStopped:           stoppedTorrent,
+						Timestamp:           now,
+					}
+					go func() { _ = w.Commons.SettleAnnounce(cStats) }()
+				}
 			}
 		}
 	}
 
 	peer.Left = req.Left
-	// Append connection timestamp for rapid-reconnect anomaly detection; keep
-	// the last 10 entries so the slice stays bounded.
-	peer.ConnectionTimes = append(peer.ConnectionTimes, now)
-	if len(peer.ConnectionTimes) > 10 {
-		peer.ConnectionTimes = peer.ConnectionTimes[len(peer.ConnectionTimes)-10:]
-	}
 
 	ip := req.IP
 	if ip == nil || ip.IsUnspecified() {
@@ -256,13 +262,10 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 	if !ValidateIPNotPrivate(ip) {
 		invalidIP = true
 		peer.InvalidIP = true
-		peer.Port = req.Port
-		peer.IP = ip
-		peer.IPPort = buildCompactIPPort(ip, req.Port)
 	} else if inserted || peer.Port != req.Port || !peer.IP.Equal(ip) {
 		peer.Port = req.Port
 		peer.IP = ip
-		peer.IPPort = buildCompactIPPort(ip, req.Port)
+		peer.IPPort = CompactIPPort(ip, req.Port)
 		if peer.IPPort == nil {
 			invalidIP = true
 			peer.InvalidIP = true
@@ -276,39 +279,27 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 
 	torrent.mu.Unlock()
 
-	// Anomaly detection — runs after the lock is released to avoid holding it
-	// during a potentially-logging-heavy detection pass.
-	if w.Detector != nil {
-		if isAnomaly, reason := w.Detector.Detect(peer, upSpeed, downSpeed, torrent.Size); isAnomaly {
-			w.Stats.AnomalyDetections.Add(1)
-			w.logSiteCommErr("report_anomaly", w.SiteComm.ReportAnomaly(int64(user.ID), 1.0))
-			w.logSiteCommErr("ban_user", w.SiteComm.BanUser(int64(user.ID)))
-			torrent.mu.Lock()
-			torrent.Leechers.Delete(peerKey)
-			torrent.Seeders.Delete(peerKey)
-			torrent.mu.Unlock()
-			GetDefaultLogger().Warn("anomaly detected, peer banned",
-				"user_id", user.ID,
-				"torrent_id", torrent.ID,
-				"reason", reason,
-			)
-			return errAnnounce("anomalous activity detected: %s", reason)
+	if peerChanged {
+		announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
+		ipStr := ""
+		if !user.ProtectIP.Load() {
+			ipStr = ip.String()
 		}
-	}
-
-	if !w.Config.Readonly {
-		if peerChanged {
-			announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
-			ipStr := ""
-			if !user.ProtectIP.Load() {
-				ipStr = ip.String()
-			}
-			w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
+		peerIDStr := string(req.PeerID)
+		if err := w.dbExec(func() error {
+			return w.DB.RecordPeer(user.ID, torrent.ID, active, req.Uploaded, req.Downloaded,
 				upSpeed, downSpeed, req.Left, req.Corrupt, announceTime, peer.Announces,
-				ipStr, string(req.PeerID), userAgent)
-		} else {
-			announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
-			w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, string(req.PeerID))
+				ipStr, peerIDStr, userAgent, peer.InvalidIP)
+		}); err != nil {
+			GetDefaultLogger().Error("RecordPeer failed", err)
+		}
+	} else {
+		announceTime := uint32(now.Sub(peer.FirstAnnounced).Seconds())
+		peerIDStr := string(req.PeerID)
+		if err := w.dbExec(func() error {
+			return w.DB.RecordPeerLight(user.ID, torrent.ID, announceTime, peer.Announces, peerIDStr)
+		}); err != nil {
+			GetDefaultLogger().Error("RecordPeerLight failed", err)
 		}
 	}
 
@@ -333,17 +324,14 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 		torrent.Completed++
 		torrent.mu.Unlock()
 
-		AddSpanEvent(ctx, "snatch",
-			attribute.String("torrent_id", fmt.Sprintf("%d", torrent.ID)),
-			attribute.String("user_id", fmt.Sprintf("%d", user.ID)),
-		)
-
-		if !w.Config.Readonly {
-			ipStr := ""
-			if !user.ProtectIP.Load() {
-				ipStr = ip.String()
-			}
-			w.DB.RecordSnatch(user.ID, torrent.ID, now, ipStr)
+		ipStr := ""
+		if !user.ProtectIP.Load() {
+			ipStr = ip.String()
+		}
+		if err := w.dbExec(func() error {
+			return w.DB.RecordSnatch(user.ID, torrent.ID, now, ipStr)
+		}); err != nil {
+			GetDefaultLogger().Error("RecordSnatch failed", err)
 		}
 
 		if !inserted {
@@ -358,25 +346,22 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 			torrent.mu.Unlock()
 		}
 
-		if expireToken && !w.Config.Readonly {
-			AddSpanEvent(ctx, "token_expired",
-				attribute.String("torrent_id", fmt.Sprintf("%d", torrent.ID)),
-				attribute.String("user_id", fmt.Sprintf("%d", user.ID)),
-			)
+		if expireToken {
 			w.SiteComm.ExpireToken(torrent.ID, user.ID)
 			torrent.mu.Lock()
 			delete(torrent.TokenedUsers, user.ID)
 			torrent.mu.Unlock()
-			// Remove the consumed token from DB so it cannot be re-used.
-			w.DB.DeleteToken(user.ID, torrent.ID)
 		}
 	} else if !user.CanLeech.Load() && req.Left > 0 {
 		numwant = 0
 	}
 
-	_, peerSelSpan := TracePeerSelection(ctx, fmt.Sprintf("%d", torrent.ID), int(numwant))
-	peers4, peers6 := SelectPeersScored(torrent, peer, user.ID, numwant, req.Left > 0, w.PeerScorer, clientIP)
-	peerSelSpan.End()
+	var peers []byte
+	if w.PeerScorer != nil {
+		peers = SelectPeersScored(torrent, peer, ip, user.ID, numwant, req.Left > 0, w.PeerScorer)
+	} else {
+		peers = w.selectPeersWithEconomics(torrent, peer, user.ID, numwant, req.Left > 0)
+	}
 
 	w.Stats.SuccAnnouncements.Add(1)
 	if incLeechers {
@@ -407,155 +392,55 @@ func (w *Worker) Announce(ctx context.Context, req *AnnounceRequest, user *User,
 	}
 
 	torrent.mu.Lock()
-	if !w.Config.Readonly && (updateTorrent || now.Sub(torrent.LastFlushed) > time.Hour) {
+	if updateTorrent || now.Sub(torrent.LastFlushed) > time.Hour {
 		torrent.LastFlushed = now
-		w.DB.RecordTorrent(torrent.ID, uint32(torrent.Seeders.Size()),
-			uint32(torrent.Leechers.Size()), snatched, torrent.Balance)
+		tID, tSeeders, tLeechers, tSnatched, tBalance :=
+			torrent.ID, uint32(torrent.Seeders.Size()), uint32(torrent.Leechers.Size()), snatched, torrent.Balance
+		if err := w.dbExec(func() error {
+			return w.DB.RecordTorrent(tID, tSeeders, tLeechers, tSnatched, tBalance)
+		}); err != nil {
+			GetDefaultLogger().Error("RecordTorrent failed", err)
+		}
 	}
 	seederCount := torrent.Seeders.Size()
 	leecherCount := torrent.Leechers.Size()
 	torrent.mu.Unlock()
 
 	if !user.CanLeech.Load() && req.Left > 0 {
-		return errAnnounce("access denied, leeching forbidden")
+		return nil, fmt.Errorf("access denied, leeching forbidden")
 	}
 
-	adaptiveInterval := AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval)
-	baseInterval := int32(w.Config.AnnounceInterval)
-	if adaptiveInterval < baseInterval {
-		adaptiveInterval = baseInterval
+	minInterval := int32(w.Config.AnnounceInterval)
+	adaptive := AdaptiveInterval(seederCount, leecherCount, w.Config.AnnounceInterval)
+	if adaptive < minInterval {
+		adaptive = minInterval
 	}
 
 	response := &AnnounceResponse{
-		Interval:    adaptiveInterval,
-		MinInterval: baseInterval,
+		Interval:    adaptive,
+		MinInterval: minInterval,
 		Complete:    int32(seederCount),
 		Incomplete:  int32(leecherCount),
-		Peers:       peers4,
-		Peers6:      peers6,
+		Peers:       peers,
 	}
 	if invalidIP {
 		response.Warning = "Illegal character found in IP address"
 	}
 
 	if w.Metrics != nil {
-		event := "update"
-		if inserted || req.Event == "started" {
-			event = "started"
-		} else if req.Event == "completed" {
-			event = "completed"
-		} else if req.Event == "stopped" {
-			event = "stopped"
-		}
-		w.Metrics.RecordAnnounce(event, "success", time.Since(announceStart))
-		w.Metrics.UpdatePeerCounts(seederCount, leecherCount)
-		w.Metrics.UpdateActivePeers(strconv.FormatUint(uint64(torrent.ID), 10), seederCount+leecherCount)
-	}
-	w.logSiteCommErr("update_stats", w.SiteComm.UpdateStats(int64(seederCount), int64(leecherCount), int64(torrent.Completed)))
-
-	// [H-2] Async Redis dual-write: mirror peer state after each announce.
-	// Runs in a goroutine so Redis latency never stalls the announce response.
-	if w.Redis != nil && req.Event != "stopped" {
-		peerCopy := *peer
-		go func() {
-			ttl := time.Duration(w.Config.PeersTimeout) * time.Second
-			if err := w.Redis.AddPeer(req.InfoHash, string(req.PeerID), &peerCopy, ttl); err != nil {
-				w.logSiteCommErr("redis_add_peer", err)
-			}
-		}()
-	}
-	if w.Redis != nil && req.Event == "stopped" {
-		go func() {
-			if err := w.Redis.RemovePeer(req.InfoHash, req.PeerID); err != nil {
-				w.logSiteCommErr("redis_remove_peer", err)
-			}
-		}()
+		w.Metrics.RecordAnnounce(req.Event, "ok", time.Since(now))
+		w.Metrics.UpdatePeerCounts(int(w.Stats.Seeders.Load()), int(w.Stats.Leechers.Load()))
 	}
 
 	return response, nil
 }
 
-// selectPeers picks up to numwant peers to return. Leechers receive seeders
-// first (round-robin), then other leechers. Seeders receive only leechers.
-func (w *Worker) selectPeers(torrent *Torrent, self *Peer, userID UserID, numwant int32, isLeecher bool) []byte {
-	if numwant <= 0 {
-		return []byte{}
+// dbExec runs fn through the circuit breaker when one is configured, otherwise calls fn directly.
+func (w *Worker) dbExec(fn func() error) error {
+	if w.CircuitBreak != nil {
+		return w.CircuitBreak.Execute(fn)
 	}
-
-	peers := make([]byte, 0, numwant*6)
-	found := 0
-
-	torrent.mu.RLock()
-	defer torrent.mu.RUnlock()
-
-	if isLeecher {
-		seederCount := torrent.Seeders.Size()
-		if seederCount > 0 {
-			seederKeys := make([]string, 0, seederCount)
-			seederMap := make(map[string]*Peer, seederCount)
-			torrent.Seeders.ForEach(func(key string, peer *Peer) bool {
-				seederKeys = append(seederKeys, key)
-				seederMap[key] = peer
-				return true
-			})
-
-			startIdx := 0
-			if torrent.LastSelectedSeeder != "" {
-				for i, key := range seederKeys {
-					if key == torrent.LastSelectedSeeder {
-						startIdx = (i + 1) % len(seederKeys)
-						break
-					}
-				}
-			}
-
-			for i := 0; i < len(seederKeys) && found < int(numwant); i++ {
-				idx := (startIdx + i) % len(seederKeys)
-				key := seederKeys[idx]
-				peer := seederMap[key]
-				if peer.UserID == userID || !peer.Visible {
-					continue
-				}
-				if len(peer.IPPort) == 6 {
-					peers = append(peers, peer.IPPort...)
-					found++
-					torrent.LastSelectedSeeder = key
-				}
-			}
-		}
-
-		if found < int(numwant) && torrent.Leechers.Size() > 1 {
-			torrent.Leechers.ForEach(func(_ string, peer *Peer) bool {
-				if found >= int(numwant) {
-					return false
-				}
-				if peer.UserID == userID || !peer.Visible {
-					return true
-				}
-				if len(peer.IPPort) == 6 {
-					peers = append(peers, peer.IPPort...)
-					found++
-				}
-				return true
-			})
-		}
-	} else {
-		torrent.Leechers.ForEach(func(_ string, peer *Peer) bool {
-			if found >= int(numwant) {
-				return false
-			}
-			if peer.UserID == userID || !peer.Visible {
-				return true
-			}
-			if len(peer.IPPort) == 6 {
-				peers = append(peers, peer.IPPort...)
-				found++
-			}
-			return true
-		})
-	}
-
-	return peers
+	return fn()
 }
 
 func (w *Worker) findOrCreatePeer(peerList *PeerList, peerKey string, user *User) (*Peer, bool) {
@@ -568,7 +453,7 @@ func (w *Worker) findOrCreatePeer(peerList *PeerList, peerKey string, user *User
 }
 
 func (w *Worker) peerIsVisible(user *User, peer *Peer) bool {
-	return peer.Left == 0 || user.CanLeech.Load()
+	return (peer.Left == 0 || user.CanLeech.Load()) && !peer.InvalidIP
 }
 
 // ParseAnnounceParams parses URL query parameters into an AnnounceRequest.

@@ -18,7 +18,7 @@ COPY . .
 # Build binary with optimizations
 RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo \
     -ldflags="-w -s -X main.Version=$(git describe --tags --always --dirty) -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    -o ocelot-tracker .
+    -o ocelot-tracker ./cmd/ocelot/
 
 # Final stage
 FROM alpine:latest
